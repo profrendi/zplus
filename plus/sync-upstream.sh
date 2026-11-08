@@ -20,6 +20,10 @@ if ! git merge --no-edit --no-ff -m "Merge ZapFast $latest into ZapFast Plus" "$
       git checkout --theirs -- "$file" && git add "$file"
     fi
   done
+  # ZapFast Plus keeps its own README; ZapFast's is linked from it.
+  if git diff --name-only --diff-filter=U | grep -qx README.md; then
+    git checkout --ours -- README.md && git add README.md
+  fi
   # ZapFast's own workflows are not run here.
   git diff --name-only --diff-filter=U | grep '^\.github/workflows/' | grep -v '/plus-' | xargs -r git rm -q --
   if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
