@@ -199,6 +199,80 @@ impl Progress {
     }
 }
 
+/// Paces the window's wake-ups for updates nobody is waiting on.
+///
+/// A history sync sends chat and contact updates by the hundred, and each
+/// wake-up redraws the whole window, the open chat's messages included. A
+/// background update within [`WakePacer::GAP`] of the last wake-up waits for
+/// one wake-up at the end of that gap instead, which takes all of them at
+/// once. Messages, calls, typing and everything else wake the window at once.
+#[derive(Clone, Default)]
+struct WakePacer {
+    last: Arc<std::sync::Mutex<Option<Instant>>>,
+    pending: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl WakePacer {
+    const GAP: Duration = Duration::from_millis(250);
+
+    /// Updates that may wait a quarter of a second.
+    fn background(event: &Event) -> bool {
+        matches!(
+            event,
+            Event::ChatUpdated(_)
+                | Event::Chats(_)
+                | Event::Contacts(_)
+                | Event::ChatSharedChanged(_)
+                | Event::Avatar { .. }
+                | Event::Labels(_)
+                | Event::Drafts(_)
+                | Event::StarChanged { .. }
+                | Event::Presence { .. }
+                | Event::SyncProgress { .. }
+                | Event::Blocklist { .. }
+                | Event::BlocklistMapped { .. }
+                | Event::DownloadProgress { .. }
+                | Event::UploadProgress { .. }
+                | Event::StorageStats { .. }
+        )
+    }
+
+    fn wake_now(&self, waker: &Waker) {
+        *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+        waker.wake();
+    }
+
+    fn wake_soon(&self, waker: &Waker) {
+        let now = Instant::now();
+        let since = self
+            .last
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .map(|last| now.saturating_duration_since(last));
+        let Some(wait) = since
+            .filter(|since| *since < Self::GAP)
+            .map(|since| Self::GAP - since)
+        else {
+            return self.wake_now(waker);
+        };
+        // One wake-up already waits for the end of the gap.
+        if self.pending.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            self.pending.store(false, std::sync::atomic::Ordering::Release);
+            return self.wake_now(waker);
+        };
+        let pacer = self.clone();
+        let waker = waker.clone();
+        runtime.spawn(async move {
+            tokio::time::sleep(wait).await;
+            pacer.pending.store(false, std::sync::atomic::Ordering::Release);
+            pacer.wake_now(&waker);
+        });
+    }
+}
+
 /// `done` out of `total` as a whole percent, or nothing for an unknown size.
 fn percent(done: u64, total: u64) -> Option<u8> {
     (total > 0).then(|| (u128::from(done.min(total)) * 100 / u128::from(total)) as u8)
@@ -970,6 +1044,7 @@ pub async fn run(
                 .set_meta(star_recovery::STARS_RECOVERED, "complete")
                 .is_ok());
     let mut worker = Worker {
+        wakes: WakePacer::default(),
         privacy_ready: privacy_confirmed,
         privacy_confirmed,
         privacy_snapshot,
@@ -1432,6 +1507,8 @@ enum AwaitingAck {
 }
 
 struct Worker {
+    /// Paces the window's wake-ups for background updates.
+    wakes: WakePacer,
     /// Private content may reach the UI.
     privacy_ready: bool,
     /// Phone lock state is known to be mirrored in the archive.
@@ -1990,8 +2067,13 @@ impl Worker {
         {
             return;
         }
+        let background = WakePacer::background(&event);
         let _ = self.events.send(event);
-        self.waker.wake();
+        if background {
+            self.wakes.wake_soon(&self.waker);
+        } else {
+            self.wakes.wake_now(&self.waker);
+        }
     }
 
     /// Syncs a chat setting to the phone without blocking the worker.
@@ -20117,6 +20199,7 @@ mod receipt_tests {
         let root =
             std::env::temp_dir().join(format!("zapfast-worker-test-{}-{n}", std::process::id()));
         let worker = Worker {
+            wakes: WakePacer::default(),
             privacy_ready: true,
             privacy_confirmed: true,
             privacy_snapshot: false,

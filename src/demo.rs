@@ -1329,6 +1329,42 @@ fn interactive_sample(app: &mut App, with_image: bool) {
 
 /// The first chat with only its last two messages: a conversation shorter
 /// than the view, which sits at its bottom.
+/// The first sample chat, repeated to some 600 messages a few minutes
+/// apart: a long conversation to measure the cost of drawing one.
+fn long_chat_sample(app: &mut App) {
+    let id = SAMPLES[0].id;
+    let conversation = app.conversations.get_mut(id).unwrap();
+    let mut base = conversation.messages.clone();
+    // Text only, short rows as most chats have: ZFPLUS_DEMO_TEXT=1.
+    if std::env::var_os("ZFPLUS_DEMO_TEXT").is_some() {
+        base.retain(|message| {
+            matches!(&message.content, crate::model::Content::Text { preview: None, .. })
+        });
+    }
+    let wanted = std::env::var("ZFPLUS_DEMO_MESSAGES")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(600);
+    let rounds = wanted / base.len().max(1) + 1;
+    let last = base.last().map_or(0, |message| message.timestamp);
+    let total = (rounds * base.len()) as i64;
+    let mut messages = Vec::with_capacity(total as usize);
+    for round in 0..rounds {
+        for (index, message) in base.iter().enumerate() {
+            let mut message = message.clone();
+            let n = (round * base.len() + index) as i64;
+            message.id = format!("long-{round}-{index}");
+            message.timestamp = last - (total - n) * 420;
+            messages.push(message);
+        }
+    }
+    conversation.messages = messages;
+    conversation.complete = true;
+    app.open_chat = Some(id.into());
+    app.typing.clear();
+    app.scroll_to_bottom = true;
+}
+
 fn short_chat_sample(app: &mut App) {
     let id = SAMPLES[0].id;
     let conversation = app.conversations.get_mut(id).unwrap();
@@ -2039,6 +2075,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
             }
             "phone-menu" => phone_menu_sample(app),
             "short-chat" => short_chat_sample(app),
+            "long-chat" => long_chat_sample(app),
             "chat-menu" => app.open_chat_menu = Some(app.chats[0].id.clone()),
             "archive-failed" => {
                 let (backend, events) = crate::backend::Backend::detached();

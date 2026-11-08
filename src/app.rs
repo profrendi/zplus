@@ -7060,7 +7060,22 @@ impl App {
                 account.save_settings(&self.files);
             }
         }
-        if !self.typing.is_empty() || self.composing {
+        // Wake when the next typing notice or our own composing state runs
+        // out, not every second: each frame with a chat open costs a
+        // layout of its messages.
+        let typing_ends = self
+            .typing
+            .values()
+            .flatten()
+            .map(|(_, _, since)| *since + TYPING_TIMEOUT);
+        let composing_ends = self
+            .composing
+            .then_some(self.last_keystroke)
+            .flatten()
+            .map(|last| last + COMPOSING_TIMEOUT + Duration::from_millis(50));
+        if let Some(next) = typing_ends.chain(composing_ends).min() {
+            ctx.request_repaint_after(next.saturating_duration_since(now));
+        } else if self.composing {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
         // A pin that has run out its seven days is no longer on the message,
@@ -11552,7 +11567,21 @@ impl App {
         if user_input {
             self.app_lock.note_input();
         }
-        let _cursor_style = crate::motion::idle_text_cursor(ui, user_input);
+        // Only typing keeps the caret blinking; the pointer moving over the
+        // window does not, since each blink redraws the whole window.
+        let typed = ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key { .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::Paste(_)
+                        | egui::Event::Cut
+                        | egui::Event::Copy
+                )
+            })
+        });
+        let _cursor_style = crate::motion::idle_text_cursor(ui, typed);
         let locked = self.app_lock.is_locked();
         // Behind the lock screen nobody is reading; unlocking counts as
         // coming back to the window.

@@ -3054,6 +3054,7 @@ struct TextSelectionRows {
 /// The conversation's messages. `under` is how much of the list's top lies
 /// beneath the header, which a vibrant window lays over it.
 fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
+    let prepare = crate::prof::scope("messages: before the list");
     let palette = app.palette;
     // Taken up front: `names_or` below borrows the rest of `app` for the
     // whole function, so a pending scroll must come out before that.
@@ -3435,6 +3436,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                 .data(|data| data.get_temp::<f32>(text_selection_id.with("painted-offset")))
         })
         .flatten();
+    drop(prepare);
     let scroll = egui::ScrollArea::vertical();
     let scroll = if let Some(offset) = selection_offset {
         scroll.vertical_scroll_offset(offset)
@@ -3550,6 +3552,20 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                     // and their height remembered, so scrolling finds them
                     // measured before they show.
                     let margin = (viewport.height() * 3.0).max(600.0);
+                    // Rows already measured are laid out again only when
+                    // they come within half a screen of the view. Further
+                    // out their remembered height stands in for them, so a
+                    // frame costs the rows near the screen, not seven
+                    // screens' worth. A new width measures them all again.
+                    let close = (viewport.height() * 0.5).max(240.0);
+                    let width_id = scroll_id.with("measured-width");
+                    let width_changed = ui
+                        .ctx()
+                        .data(|data| data.get_temp::<f32>(width_id))
+                        .is_none_or(|width| (width - layout_width).abs() > 0.5);
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(width_id, layout_width));
+                    let _rows_scope = crate::prof::scope("messages: rows loop");
                     for (message_index, message) in conversation.messages.iter().enumerate() {
                         let index = message_index;
                         // WhatsApp marks every item in a media album with the
@@ -3578,19 +3594,22 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                         };
                         let row_is_anchor = view.anchor.is_some_and(row_contains);
                         let before = ui.cursor().top();
-                        let new_day = previous.is_none_or(|previous| {
-                            crate::util::day_key(previous.timestamp)
-                                != crate::util::day_key(message.timestamp)
-                        });
-                        if new_day {
-                            day_separator_top = before + 8.0;
-                        }
+                        // Worked out only for rows that need it: a row left
+                        // out of the layout below keeps its known height, and
+                        // the day it starts lies far off screen, where the
+                        // date chip it would move cannot show.
+                        let day_changes = || {
+                            previous.is_none_or(|previous| {
+                                crate::util::day_key(previous.timestamp)
+                                    != crate::util::day_key(message.timestamp)
+                            })
+                        };
                         let here = notices_above(&notices[placed..], message.timestamp);
                         let known = rows.get(&message.id).copied();
-                        let height = known.map_or_else(
-                            || estimated_height(message, layout_width, new_day, here),
-                            |row| row.height,
-                        );
+                        let height = match known {
+                            Some(row) => row.height,
+                            None => estimated_height(message, layout_width, day_changes(), here),
+                        };
                         // A pass redone after the offset followed rows that
                         // grew keeps to the rows it laid out before (and any
                         // now on screen): measuring rows the shift brought
@@ -3604,8 +3623,13 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                         } else {
                             margin
                         };
-                        let near = before + height >= viewport.top() - reach
-                            && before <= viewport.bottom() + reach;
+                        let within = |reach: f32| {
+                            before + height >= viewport.top() - reach
+                                && before <= viewport.bottom() + reach
+                        };
+                        let measured = !width_changed
+                            && known.is_some_and(|row| row.pass.is_some());
+                        let near = within(reach.min(close)) || (!measured && within(reach));
                         let selected = selected_rows.as_ref().is_some_and(|(anchor, span)| {
                             span.contains(&index)
                                 || (drag_frame
@@ -3633,6 +3657,14 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                             }
                             previous = Some(message);
                             continue;
+                        }
+                        crate::prof::count("rows laid out", 1);
+                        if before + height >= viewport.top() && before <= viewport.bottom() {
+                            crate::prof::count("rows on screen", 1);
+                        }
+                        let new_day = day_changes();
+                        if new_day {
+                            day_separator_top = before + 8.0;
                         }
                         // A row laid out again after a skip still has the
                         // rect it last had on screen, where other rows are
@@ -5040,6 +5072,7 @@ fn bubble(
     place: RunPlace,
     actions: &mut Vec<Action>,
 ) -> Option<egui::Response> {
+    let _scope = crate::prof::scope("message bubbles");
     // A timer change is a system row, not a message: a centred chip naming
     // who changed it and to what, with no bubble, avatar, or selection.
     if let Content::DisappearingTimer { seconds } = &message.content {

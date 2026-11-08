@@ -358,9 +358,7 @@ fn run() -> eframe::Result<()> {
     let demo_persistence = demo.then(|| dirs.state.join("window.ron"));
     // ZFPlus Prof: measures from here, on the interface thread.
     #[cfg(feature = "prof")]
-    if !demo {
-        zapfast::prof::start(&zapfast::prof::data_dir());
-    }
+    zapfast::prof::start(&zapfast::prof::data_dir());
 
     #[allow(unused_mut)]
     let mut app = if demo {

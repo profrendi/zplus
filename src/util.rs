@@ -390,8 +390,38 @@ pub fn day_label(locale: Locale, unix_seconds: i64) -> String {
 }
 
 /// Local calendar day used to group messages.
+///
+/// The message list asks for many of these every frame (day separators,
+/// albums), so the local zone is looked up at most once a second per
+/// thread, and the date comes from a civil date-time, without building a
+/// [`Zoned`].
 pub fn day_key(unix_seconds: i64) -> Option<Date> {
-    zoned(unix_seconds).map(|when| when.date())
+    let timestamp = Timestamp::from_second(unix_seconds).ok()?;
+    Some(with_zone(|zone| zone.to_datetime(timestamp).date()))
+}
+
+/// Runs `f` with the local zone, kept for a second on this thread.
+fn with_zone<R>(f: impl FnOnce(&jiff::tz::TimeZone) -> R) -> R {
+    #[cfg(test)]
+    if fixed_clock::get().is_some() {
+        return f(&zone());
+    }
+    thread_local! {
+        static ZONE: std::cell::RefCell<Option<(std::time::Instant, jiff::tz::TimeZone)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    ZONE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let now = std::time::Instant::now();
+        if cell
+            .as_ref()
+            .is_none_or(|(at, _)| now.duration_since(*at) >= std::time::Duration::from_secs(1))
+        {
+            *cell = Some((now, zone()));
+        }
+        let (_, zone) = cell.as_ref().expect("set above");
+        f(zone)
+    })
 }
 
 /// Unix-second half-open range for a local calendar day.

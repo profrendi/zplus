@@ -78,6 +78,7 @@ pub fn layout(
     style: &Style,
     max_width: f32,
 ) -> Text {
+    let _scope = crate::prof::scope("text layout");
     let big = emoji::only_emoji(text).is_some_and(|count| count <= 3);
     let size = if big { style.size * 2.4 } else { style.size };
     let mut job = LayoutJob::default();

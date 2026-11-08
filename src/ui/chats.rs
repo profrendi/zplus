@@ -948,7 +948,9 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
         results(app, ui);
         return;
     }
-    let chats: Vec<Chat> = app.visible_chats().into_iter().cloned().collect();
+    // Only the ids: each row's chat is copied when the row is drawn, so a
+    // long list costs a frame no more than the rows on screen.
+    let chats = visible_ids(app);
     if chats.is_empty() {
         // The favorites title is translated, so it is bound here: the tuple
         // below borrows it for this frame, and every other arm stays a literal.
@@ -991,7 +993,7 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
     let target_row = app
         .scroll_chat_into_view
         .as_ref()
-        .and_then(|target| chats.iter().position(|chat| chat.id == *target));
+        .and_then(|target| chats.iter().position(|id| id == target));
     // The copies a narrow window's slide draws have widget ids of their own:
     // they show the real list's offset instead of keeping one.
     let copy = ui
@@ -1037,7 +1039,10 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
             );
         }
         for index in range {
-            let chat = &chats[index];
+            let Some(chat) = app.chat(&chats[index]).cloned() else {
+                continue;
+            };
+            let chat = &chat;
             // Key by chat so an open menu survives list reordering.
             let response = ui
                 .push_id(("chat", &chat.id), |ui| row(app, ui, chat))
@@ -1150,7 +1155,8 @@ fn locked_list(app: &mut App, ui: &mut egui::Ui) {
         );
         return;
     }
-    let chats: Vec<Chat> = chats.into_iter().cloned().collect();
+    drop(chats);
+    let chats = visible_ids(app);
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut scroll_area = egui::ScrollArea::vertical()
         .id_salt("locked-chats")
@@ -1158,7 +1164,7 @@ fn locked_list(app: &mut App, ui: &mut egui::Ui) {
     let target_row = app
         .scroll_chat_into_view
         .as_ref()
-        .and_then(|target| chats.iter().position(|chat| chat.id == *target));
+        .and_then(|target| chats.iter().position(|id| id == target));
     if let Some(target_row) = target_row {
         let id = ui.make_persistent_id(egui::IdSalt::new("locked-chats"));
         let current = egui::scroll_area::State::load(ui.ctx(), id)
@@ -1176,10 +1182,77 @@ fn locked_list(app: &mut App, ui: &mut egui::Ui) {
         app.scroll_chat_into_view = None;
     }
     scroll_area.show_rows(ui, theme::ROW_HEIGHT, chats.len(), |ui, range| {
-        for chat in &chats[range] {
-            ui.push_id(("chat", &chat.id), |ui| row(app, ui, chat));
+        for id in &chats[range] {
+            let Some(chat) = app.chat(id).cloned() else {
+                continue;
+            };
+            ui.push_id(("chat", &chat.id), |ui| row(app, ui, &chat));
         }
     });
+}
+
+/// The chats and contacts a search matches, kept while the query and the
+/// chats stay the same: matching walks every chat and contact through text
+/// folding, and the results are drawn again on every frame while they are
+/// open. Telling whether the chats changed costs a few integers per chat.
+fn search_matches(
+    app: &App,
+    ctx: &egui::Context,
+    needle: &str,
+) -> (Vec<crate::model::ChatId>, Vec<String>) {
+    type Key = (String, bool, usize, usize, u64);
+    #[derive(Clone)]
+    struct Matches {
+        key: Key,
+        chats: std::sync::Arc<Vec<crate::model::ChatId>>,
+        contacts: std::sync::Arc<Vec<String>>,
+    }
+    let id = egui::Id::new("chat-search-matches");
+    let fingerprint = app.chats.iter().fold(0u64, |acc, chat| {
+        let item = (chat.last_activity as u64)
+            ^ (u64::from(chat.unread) << 40)
+            ^ (u64::from(chat.archived) << 61)
+            ^ (u64::from(chat.locked) << 62)
+            ^ ((chat.name.len() as u64) << 48);
+        acc.rotate_left(7) ^ item
+    });
+    let key: Key = (
+        needle.to_owned(),
+        app.locked_folder_open(),
+        app.chats.len(),
+        app.contacts.len(),
+        fingerprint,
+    );
+    if let Some(kept) = ctx.data(|data| data.get_temp::<Matches>(id))
+        && kept.key == key
+    {
+        return ((*kept.chats).clone(), (*kept.contacts).clone());
+    }
+    let chats = visible_ids(app);
+    let contacts: Vec<String> = app
+        .matching_contacts()
+        .into_iter()
+        .map(|contact| contact.id.clone())
+        .collect();
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            id,
+            Matches {
+                key,
+                chats: std::sync::Arc::new(chats.clone()),
+                contacts: std::sync::Arc::new(contacts.clone()),
+            },
+        );
+    });
+    (chats, contacts)
+}
+
+/// The ids of the chats the list shows, in its order.
+fn visible_ids(app: &App) -> Vec<crate::model::ChatId> {
+    app.visible_chats()
+        .into_iter()
+        .map(|chat| chat.id.clone())
+        .collect()
 }
 
 /// Returns the smallest offset that fully reveals a fixed-height row.
@@ -1204,15 +1277,18 @@ fn row_scroll_offset(
 /// Search results grouped into chats, messages, and contacts.
 fn results(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let chats: Vec<Chat> = app.visible_chats().into_iter().cloned().collect();
-    let hits: Vec<Message> = app.search_hits.clone();
-    let contacts: Vec<Contact> = app.matching_contacts().into_iter().cloned().collect();
     let needle = crate::util::search_key(app.search.trim());
+    let (chats, contact_ids) = search_matches(app, ui.ctx(), &needle);
+    let hits: Vec<Message> = app.search_hits.clone();
+    let contacts: Vec<Contact> = contact_ids
+        .iter()
+        .filter_map(|id| app.contacts.get(id).cloned())
+        .collect();
     let offer_self = !needle.is_empty()
         && app.offers_self(&needle)
         && !chats
             .iter()
-            .any(|chat| app.me.as_deref() == Some(chat.id.as_str()));
+            .any(|id| app.me.as_deref() == Some(id.as_str()));
     if chats.is_empty() && hits.is_empty() && contacts.is_empty() && !offer_self {
         widgets::empty_state(
             ui,
@@ -1230,9 +1306,9 @@ fn results(app: &mut App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             if !chats.is_empty() {
                 section(ui, &palette, "Chats");
-                for chat in &chats {
+                for id in &chats {
                     let reveal = ui.is_enabled()
-                        && app.scroll_chat_into_view.as_deref() == Some(chat.id.as_str());
+                        && app.scroll_chat_into_view.as_deref() == Some(id.as_str());
                     // A letter matches most chats. Laying every one of them
                     // out makes the whole window slow while the search is
                     // open, so a row nothing would show keeps its height and
@@ -1242,8 +1318,13 @@ fn results(app: &mut App, ui: &mut egui::Ui) {
                         // Out of the layout, like the virtualized chat list,
                         // but still announced: a screen reader keeps reading
                         // the results as it does everywhere else.
-                        let title = app.chat_title(chat);
-                        ui.push_id(("chat", &chat.id), |ui| {
+                        let Some(announcement) = app
+                            .chat(id)
+                            .map(|chat| unread_announcement(&app.chat_title(chat), chat))
+                        else {
+                            continue;
+                        };
+                        ui.push_id(("chat", id), |ui| {
                             let (_, placed) = ui.allocate_exact_size(
                                 vec2(ui.available_width(), theme::ROW_HEIGHT),
                                 Sense::click(),
@@ -1252,17 +1333,21 @@ fn results(app: &mut App, ui: &mut egui::Ui) {
                                 egui::WidgetInfo::labeled(
                                     egui::WidgetType::SelectableLabel,
                                     ui.is_enabled(),
-                                    unread_announcement(&title, chat),
+                                    announcement.clone(),
                                 )
                             });
                             // A screen reader can activate the node: open the
                             // chat as a click on a drawn row does.
                             if placed.clicked() {
-                                app.actions.push(Action::OpenChat(chat.id.clone()));
+                                app.actions.push(Action::OpenChat(id.clone()));
                             }
                         });
                         continue;
                     }
+                    let Some(chat) = app.chat(id).cloned() else {
+                        continue;
+                    };
+                    let chat = &chat;
                     let response = ui
                         .push_id(("chat", &chat.id), |ui| row(app, ui, chat))
                         .inner;
@@ -1951,7 +2036,7 @@ pub(super) fn compact_list(app: &mut App, ui: &mut egui::Ui) {
         compact_locked_entry(app, ui);
         return;
     }
-    let chats: Vec<Chat> = app.visible_chats().into_iter().cloned().collect();
+    let chats = visible_ids(app);
     // Exactly the height the rail gives it: egui's least scrolled height
     // would reach past the window's bottom in a short one.
     let mut scroll_area = egui::ScrollArea::vertical()
@@ -1973,7 +2058,7 @@ pub(super) fn compact_list(app: &mut App, ui: &mut egui::Ui) {
         .scroll_chat_into_view
         .as_ref()
         .filter(|_| !copy)
-        .and_then(|target| chats.iter().position(|chat| chat.id == *target));
+        .and_then(|target| chats.iter().position(|id| id == target));
     if let Some(target_row) = target_row {
         let id = ui.make_persistent_id(egui::IdSalt::new("chat-rail"));
         let current = egui::scroll_area::State::load(ui.ctx(), id)
@@ -2005,7 +2090,11 @@ pub(super) fn compact_list(app: &mut App, ui: &mut egui::Ui) {
                 egui::style::ScrollAnimation::none(),
             );
         }
-        for chat in &chats[range] {
+        for id in &chats[range] {
+            let Some(chat) = app.chat(id).cloned() else {
+                continue;
+            };
+            let chat = &chat;
             let response = ui
                 .push_id(("chat", &chat.id), |ui| compact_row(app, ui, chat))
                 .inner;

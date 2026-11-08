@@ -18,7 +18,9 @@ use std::time::Duration;
 pub const STEP: Duration = Duration::from_millis(100);
 
 /// Leave an idle text cursor visible instead of repainting it indefinitely.
-const CURSOR_BLINK_IDLE: f64 = 5.0;
+/// Short: every blink redraws the whole window, which with a chat open is a
+/// layout of its messages.
+const CURSOR_BLINK_IDLE: f64 = 2.0;
 
 #[derive(Clone, Default)]
 struct CursorActivity {
@@ -159,8 +161,8 @@ pub(crate) mod tests {
         let mut activity = CursorActivity::default();
         assert!(!activity.blinking(0.0, None, false));
         assert!(activity.blinking(1.0, Some(first), false));
-        assert!(activity.blinking(5.9, Some(first), false));
-        assert!(!activity.blinking(6.0, Some(first), false));
+        assert!(activity.blinking(2.9, Some(first), false));
+        assert!(!activity.blinking(3.0, Some(first), false));
         assert!(activity.blinking(7.0, Some(first), true));
         assert!(!activity.blinking(12.0, Some(first), false));
         assert!(activity.blinking(12.0, Some(second), false));

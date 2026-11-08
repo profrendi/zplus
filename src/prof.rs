@@ -34,6 +34,8 @@ mod off {
     #[inline(always)]
     pub fn event(_event: &dyn std::fmt::Debug) {}
     #[inline(always)]
+    pub fn count(_name: &'static str, _n: u64) {}
+    #[inline(always)]
     pub fn overlay(_ctx: &egui::Context) {}
 }
 
@@ -70,6 +72,7 @@ mod imp {
         input_events: u32,
         pointer_moves: u32,
         backend: HashMap<String, u32>,
+        counters: HashMap<&'static str, u64>,
     }
 
     /// Totals for one window state across the whole run.
@@ -87,6 +90,7 @@ mod imp {
         backend: HashMap<String, u64>,
         input_events: u64,
         busiest: Vec<(f64, String)>,
+        counters: HashMap<&'static str, u64>,
     }
 
     struct State {
@@ -222,6 +226,11 @@ mod imp {
         });
     }
 
+    /// Adds to a named count, such as the message rows laid out.
+    pub fn count(name: &'static str, n: u64) {
+        with(|state| *state.second.counters.entry(name).or_default() += n);
+    }
+
     /// Counts a backend event by its kind, the variant's name only.
     pub fn event(event: &dyn std::fmt::Debug) {
         let kind = kind_of(event);
@@ -343,11 +352,14 @@ mod imp {
                     .map(|(name, seconds)| (*name, *seconds))
                     .collect();
                 sections.sort_by(|a, b| b.1.total_cmp(&a.1));
-                let sections = sections
+                let mut sections = sections
                     .iter()
                     .map(|(name, seconds)| format!("{name}={:.1}", seconds * 1000.0))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                    .collect::<Vec<_>>();
+                let mut counters: Vec<_> = second.counters.iter().collect();
+                counters.sort();
+                sections.extend(counters.iter().map(|(name, n)| format!("#{name}={n}")));
+                let sections = sections.join(" ");
                 let causes = top(&second.causes, 4);
                 let backend = top(&second.backend, 4);
                 let row = format!(
@@ -401,6 +413,9 @@ mod imp {
                     *totals.backend.entry(kind.clone()).or_default() += u64::from(*count);
                 }
                 totals.input_events += u64::from(second.input_events);
+                for (name, n) in &second.counters {
+                    *totals.counters.entry(*name).or_default() += n;
+                }
                 totals.busiest.push((process_machine, format!("{} {view}", jiff::Zoned::now().strftime("%H:%M:%S"))));
                 totals.busiest.sort_by(|a, b| b.0.total_cmp(&a.0));
                 totals.busiest.truncate(5);
@@ -491,6 +506,18 @@ mod imp {
             let _ = writeln!(out, "Sections (ms per second):");
             for (name, seconds) in sections.iter().take(12) {
                 let _ = writeln!(out, "  {name:<24} {:.2}", **seconds / secs * 1000.0);
+            }
+            if !totals.counters.is_empty() {
+                let _ = writeln!(out, "Counts (per frame):");
+                let mut counters: Vec<_> = totals.counters.iter().collect();
+                counters.sort();
+                for (name, n) in counters {
+                    let _ = writeln!(
+                        out,
+                        "  {name:<24} {:.1}",
+                        *n as f64 / (totals.frames.max(1)) as f64
+                    );
+                }
             }
             let mut causes: Vec<_> = totals.causes.iter().collect();
             causes.sort_by(|a, b| b.1.cmp(a.1));

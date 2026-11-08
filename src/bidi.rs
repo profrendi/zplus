@@ -22,7 +22,11 @@ use unicode_bidi::BidiInfo;
 /// Lays out `job` and reorders each line with the Unicode bidi algorithm.
 pub fn layout_job(ui: &egui::Ui, job: egui::text::LayoutJob) -> Arc<Galley> {
     let mut galley = ui.painter().layout_job(job);
-    reorder_rtl_runs(Arc::make_mut(&mut galley));
+    // egui's cache holds this galley too, so making it mutable copies it.
+    // Most text has nothing to reorder: hand back the cached one as it is.
+    if galley.text().chars().any(is_strong_rtl) {
+        reorder_rtl_runs(Arc::make_mut(&mut galley));
+    }
     galley
 }
 
@@ -48,7 +52,9 @@ pub fn layout_editor(
         }
     }
     let mut galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-    reorder_rtl_runs(Arc::make_mut(&mut galley));
+    if galley.text().chars().any(is_strong_rtl) {
+        reorder_rtl_runs(Arc::make_mut(&mut galley));
+    }
     (galley, clusters)
 }
 
@@ -62,7 +68,9 @@ pub fn layout_field(ui: &egui::Ui, text: &str, format: &TextFormat, wrap: f32) -
     job.break_on_newline = false;
     job.keep_trailing_whitespace = true;
     let mut galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-    reorder_rtl_runs(Arc::make_mut(&mut galley));
+    if galley.text().chars().any(is_strong_rtl) {
+        reorder_rtl_runs(Arc::make_mut(&mut galley));
+    }
     galley
 }
 

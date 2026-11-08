@@ -49,6 +49,9 @@ jobs:
         id: package
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          # Each measurement build has its own number, so its zip never
+          # replaces an earlier one under the same name.
+          version="$version-$(cat plus/PROF_BUILD)"
           dir="zfplus-prof-$version"
           mkdir -p "dist/$dir"
           cp target/x86_64-pc-windows-gnu/release/zapfast.exe "dist/$dir/zfplus-prof.exe"
