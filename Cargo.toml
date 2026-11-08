@@ -334,6 +334,9 @@ harness = false
 [features]
 # Sample data, layout tests, and screenshots. Not used in release builds.
 demo = []
+# ZFPlus Prof: records where the CPU goes, in prof.csv and prof-summary.txt
+# beside its own data folder. Measurement builds only.
+prof = []
 
 [profile.release]
 lto = "thin"

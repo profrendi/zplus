@@ -44,6 +44,7 @@ pub mod opener;
 pub mod paths;
 pub mod plus;
 pub mod privacy;
+pub mod prof;
 pub mod proxy;
 pub mod qr;
 pub mod safety;

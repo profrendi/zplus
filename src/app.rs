@@ -3715,6 +3715,7 @@ impl App {
             let pending_before = self.actions.len();
             self.active = index;
             for event in events {
+                crate::prof::event(&event);
                 if matches!(event, Event::AccountRemoved) {
                     removed.push(index);
                     continue;
@@ -10553,14 +10554,26 @@ impl App {
         self.handle_notification_opens();
         // Before this frame's pages: a reader who moved on ends the wait.
         self.end_pending_follow(ctx);
-        self.handle_events();
+        {
+            let _scope = crate::prof::scope("backend events");
+            self.handle_events();
+        }
         for uri in std::mem::take(&mut self.stale_images) {
             crate::image_cache::forget(ctx, &uri);
         }
-        self.tick(ctx);
-        self.tick_audio(ctx);
-        self.tick_video(ctx);
-        self.apply_actions(ctx);
+        {
+            let _scope = crate::prof::scope("tick");
+            self.tick(ctx);
+        }
+        {
+            let _scope = crate::prof::scope("audio and video");
+            self.tick_audio(ctx);
+            self.tick_video(ctx);
+        }
+        {
+            let _scope = crate::prof::scope("actions");
+            self.apply_actions(ctx);
+        }
         self.sync_chat_export_permission();
         self.sync_prefetch();
         self.hold_media();
@@ -11576,8 +11589,14 @@ impl App {
             Self::paste_shift_insert(ctx);
             self.take_drops_and_pastes(ctx);
         }
-        crate::ui::show(self, ui);
-        self.apply_actions(ctx);
+        {
+            let _scope = crate::prof::scope("view");
+            crate::ui::show(self, ui);
+        }
+        {
+            let _scope = crate::prof::scope("actions");
+            self.apply_actions(ctx);
+        }
         // After the view and its actions, so a change this frame starts the
         // pause from now. Nobody types behind the lock screen.
         if !locked && let Some(wait) = self.watch_link_preview(ctx.input(|input| input.time)) {
@@ -11587,7 +11606,10 @@ impl App {
         // The old colours, if a change is being revealed, go over everything.
         self.theme_transition.paint(ctx);
         // Release the image caches of everything that scrolled away.
-        crate::image_cache::sweep(ctx);
+        {
+            let _scope = crate::prof::scope("image cache sweep");
+            crate::image_cache::sweep(ctx);
+        }
         // Only fading info toasts animate. Errors wait for the reader.
         if self
             .toasts

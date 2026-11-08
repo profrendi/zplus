@@ -20,6 +20,11 @@ pub struct AppDirs {
 
 impl AppDirs {
     pub fn discover() -> Self {
+        // ZFPlus Prof keeps everything in its own folder beside the program.
+        #[cfg(feature = "prof")]
+        if crate::prof::ENABLED {
+            return Self::under(&crate::prof::data_dir());
+        }
         match Self::of("zapfast") {
             Some(dirs) => dirs,
             None => {

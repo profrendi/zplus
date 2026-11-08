@@ -117,6 +117,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     slide_shield(ctx, narrow, slide.is_some());
     focus::finish(ctx, main_navigation);
+    let _scope = crate::prof::scope("view: dialogs and overlays");
     update::show(app, ctx);
     picker::show(app, ctx);
     dialogs::show(app, ctx);
@@ -171,16 +172,32 @@ fn main_view(app: &mut App, ui: &mut egui::Ui, list_only: bool) {
     let crowded = app.info_visible()
         && ui.available_width() - list_width < pane::INFO_MIN + pane::INFO_CONVERSATION_MIN;
     if !narrow(ui.ctx()) && !crowded {
-        rail::show(app, ui, !full_list);
+        {
+            let _scope = crate::prof::scope("view: rail");
+            rail::show(app, ui, !full_list);
+        }
         if full_list {
+            let _scope = crate::prof::scope("view: chat list");
             chats::show(app, ui);
         }
     }
-    let search_overlay = pane::show(app, ui);
-    let info_overlay = info::show(app, ui);
+    let search_overlay = {
+        let _scope = crate::prof::scope("view: search pane");
+        pane::show(app, ui)
+    };
+    let info_overlay = {
+        let _scope = crate::prof::scope("view: info panel");
+        info::show(app, ui)
+    };
     egui::CentralPanel::default()
         .frame(central_frame(app))
         .show(ui, |ui| {
+            let _scope = crate::prof::scope(match app.page {
+                Page::Settings => "view: settings",
+                Page::Chats => "view: conversation",
+                Page::Calls => "view: calls",
+                Page::Wallpaper => "view: wallpaper",
+            });
             // The top of every page drags the window, beneath its own
             // widgets: the empty pane, Settings, and the Calls tab's start.
             let top = ui.max_rect();
