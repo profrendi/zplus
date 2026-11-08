@@ -24,6 +24,7 @@ pub mod message_info;
 pub mod new_group;
 pub(crate) mod overlay;
 pub mod pane;
+pub mod plus_about;
 pub mod plus_new_chat;
 pub mod picker;
 pub mod polls;

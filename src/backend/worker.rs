@@ -8514,8 +8514,16 @@ impl Worker {
                             });
                             waker.wake();
                         }
-                        Ok(None) => log::debug!("this is the newest release"),
+                        Ok(None) => {
+                            crate::plus::set_update_check(crate::plus::UpdateCheck::UpToDate);
+                            waker.wake();
+                            log::debug!("this is the newest release")
+                        }
                         Err(error) => {
+                            crate::plus::set_update_check(crate::plus::UpdateCheck::Failed(
+                                format!("{error:#}"),
+                            ));
+                            waker.wake();
                             log::debug!("could not check for a newer release: {error:#}")
                         }
                     }

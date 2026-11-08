@@ -177,19 +177,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
         } else {
             ui.add_space(GAP);
         }
-        let bottom: Vec<Destination> = [
-            Destination::Starred,
+        // ZFPlus: Chats with Archived under it, Calls with Starred under
+        // it; at the foot Locked, then the eye, About and Lock above Settings.
+        let top: Vec<Destination> = [
+            Destination::Chats,
             Destination::Archived,
-            Destination::Locked,
-            Destination::Settings,
+            Destination::Calls,
+            Destination::Starred,
         ]
         .into_iter()
         .filter(|destination| destination.offered(app))
         .collect();
-        // ZFPlus: the Private Mode eye sits above the star.
+        let bottom: Vec<Destination> = [Destination::Locked, Destination::Settings]
+            .into_iter()
+            .filter(|destination| destination.offered(app))
+            .collect();
         let eye = app.settings.plus.show_eye_button && app.settings.plus.private_mode;
-        let foot = (bottom.len() + usize::from(eye)) as f32 * (PLATE + GAP) + GAP + AVATAR + GAP;
-        let minimum = 2.0 * CELL
+        let lock = app.settings.app_lock_hash.is_some();
+        let extras = usize::from(eye) + 1 + usize::from(lock);
+        let foot = (bottom.len() + extras) as f32 * (PLATE + GAP) + GAP + AVATAR + GAP;
+        let minimum = top.len() as f32 * CELL
             + foot
             + if hidden {
                 CELL + GAP + MIN_AVATARS
@@ -206,7 +213,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                 // the content keeps its minimum height and scrolls instead
                 // of leaving the bottom buttons beyond the window.
                 ui.set_height(height);
-                for destination in [Destination::Chats, Destination::Calls] {
+                for destination in top {
                     destination_button(app, ui, &palette, destination, CELL);
                 }
                 if hidden {
@@ -232,11 +239,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                 }
                 let rest = (ui.available_height() - foot).max(0.0);
                 ui.add_space(rest);
-                if eye {
-                    ui.add_space(GAP);
-                    private_mode_button(app, ui, &palette, PLATE);
-                }
                 for destination in bottom {
+                    if destination == Destination::Settings {
+                        if eye {
+                            ui.add_space(GAP);
+                            private_mode_button(app, ui, &palette, PLATE);
+                        }
+                        ui.add_space(GAP);
+                        plus_plate(app, ui, &palette, Icon::Info, "About ZFPlus and updates", false, "plus-about", |app| {
+                            app.actions.push(Action::ShowDialog(crate::model::Dialog::About));
+                        });
+                        if lock {
+                            ui.add_space(GAP);
+                            plus_plate(app, ui, &palette, Icon::Lock, "Lock ZFPlus now (Ctrl+Shift+L)", false, "plus-lock", |app| {
+                                app.actions.push(Action::LockApp);
+                            });
+                        }
+                    }
                     ui.add_space(GAP);
                     destination_button(app, ui, &palette, destination, PLATE);
                 }
@@ -293,6 +312,42 @@ fn private_mode_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette, heig
     }
 }
 
+/// ZFPlus: a plain button on a plate, as the destinations draw theirs.
+#[allow(clippy::too_many_arguments)]
+fn plus_plate(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    icon: Icon,
+    label: &str,
+    lit: bool,
+    salt: &str,
+    clicked: impl FnOnce(&mut App),
+) {
+    let (cell, _) = ui.allocate_exact_size(vec2(ui.available_width(), PLATE), Sense::hover());
+    let plate = Rect::from_center_size(cell.center(), Vec2::splat(PLATE));
+    let response = ui
+        .interact(plate, egui::Id::new(salt), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if ui.is_rect_visible(plate) {
+        let hovered = response.hovered();
+        if lit {
+            widgets::highlight_card(ui, palette, plate, palette.surface_active);
+        } else if hovered {
+            widgets::highlight_card(ui, palette, plate, palette.surface_hover);
+        }
+        let tint = if lit || hovered {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        theme::paint_icon(ui, icon, plate, ICON, tint);
+    }
+    if response.on_hover_text(label).clicked() {
+        clicked(app);
+    }
+}
+
 /// The button that brings the hidden chat list back.
 fn show_list_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     ui.allocate_ui_with_layout(
@@ -330,7 +385,11 @@ fn destination_button(
     let mut badge = 0;
     let (icon, stop, label) = match destination {
         Destination::Chats => (
-            Icon::MessageCircle,
+            {
+                // ZFPlus: the unread chats, as the taskbar counts them.
+                badge = app.unread_chat_count();
+                Icon::MessageCircle
+            },
             Stop::Chats,
             format!(
                 "{} ({})",

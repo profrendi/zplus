@@ -4927,6 +4927,7 @@ impl App {
                 }
             }
             Event::UpdateAvailable { version, url } => {
+                crate::plus::set_update_check(crate::plus::UpdateCheck::Available(version.clone()));
                 let notice = crate::updates::Release { version, url };
                 if self.update.as_ref() != Some(&notice) {
                     self.toast(format!("ZFPlus {} is available", notice.version));
@@ -7032,6 +7033,12 @@ impl App {
             self.last_update_check = Some(now);
             self.backend.send(Command::CheckForUpdates);
         }
+        // ZFPlus: a check asked for from About or Settings.
+        if crate::plus::take_check_request() {
+            self.last_update_check = Some(now);
+            self.update_support = None;
+            self.backend.send(Command::CheckForUpdates);
+        }
         self.maybe_download_update();
         if self.settings_dirty && self.last_settings_save.elapsed() > Duration::from_secs(2) {
             self.save_settings();
@@ -7081,9 +7088,10 @@ impl App {
 
     fn maybe_download_update(&mut self) {
         self.plus_auto_install();
-        if !self.settings.check_for_updates
+        if !(self.settings.check_for_updates || crate::plus::install_wanted())
             || !(self.settings.download_updates_automatically
-                || self.settings.plus.auto_install_updates)
+                || self.settings.plus.auto_install_updates
+                || crate::plus::install_wanted())
             || self.update.is_none()
             || !matches!(self.update_download, crate::updates::DownloadState::Idle)
         {
@@ -7099,7 +7107,7 @@ impl App {
     /// something would be lost: a call, a recording, or a message being
     /// typed in the open window. Then it waits for that to end.
     fn plus_auto_install(&mut self) {
-        if !self.settings.plus.auto_install_updates
+        if !(self.settings.plus.auto_install_updates || crate::plus::install_wanted())
             || !matches!(self.update_download, crate::updates::DownloadState::Ready(_))
             || self.call.is_some()
             || self.recording.is_some()
@@ -10037,6 +10045,11 @@ impl App {
                     );
                 } else {
                     self.backend.send(Command::PairWithPhone(digits));
+                    // ZFPlus: the code shows on the sign-in screen behind
+                    // this dialog; asking again while it is valid fails.
+                    if self.dialog == Some(Dialog::PairWithPhone) {
+                        self.dialog = None;
+                    }
                 }
             }
             Action::Unlink => {
@@ -10668,20 +10681,25 @@ impl App {
     /// ZFPlus: locks the app when its window is minimized, hidden to the
     /// tray, or left for another window, when the reader asked for it.
     fn plus_lock_when_away(&mut self, ctx: &egui::Context) {
-        if !self.settings.plus.lock_when_away
+        let plus = self.settings.plus;
+        if (!plus.lock_on_minimize && plus.lock_inactive_minutes == 0)
             || self.settings.app_lock_hash.is_none()
             || self.app_lock.is_locked()
         {
             return;
         }
-        let viewport = ctx.input(|input| {
+        let (minimized, focused) = ctx.input(|input| {
             (
                 input.viewport().minimized == Some(true),
                 input.viewport().focused != Some(false),
             )
         });
-        let (minimized, focused) = viewport;
-        match crate::plus::away_lock_due(minimized || self.window_hidden, focused) {
+        match crate::plus::away_lock_due(
+            minimized || self.window_hidden,
+            focused && !self.window_hidden,
+            plus.lock_on_minimize,
+            plus.lock_inactive_minutes,
+        ) {
             Ok(true) => self.lock_app(),
             Ok(false) => {}
             Err(wait) => ctx.request_repaint_after(wait),

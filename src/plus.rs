@@ -32,9 +32,13 @@ pub struct PlusSettings {
     pub disable_read_receipts: bool,
     pub hide_online: bool,
     pub restore_deleted: bool,
-    /// Lock the app (with an app lock password set) when its window is
-    /// minimized, hidden to the tray, or left for another window.
-    pub lock_when_away: bool,
+    /// Lock the app (with an app lock password set) as soon as its window
+    /// is minimized or closed to the tray.
+    #[serde(alias = "lock_when_away")]
+    pub lock_on_minimize: bool,
+    /// Lock it once another window has been in front this many minutes
+    /// (1 to 10); 0 leaves this off.
+    pub lock_inactive_minutes: u8,
     /// Download a new ZFPlus release by itself, install it and restart
     /// once nothing is in progress.
     pub auto_install_updates: bool,
@@ -68,7 +72,8 @@ impl Default for PlusSettings {
             disable_read_receipts: false,
             hide_online: false,
             restore_deleted: false,
-            lock_when_away: false,
+            lock_on_minimize: false,
+            lock_inactive_minutes: 0,
             auto_install_updates: true,
             customizations: true,
             notify_online: false,
@@ -735,31 +740,95 @@ pub fn blur_bubble(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, o
 // ---------------------------------------------------------------------------
 // Lock when away.
 
-/// How long another window may be in front before the app locks: long
-/// enough to survive a quick glance or a notification taking focus.
-pub const AWAY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-
 static AWAY_SINCE: LazyLock<Mutex<Option<std::time::Instant>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Whether the app should lock now: minimized or hidden at once, inactive
-/// after [`AWAY_GRACE`]. `None` asks to be called again after that long.
-pub fn away_lock_due(minimized_or_hidden: bool, focused: bool) -> Result<bool, std::time::Duration> {
+/// Whether the app should lock now: at once when minimized or hidden (with
+/// `on_minimize`), or once another window has been in front for
+/// `inactive_minutes` (0 = never). `Err` asks to be called again after that
+/// long.
+pub fn away_lock_due(
+    minimized_or_hidden: bool,
+    focused: bool,
+    on_minimize: bool,
+    inactive_minutes: u8,
+) -> Result<bool, std::time::Duration> {
     let mut since = AWAY_SINCE.lock().unwrap_or_else(|p| p.into_inner());
-    if minimized_or_hidden {
+    if minimized_or_hidden && on_minimize {
         *since = None;
         return Ok(true);
     }
-    if focused {
+    if focused || inactive_minutes == 0 {
         *since = None;
         return Ok(false);
     }
+    let limit = std::time::Duration::from_secs(u64::from(inactive_minutes.min(10)) * 60);
     let started = *since.get_or_insert_with(std::time::Instant::now);
     let elapsed = started.elapsed();
-    if elapsed >= AWAY_GRACE {
+    if elapsed >= limit {
         *since = None;
         Ok(true)
     } else {
-        Err(AWAY_GRACE - elapsed)
+        Err(limit - elapsed)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Checking for updates by hand.
+
+/// What the last update check found, for the About window and Settings.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateCheck {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(String),
+    Failed(String),
+}
+
+static UPDATE_CHECK: LazyLock<Mutex<UpdateCheck>> = LazyLock::new(|| Mutex::new(UpdateCheck::Idle));
+static CHECK_REQUESTED: AtomicBool = AtomicBool::new(false);
+static INSTALL_WANTED: AtomicBool = AtomicBool::new(false);
+
+pub fn update_check() -> UpdateCheck {
+    UPDATE_CHECK.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+pub fn set_update_check(state: UpdateCheck) {
+    *UPDATE_CHECK.lock().unwrap_or_else(|p| p.into_inner()) = state;
+}
+
+/// Asks the app to check for an update now.
+pub fn request_check() {
+    set_update_check(UpdateCheck::Checking);
+    CHECK_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+pub fn take_check_request() -> bool {
+    CHECK_REQUESTED.swap(false, Ordering::Relaxed)
+}
+
+/// The reader asked to download, install and restart now.
+pub fn want_install() {
+    INSTALL_WANTED.store(true, Ordering::Relaxed);
+}
+
+pub fn install_wanted() -> bool {
+    INSTALL_WANTED.load(Ordering::Relaxed)
+}
+
+/// The official ZapFast version this build is on: the patch number without
+/// the ZFPlus revision (0.21.103 is ZapFast 0.21.1).
+pub fn upstream_version() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut parts = version.split('.');
+    match (parts.next(), parts.next(), parts.next().and_then(|p| p.parse::<u32>().ok())) {
+        (Some(major), Some(minor), Some(patch)) => format!("{major}.{minor}.{}", patch / 100),
+        _ => version.to_owned(),
+    }
+}
+
+/// The ZFPlus repository and the original ZapFast, for links.
+pub const ZFPLUS_URL: &str = "https://github.com/profrendi/zplus";
+pub const ZAPFAST_URL: &str = "https://github.com/crmne/zapfast";
+pub const WAWPLUS_URL: &str = "https://www.wawplus.com";

@@ -697,20 +697,22 @@ fn sections(app: &App) -> Vec<Section> {
         );
     }
     system.toggle(
-        translated(locale, "Check for updates"),
-        translated(
-            locale,
-            "Asks GitHub once a day, sending only the ZapFast version.",
-        ),
+        "Check for updates",
+        "Asks the ZFPlus repository on GitHub every 2 hours, sending only the ZFPlus version.",
         |settings| &mut settings.check_for_updates,
     );
     system.toggle(
-        translated(locale, "Download updates automatically"),
-        translated(
-            locale,
-            "You still choose when to restart. Package managers and Flatpak update ZapFast themselves.",
-        ),
-        |settings| &mut settings.download_updates_automatically,
+        "Install updates automatically",
+        "Downloads a new ZFPlus, installs it and restarts by itself, waiting while you are in a call, recording or typing.",
+        |settings| &mut settings.plus.auto_install_updates,
+    );
+    // ZFPlus: check now, then download, install and restart from here.
+    system.block(
+        vec!["Check for updates now".into(), "Update".into()],
+        |ui, app| {
+            super::plus_about::updates(app, ui);
+            ui.add_space(10.0);
+        },
     );
     let environment = app
         .settings
@@ -1094,9 +1096,48 @@ fn app_lock_rows(app: &App, privacy: &mut Section) {
     if enabled {
         // ZFPlus: lock as soon as the window is left.
         privacy.toggle(
-            "Lock when minimized or inactive",
-            "Locks ZFPlus as soon as its window is minimized or closed to the tray, or 5 seconds after another window comes in front.",
-            |settings| &mut settings.plus.lock_when_away,
+            "Lock when minimized or closed to the tray",
+            "Locks ZFPlus at once when its window is minimized or closed to the tray.",
+            |settings| &mut settings.plus.lock_on_minimize,
+        );
+        privacy.row(
+            "Lock when inactive",
+            "Locks ZFPlus when another window has been in front this long. Use − and + to pick 1 to 10 minutes; below 1 turns it off.",
+            move |ui, app| {
+                let minutes = app.settings.plus.lock_inactive_minutes.min(10);
+                let mut changed = None;
+                if theme::soft_button(ui, &palette, None, "+", false)
+                    .on_hover_text("Longer")
+                    .clicked()
+                {
+                    changed = Some((minutes + 1).min(10));
+                }
+                let label = if minutes == 0 {
+                    "Off".to_owned()
+                } else if minutes == 1 {
+                    "1 minute".to_owned()
+                } else {
+                    format!("{minutes} minutes")
+                };
+                ui.add_sized(
+                    [84.0, 24.0],
+                    egui::Label::new(
+                        egui::RichText::new(label)
+                            .font(theme::medium(13.5))
+                            .color(if minutes == 0 { palette.secondary } else { palette.text }),
+                    ),
+                );
+                if theme::soft_button(ui, &palette, None, "−", false)
+                    .on_hover_text("Shorter")
+                    .clicked()
+                {
+                    changed = Some(minutes.saturating_sub(1));
+                }
+                if let Some(minutes) = changed {
+                    app.settings.plus.lock_inactive_minutes = minutes;
+                    app.actions.push(Action::SettingsChanged);
+                }
+            },
         );
         privacy.row(
             translated(locale, "Lock after"),
@@ -1950,82 +1991,22 @@ fn profile_field(
 /// The version, links to more about ZapFast, and who made it.
 fn about(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 14.0;
-        let (logo, _) = ui.allocate_exact_size(Vec2::splat(44.0), egui::Sense::hover());
-        theme::mark(ui, logo.center(), 44.0);
-        ui.vertical(|ui| {
-            theme::text(
-                ui,
-                format!("ZapFast {}", env!("CARGO_PKG_VERSION")),
-                theme::semibold(16.0),
-                palette.text,
-            );
-            theme::paragraph(
-                ui,
-                crate::i18n::gettext(
-                    app.locale,
-                    "A native WhatsApp client built with Rust, egui, and whatsapp-rust.",
-                ),
-                theme::regular(13.0),
-                palette.secondary,
-            );
-        });
-    });
-    ui.add_space(12.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-        if let Some(update) = &app.update {
-            let label = crate::i18n::gettext(app.locale, "Update to {version}")
-                .replace("{version}", &update.version);
-            if theme::soft_button(ui, &palette, Some(Icon::Download), &label, false).clicked() {
-                app.actions.push(Action::ShowUpdate);
-            }
-        }
-        if theme::soft_button(
-            ui,
-            &palette,
-            Some(Icon::Keyboard),
-            &crate::i18n::gettext(app.locale, "Keyboard shortcuts"),
-            false,
-        )
-        .clicked()
-        {
-            app.actions.push(Action::ShowDialog(Dialog::Shortcuts));
-        }
-        if theme::soft_button(
-            ui,
-            &palette,
-            Some(Icon::Info),
-            &crate::i18n::gettext(app.locale, "About"),
-            false,
-        )
-        .clicked()
-        {
-            app.actions.push(Action::ShowDialog(Dialog::About));
-        }
-        if theme::soft_button(
-            ui,
-            &palette,
-            Some(Icon::ExternalLink),
-            &crate::i18n::gettext(app.locale, "Source code"),
-            false,
-        )
-        .clicked()
-        {
-            app.actions
-                .push(Action::OpenUrl(env!("CARGO_PKG_REPOSITORY").to_owned()));
-        }
-    });
-    ui.add_space(14.0);
-    if widgets::credit(ui, &palette, app.locale) {
-        app.actions
-            .push(Action::OpenUrl(widgets::AUTHOR_URL.to_owned()));
+    super::plus_about::about(app, ui);
+    ui.add_space(8.0);
+    if theme::soft_button(
+        ui,
+        &palette,
+        Some(Icon::Keyboard),
+        &crate::i18n::gettext(app.locale, "Keyboard shortcuts"),
+        false,
+    )
+    .clicked()
+    {
+        app.actions.push(Action::ShowDialog(Dialog::Shortcuts));
     }
+    ui.add_space(10.0);
 }
 
-/// The Custom title bar switch. Turning it over replaces the window, so it
-/// goes through its action rather than straight into the settings.
 fn custom_titlebar_switch(ui: &mut egui::Ui, app: &mut App) {
     let palette = app.palette;
     let label = crate::i18n::gettext(app.locale, "Custom title bar");

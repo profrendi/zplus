@@ -56,7 +56,9 @@ like WA Web Plus. Each group has a main switch and a list of checkboxes.
 | Invisible Mode | You never show as "online". |
 | Restore deleted messages | Messages deleted for everyone stay visible, marked with 🚫. |
 | Eye button 👁 in the left rail | Turns Private Mode on and off in one click; can be hidden. |
-| Lock when minimized or inactive | With an app lock password set, ZFPlus locks as soon as it's minimized, closed to the tray, or left for another window. |
+| Lock when minimized | With an app lock password set, ZFPlus locks as soon as it's minimized or closed to the tray. |
+| Lock when inactive | Locks after another window has been in front for 1–10 minutes (pick with − and +). |
+| Lock button | A lock button above Settings in the left rail locks ZFPlus at once. |
 
 The blur is a real GPU blur (an OpenGL shader), like `filter: blur()` in
 WA Web Plus — not just a grey box on top.
@@ -68,6 +70,8 @@ WA Web Plus — not just a grey box on top.
 | Notify about typing and recording | A notification when someone starts typing or recording in a chat you don't have open. |
 | Chat list doesn't jump | A chat you just sent to keeps its place until someone replies. |
 | Install updates automatically | Downloads a new release, installs it and restarts by itself (it waits while you're in a call, recording or typing). |
+| About and updates | The ⓘ button above Settings shows what ZFPlus is, links to this repository and the original, and checks, downloads and installs updates on the spot. Settings → System has the same "Check for updates now". |
+| Tidier left rail | Archived sits under Chats, Starred under Calls, and Chats shows how many chats are unread, the same number as the taskbar. |
 
 #### Extra buttons
 | Feature | What it does |
@@ -194,7 +198,9 @@ daftar pilihan yang bisa dicentang.
 | Invisible Mode | Kamu tidak pernah terlihat "online". |
 | Pulihkan pesan yang dihapus | Pesan yang dihapus untuk semua orang tetap bisa dibaca, dengan tanda 🚫. |
 | Tombol mata 👁 di sisi kiri | Menyalakan atau mematikan Private Mode dengan sekali klik; tombolnya juga bisa disembunyikan. |
-| Kunci saat diminimize atau tidak aktif | Kalau password app lock sudah dipasang, ZFPlus langsung terkunci saat diminimize, ditutup ke tray, atau ditinggal ke jendela lain. |
+| Kunci saat diminimize | Kalau password app lock sudah dipasang, ZFPlus langsung terkunci saat diminimize atau ditutup ke tray. |
+| Kunci saat tidak aktif | Terkunci setelah jendela lain ada di depan selama 1–10 menit (atur dengan tombol − dan +). |
+| Tombol kunci | Tombol gembok di atas Settings di sisi kiri langsung mengunci ZFPlus. |
 
 Efek blur-nya benar-benar mengaburkan tampilan lewat GPU (shader OpenGL),
 sama seperti `filter: blur()` di WA Web Plus, bukan sekadar ditutup kotak abu-abu.
@@ -206,6 +212,8 @@ sama seperti `filter: blur()` di WA Web Plus, bukan sekadar ditutup kotak abu-ab
 | Notifikasi mengetik/merekam | Muncul notifikasi saat seseorang mulai mengetik atau merekam di chat yang tidak sedang kamu buka. |
 | Daftar chat tidak melompat | Chat yang baru kamu kirimi pesan tetap di posisinya sampai ada balasan. |
 | Install update otomatis | Rilis baru diunduh, dipasang, lalu aplikasinya restart sendiri (menunggu dulu kalau kamu sedang telepon, merekam, atau mengetik). |
+| About dan update | Tombol ⓘ di atas Settings menampilkan keterangan ZFPlus, link ke repo ini dan repo aslinya, serta bisa cek, unduh, dan pasang update saat itu juga. Settings → System juga punya "Check for updates now". |
+| Sisi kiri lebih rapi | Archived ada di bawah Chats, Starred di bawah Calls, dan Chats menampilkan jumlah chat belum dibaca, sama dengan angka di taskbar. |
 
 #### Extra buttons
 | Fitur | Fungsinya |
