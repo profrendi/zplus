@@ -13,12 +13,14 @@ stem="zapfast-v$version-$target"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$out" "$work/$stem" "$work/msi"
+# Absolute, since the archive is made from inside the work folder.
+out=$(cd "$out" && pwd)
 
 # Portable archive.
 cp "$exe" "$work/$stem/zapfast.exe"
 cp "$root/packaging/zapfast-portable.txt" "$work/$stem/zapfast-portable.txt"
 cp "$here/README-ZapFast-Plus.txt" "$root/LICENSE" "$work/$stem/"
-(cd "$work" && rm -f "$out/$stem.zip" && zip -qr9 "$(realpath "$out")/$stem.zip" "$stem")
+(cd "$work" && rm -f "$out/$stem.zip" && zip -qr9 "$out/$stem.zip" "$stem")
 
 # Installer.
 cp "$exe" "$work/msi/zapfast.exe"
