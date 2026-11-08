@@ -1,4 +1,4 @@
-//! ZapFast Plus: Start new chat. Message any phone number without saving it
+//! ZFPlus: Start new chat. Message any phone number without saving it
 //! as a contact, as WA Web Plus's button does: pick the country code, type
 //! the number, and the chat opens once WhatsApp confirms the number.
 
@@ -9,7 +9,7 @@ use crate::model::Action;
 use crate::theme;
 
 /// Countries offered first in the code picker: (flag, name, dialling code).
-const COUNTRIES: &[(&str, &str, &str)] = &[
+pub(crate) const COUNTRIES: &[(&str, &str, &str)] = &[
     ("🇮🇩", "Indonesia", "62"),
     ("🇲🇾", "Malaysia", "60"),
     ("🇸🇬", "Singapore", "65"),
@@ -82,7 +82,7 @@ pub fn open(ctx: &egui::Context) {
 }
 
 /// The country our own number belongs to, as the default code.
-fn default_country(app: &App) -> usize {
+pub(crate) fn default_country(app: &App) -> usize {
     let me = app
         .me
         .as_deref()
@@ -98,7 +98,7 @@ fn default_country(app: &App) -> usize {
 
 /// The full international number: the code and the number, without a
 /// leading zero, or the number alone when it was typed with its own `+`.
-fn international(code: &str, number: &str) -> Option<String> {
+pub(crate) fn international(code: &str, number: &str) -> Option<String> {
     let number = number.trim();
     if number.starts_with('+') {
         return crate::util::international_phone(number);
@@ -160,31 +160,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.add_space(4.0);
             let mut submitted = false;
             ui.horizontal(|ui| {
-                let (flag, name, code) = COUNTRIES[country];
-                egui::ComboBox::from_id_salt("plus-new-chat-country")
-                    .selected_text(
-                        egui::RichText::new(format!("{flag} +{code}"))
-                            .font(theme::regular(15.0))
-                            .color(palette.text),
-                    )
-                    .width(110.0)
-                    .height(320.0)
-                    .show_ui(ui, |ui| {
-                        ui.set_min_width(260.0);
-                        for (index, (flag, country_name, code)) in COUNTRIES.iter().enumerate() {
-                            if ui
-                                .selectable_label(
-                                    index == country,
-                                    format!("{flag}  {country_name}  +{code}"),
-                                )
-                                .clicked()
-                            {
-                                state.country = Some(index);
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text(name);
+                if let Some(picked) = country_picker(ui, &palette, "plus-new-chat-country", country) {
+                    state.country = Some(picked);
+                }
                 let field = Frame::new()
                     .fill(palette.surface)
                     .corner_radius(CornerRadius::same(theme::RADIUS))
@@ -274,4 +252,38 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         state = State::default();
     }
     ctx.data_mut(|data| data.insert_temp(state_id(), state));
+}
+
+/// The country code picker: a flag and `+code`, opening the whole list.
+/// Returns the country picked this frame.
+pub(crate) fn country_picker(
+    ui: &mut egui::Ui,
+    palette: &crate::theme::Palette,
+    salt: &str,
+    country: usize,
+) -> Option<usize> {
+    let (flag, name, code) = COUNTRIES[country];
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(
+            egui::RichText::new(format!("{flag} +{code}"))
+                .font(theme::regular(15.0))
+                .color(palette.text),
+        )
+        .width(110.0)
+        .height(320.0)
+        .show_ui(ui, |ui| {
+            ui.set_min_width(260.0);
+            for (index, (flag, country_name, code)) in COUNTRIES.iter().enumerate() {
+                if ui
+                    .selectable_label(index == country, format!("{flag}  {country_name}  +{code}"))
+                    .clicked()
+                {
+                    picked = Some(index);
+                }
+            }
+        })
+        .response
+        .on_hover_text(name);
+    picked
 }

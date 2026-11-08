@@ -1,4 +1,4 @@
-# Builds ZapFast Plus for Windows (installer and portable), signs the
+# Builds ZFPlus for Windows (installer and portable), signs the
 # checksums the updater checks, and publishes a GitHub release. Runs when
 # plus/REVISION or plus/UPSTREAM change on main, by hand, or after the
 # daily sync merged a new ZapFast release.
@@ -17,7 +17,7 @@ concurrency:
 jobs:
   windows:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,6 +55,6 @@ jobs:
             gh release upload "v$version" dist/* --clobber
           else
             gh release create "v$version" dist/* --target main \
-              --title "ZapFast Plus $version" \
-              --notes "ZapFast Plus $version, built on ZapFast $upstream (https://github.com/crmne/zapfast/releases/tag/$upstream) with the Enhancements. Install: zapfast-v$version-x86_64-pc-windows-msvc.msi (no admin rights). Portable: the .zip."
+              --title "ZFPlus $version" \
+              --notes "ZFPlus $version, built on ZapFast $upstream (https://github.com/crmne/zapfast/releases/tag/$upstream) with the Enhancements. Install: zapfast-v$version-x86_64-pc-windows-msvc.msi (no admin rights). Portable: the .zip."
           fi

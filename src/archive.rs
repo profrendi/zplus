@@ -2673,7 +2673,7 @@ impl Archive {
         Ok(changed > 0)
     }
 
-    /// ZapFast Plus: remembers a message its sender deleted for everyone and
+    /// ZFPlus: remembers a message its sender deleted for everyone and
     /// that was kept.
     pub fn plus_keep_deleted(&self, chat: &str, id: &str) -> Result<()> {
         self.connection.execute_batch(
@@ -2690,7 +2690,7 @@ impl Archive {
         Ok(())
     }
 
-    /// ZapFast Plus: every kept message, as (chat, id).
+    /// ZFPlus: every kept message, as (chat, id).
     pub fn plus_deleted_ids(&self) -> Result<Vec<(String, String)>> {
         self.connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS plus_deleted (

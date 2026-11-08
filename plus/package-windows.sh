@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Packages a Windows build of ZapFast Plus the way the updater expects:
+# Packages a Windows build of ZFPlus the way the updater expects:
 #   zapfast-v<version>-<target>.zip   portable: a folder with zapfast.exe and
 #                                     the portable marker
 #   zapfast-v<version>-<target>.msi   per-user installer, no admin rights
@@ -19,20 +19,20 @@ out=$(cd "$out" && pwd)
 # Portable archive.
 cp "$exe" "$work/$stem/zapfast.exe"
 cp "$root/packaging/zapfast-portable.txt" "$work/$stem/zapfast-portable.txt"
-cp "$here/README-ZapFast-Plus.txt" "$root/LICENSE" "$work/$stem/"
+cp "$here/README-ZFPlus.txt" "$root/LICENSE" "$work/$stem/"
 (cd "$work" && rm -f "$out/$stem.zip" && zip -qr9 "$out/$stem.zip" "$stem")
 
 # Installer.
 cp "$exe" "$work/msi/zapfast.exe"
 cp "$root/packaging/windows/zapfast-installer.txt" "$work/msi/"
-cp "$here/README-ZapFast-Plus.txt" "$work/msi/"
+cp "$here/README-ZFPlus.txt" "$work/msi/"
 IFS=. read -r major minor patch <<< "$version"
 # Windows Installer versions stop at 255.255.65535.
 wixl -a x64 \
   -D Version="$major.$minor.$patch" \
   -D SourceDir="$work/msi" \
-  -D IconFile="$root/packaging/windows/zapfast.ico" \
-  -o "$out/$stem.msi" "$here/zapfast-plus.wxs"
+  -D IconFile="$root/packaging/windows/zfplus.ico" \
+  -o "$out/$stem.msi" "$here/zfplus.wxs"
 
 # Signed checksums.
 (cd "$out" && sha256sum "$stem.zip" "$stem.msi" > checksums.txt)

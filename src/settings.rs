@@ -546,7 +546,7 @@ pub struct Settings {
     pub window_y: Option<f32>,
     /// Whether the window was maximized when it last closed.
     pub window_maximized: bool,
-    /// ZapFast Plus: the Enhancements page.
+    /// ZFPlus: the Enhancements page.
     pub plus: crate::plus::PlusSettings,
 }
 

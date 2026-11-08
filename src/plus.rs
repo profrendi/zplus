@@ -1,4 +1,4 @@
-//! ZapFast Plus: privacy and productivity enhancements in the spirit of the
+//! ZFPlus: privacy and productivity enhancements in the spirit of the
 //! WA Web Plus browser extension.
 //!
 //! The switches live in [`PlusSettings`], saved inside the ordinary settings
@@ -32,6 +32,12 @@ pub struct PlusSettings {
     pub disable_read_receipts: bool,
     pub hide_online: bool,
     pub restore_deleted: bool,
+    /// Lock the app (with an app lock password set) when its window is
+    /// minimized, hidden to the tray, or left for another window.
+    pub lock_when_away: bool,
+    /// Download a new ZFPlus release by itself, install it and restart
+    /// once nothing is in progress.
+    pub auto_install_updates: bool,
     // Customizations.
     pub customizations: bool,
     pub notify_online: bool,
@@ -62,6 +68,8 @@ impl Default for PlusSettings {
             disable_read_receipts: false,
             hide_online: false,
             restore_deleted: false,
+            lock_when_away: false,
+            auto_install_updates: true,
             customizations: true,
             notify_online: false,
             notify_typing: false,
@@ -173,7 +181,7 @@ pub fn load_kept(rows: Vec<(String, String)>) {
     KEPT.lock().unwrap_or_else(|p| p.into_inner()).extend(rows);
 }
 
-/// Whether the sender deleted this message and ZapFast Plus kept it.
+/// Whether the sender deleted this message and ZFPlus kept it.
 pub fn is_kept(chat: &str, id: &str) -> bool {
     KEPT.lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -721,5 +729,37 @@ pub fn blur_bubble(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, o
     } else {
         let fill = if own { palette.bubble_out } else { palette.bubble_in };
         blur(ui, palette, rect, Shape::Rounded(8.0), fill);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lock when away.
+
+/// How long another window may be in front before the app locks: long
+/// enough to survive a quick glance or a notification taking focus.
+pub const AWAY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+static AWAY_SINCE: LazyLock<Mutex<Option<std::time::Instant>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Whether the app should lock now: minimized or hidden at once, inactive
+/// after [`AWAY_GRACE`]. `None` asks to be called again after that long.
+pub fn away_lock_due(minimized_or_hidden: bool, focused: bool) -> Result<bool, std::time::Duration> {
+    let mut since = AWAY_SINCE.lock().unwrap_or_else(|p| p.into_inner());
+    if minimized_or_hidden {
+        *since = None;
+        return Ok(true);
+    }
+    if focused {
+        *since = None;
+        return Ok(false);
+    }
+    let started = *since.get_or_insert_with(std::time::Instant::now);
+    let elapsed = started.elapsed();
+    if elapsed >= AWAY_GRACE {
+        *since = None;
+        Ok(true)
+    } else {
+        Err(AWAY_GRACE - elapsed)
     }
 }

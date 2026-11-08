@@ -1,10 +1,10 @@
-# Every day: when ZapFast has a new release, merge it into ZapFast Plus and
-# release ZapFast Plus on top of it. A conflict in ZapFast's own code opens
+# Every 6 hours: when ZapFast has a new release, merge it into ZFPlus and
+# release ZFPlus on top of it. A conflict in ZapFast's own code opens
 # an issue instead.
 name: plus-sync
 on:
   schedule:
-    - cron: "17 21 * * *"
+    - cron: "17 */6 * * *"
   workflow_dispatch:
 permissions:
   contents: write
@@ -32,8 +32,8 @@ jobs:
             latest=$(gh api repos/crmne/zapfast/releases/latest -q .tag_name)
             title="ZapFast $latest needs a manual merge"
             if ! gh issue list --state open --search "$title in:title" --json number -q '.[0].number' | grep -q .; then
-              gh issue create --title "$title" --label upstream-conflict --body "The daily sync could not merge ZapFast $latest into ZapFast Plus automatically. Run plus/sync-upstream.sh $latest locally, resolve the conflicts keeping the Enhancements, and push to main." || \
-              gh issue create --title "$title" --body "The daily sync could not merge ZapFast $latest into ZapFast Plus automatically. Run plus/sync-upstream.sh $latest locally, resolve the conflicts keeping the Enhancements, and push to main."
+              gh issue create --title "$title" --label upstream-conflict --body "The daily sync could not merge ZapFast $latest into ZFPlus automatically. Run plus/sync-upstream.sh $latest locally, resolve the conflicts keeping the Enhancements, and push to main." || \
+              gh issue create --title "$title" --body "The daily sync could not merge ZapFast $latest into ZFPlus automatically. Run plus/sync-upstream.sh $latest locally, resolve the conflicts keeping the Enhancements, and push to main."
             fi
             exit 1
           fi

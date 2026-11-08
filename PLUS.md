@@ -1,9 +1,9 @@
-# ZapFast Plus
+# ZFPlus
 
 [ZapFast](https://github.com/crmne/zapfast) with the Enhancements of the
-WA Web Plus extension. See `plus/README-ZapFast-Plus.txt` for the features.
+WA Web Plus extension. See `plus/README-ZFPlus.txt` for the features.
 
-- `src/plus.rs`, `src/ui/plus_new_chat.rs` and the `ZapFast Plus:` comments
+- `src/plus.rs`, `src/ui/plus_new_chat.rs` and the `ZFPlus:` comments
   across `src/` are the Enhancements.
 - `plus/UPSTREAM` is the ZapFast release this build is on, `plus/REVISION`
   the Plus revision on top of it; the version is

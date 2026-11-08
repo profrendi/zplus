@@ -1318,7 +1318,7 @@ fn tray_config(lockable: bool) -> fastframe_tray::Config {
     use fastframe_tray::MenuItem;
     fastframe_tray::Config {
         id: "zapfast",
-        title: "ZapFast".into(),
+        title: "ZFPlus".into(),
         icon: crate::util::app_icon_rgba,
         template_icon: Some(crate::util::tray_template_rgba),
         // The icon changes with the unread count, which a host that has the
@@ -2569,7 +2569,7 @@ impl App {
         self.wants_attention = true;
     }
 
-    /// ZapFast Plus: a contact came online.
+    /// ZFPlus: a contact came online.
     fn plus_online_notice(&mut self, id: &str) {
         if !crate::plus::get().notify_online()
             || self.events_hidden
@@ -2587,7 +2587,7 @@ impl App {
         self.plus_notice(id, format!("{} is online", name.trim_start_matches('~')), "Online now".into());
     }
 
-    /// ZapFast Plus: someone started typing or recording in a chat we are
+    /// ZFPlus: someone started typing or recording in a chat we are
     /// not looking at.
     fn plus_typing_notice(
         &mut self,
@@ -4929,7 +4929,7 @@ impl App {
             Event::UpdateAvailable { version, url } => {
                 let notice = crate::updates::Release { version, url };
                 if self.update.as_ref() != Some(&notice) {
-                    self.toast(format!("ZapFast {} is available", notice.version));
+                    self.toast(format!("ZFPlus {} is available", notice.version));
                 }
                 self.update = Some(notice);
             }
@@ -7080,8 +7080,10 @@ impl App {
     }
 
     fn maybe_download_update(&mut self) {
+        self.plus_auto_install();
         if !self.settings.check_for_updates
-            || !self.settings.download_updates_automatically
+            || !(self.settings.download_updates_automatically
+                || self.settings.plus.auto_install_updates)
             || self.update.is_none()
             || !matches!(self.update_download, crate::updates::DownloadState::Idle)
         {
@@ -7091,6 +7093,27 @@ impl App {
         if matches!(self.update_support, Some(Ok(_))) {
             self.download_update();
         }
+    }
+
+    /// ZFPlus: installs a downloaded update and restarts at once, unless
+    /// something would be lost: a call, a recording, or a message being
+    /// typed in the open window. Then it waits for that to end.
+    fn plus_auto_install(&mut self) {
+        if !self.settings.plus.auto_install_updates
+            || !matches!(self.update_download, crate::updates::DownloadState::Ready(_))
+            || self.call.is_some()
+            || self.recording.is_some()
+            || (self.window_focused && !self.composer.trim().is_empty())
+        {
+            return;
+        }
+        if let Some(update) = &self.update {
+            self.toast(format!(
+                "Updating ZFPlus to {} and restarting…",
+                update.version
+            ));
+        }
+        self.actions.push(Action::InstallUpdate);
     }
 
     fn download_update(&mut self) {
@@ -7395,7 +7418,7 @@ impl App {
         let Some(action) = self.apply_call_action(action, ctx) else {
             return;
         };
-        // ZapFast Plus: a chat we send to keeps its place in the list.
+        // ZFPlus: a chat we send to keeps its place in the list.
         if crate::plus::get().prevent_list_jump() {
             let sent_to = match &action {
                 Action::SendText { chat, .. }
@@ -10497,6 +10520,7 @@ impl App {
             self.window_focused = false;
         }
         self.tick_app_lock(ctx);
+        self.plus_lock_when_away(ctx);
         self.tick_login_item();
         // Nobody reads behind the lock screen: messages stay unread, the
         // phone keeps notifying, and notifications here say nothing.
@@ -10638,6 +10662,29 @@ impl App {
             self.lock_app();
         } else {
             ctx.request_repaint_after(left);
+        }
+    }
+
+    /// ZFPlus: locks the app when its window is minimized, hidden to the
+    /// tray, or left for another window, when the reader asked for it.
+    fn plus_lock_when_away(&mut self, ctx: &egui::Context) {
+        if !self.settings.plus.lock_when_away
+            || self.settings.app_lock_hash.is_none()
+            || self.app_lock.is_locked()
+        {
+            return;
+        }
+        let viewport = ctx.input(|input| {
+            (
+                input.viewport().minimized == Some(true),
+                input.viewport().focused != Some(false),
+            )
+        });
+        let (minimized, focused) = viewport;
+        match crate::plus::away_lock_due(minimized || self.window_hidden, focused) {
+            Ok(true) => self.lock_app(),
+            Ok(false) => {}
+            Err(wait) => ctx.request_repaint_after(wait),
         }
     }
 

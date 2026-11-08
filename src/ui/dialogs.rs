@@ -1028,7 +1028,7 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
         let (logo, _) = ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
         theme::mark(ui, logo.center(), 44.0);
         ui.vertical(|ui| {
-            theme::text(ui, "ZapFast", theme::bold(17.0), palette.text);
+            theme::text(ui, "ZFPlus", theme::bold(17.0), palette.text);
             let version_label = crate::i18n::gettext(app.locale, "Version {version}")
                 .replace("{version}", env!("CARGO_PKG_VERSION"));
             theme::text(ui, version_label, theme::regular(13.0), palette.secondary);
@@ -1795,43 +1795,51 @@ fn confirm_leave_group(app: &mut App, ui: &mut egui::Ui, id: &str) {
 }
 
 fn pair_with_phone(app: &mut App, ui: &mut egui::Ui) {
+    use super::plus_new_chat::{COUNTRIES, country_picker, international};
     let palette = app.palette;
     title(
         ui,
         app,
         &crate::i18n::gettext(app.locale, "Link with a phone number"),
     );
+    // ZFPlus: pick the country code and type the number as you would on the
+    // phone, with or without its leading 0.
     theme::paragraph(
         ui,
-        crate::i18n::gettext(
-            app.locale,
-            "Enter the WhatsApp phone number with its country code. Do not include a plus sign or leading zero. You will get a code to enter on the phone.",
-        ),
+        "Pick your country code and type your WhatsApp number, with or without its leading 0 (0812… or 812…). You will get a code to enter on your phone.",
         theme::regular(13.0),
         palette.secondary,
     );
     ui.add_space(4.0);
+    let country_id = egui::Id::new("pair-phone-country");
+    let mut country = ui
+        .ctx()
+        .data(|data| data.get_temp::<usize>(country_id))
+        .unwrap_or(0)
+        .min(COUNTRIES.len() - 1);
     let id = egui::Id::new("pair-phone");
     let submit = ui.memory(|memory| memory.has_focus(id))
         && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-    let field = Frame::new()
-        .fill(palette.surface)
-        .corner_radius(CornerRadius::same(theme::RADIUS))
-        .inner_margin(Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Set the row height from the field instead of the shorter label.
+    ui.horizontal(|ui| {
+        if let Some(picked) = country_picker(ui, &palette, "pair-phone-country-picker", country) {
+            country = picked;
+            ui.ctx().data_mut(|data| data.insert_temp(country_id, picked));
+        }
+        let field = Frame::new()
+            .fill(palette.surface)
+            .corner_radius(CornerRadius::same(theme::RADIUS))
+            .inner_margin(Margin::symmetric(12, 8))
+            .show(ui, |ui| {
                 ui.set_min_height(
                     ui.ctx()
                         .fonts_mut(|fonts| fonts.row_height(&theme::regular(16.0)))
                         + 4.0,
                 );
-                theme::text(ui, "+", theme::semibold(16.0), palette.secondary);
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut app.pair_phone)
                         .id(id)
                         .hint_text(
-                            egui::RichText::new("15551234567")
+                            egui::RichText::new("0812 3456 7890")
                                 .color(palette.dim)
                                 .font(theme::regular(16.0)),
                         )
@@ -1844,18 +1852,22 @@ fn pair_with_phone(app: &mut App, ui: &mut egui::Ui) {
                     response.request_focus();
                 }
             });
-        });
-    theme::focus_outline(ui, id, field.response.rect, f32::from(theme::RADIUS));
+        theme::focus_outline(ui, id, field.response.rect, f32::from(theme::RADIUS));
+    });
+    let full = international(COUNTRIES[country].2, &app.pair_phone);
+    let (preview, color) = match &full {
+        Some(digits) => (format!("Number to link: +{digits}"), palette.secondary),
+        None if app.pair_phone.trim().is_empty() => (
+            "Example: 0812 3456 7890 becomes +62 812 3456 7890".to_owned(),
+            palette.secondary,
+        ),
+        None => ("This is not a valid phone number yet".to_owned(), palette.danger),
+    };
+    theme::text(ui, preview, theme::regular(12.5), color);
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let ready = app.pair_phone.chars().filter(char::is_ascii_digit).count() >= 7;
-            // Stay the main action, but look and read as unavailable until
-            // the number is long enough.
-            let hint = crate::i18n::gettext(
-                app.locale,
-                "Enter the whole number, starting with the country code",
-            );
+            let ready = full.is_some();
             let get_code = ui
                 .add_enabled_ui(ready, |ui| {
                     theme::pill_button(
@@ -1864,12 +1876,13 @@ fn pair_with_phone(app: &mut App, ui: &mut egui::Ui) {
                         &crate::i18n::gettext(app.locale, "Get a code"),
                         true,
                     )
-                    .on_disabled_hover_text(hint)
+                    .on_disabled_hover_text("Type your phone number first")
                 })
                 .inner;
-            if (get_code.clicked() || submit) && ready {
-                app.actions
-                    .push(Action::PairWithPhone(app.pair_phone.clone()));
+            if (get_code.clicked() || submit)
+                && let Some(digits) = full.clone()
+            {
+                app.actions.push(Action::PairWithPhone(digits));
             }
             if theme::pill_button(
                 ui,

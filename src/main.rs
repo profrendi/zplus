@@ -397,7 +397,7 @@ fn run() -> eframe::Result<()> {
     if demo {
         zapfast::demo::populate(&mut app);
         zapfast::demo::apply_flags(&mut app, cli.demo_page.as_deref());
-        // ZapFast Plus: preview Private Mode in demo screenshots.
+        // ZFPlus: preview Private Mode in demo screenshots.
         if std::env::var_os("ZAPFAST_PLUS_PRIVATE").is_some() {
             app.settings.plus.private_mode = true;
             app.settings.plus.eye_on = true;
@@ -620,7 +620,7 @@ fn native_options(
     let default_size = demo_size_arg().unwrap_or([1180.0, 780.0]);
     let demo = demo_persistence.is_some();
     let viewport = egui::ViewportBuilder::default()
-        .with_title(if demo { "ZapFast Demo" } else { "ZapFast Plus" })
+        .with_title(if demo { "ZapFast Demo" } else { "ZFPlus" })
         .with_app_id(if demo {
             "zapfast-demo".to_owned()
         } else {

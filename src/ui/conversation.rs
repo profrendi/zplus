@@ -297,7 +297,7 @@ fn empty(app: &mut App, ui: &mut egui::Ui) {
     ui.painter().text(
         center,
         Align2::CENTER_CENTER,
-        "ZapFast",
+        "ZFPlus",
         theme::bold(24.0),
         palette.text,
     );
@@ -481,7 +481,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                     0.0
                 };
                 let extra = room.right + caption_gap(room.right);
-                // ZapFast Plus: Pin and Mark read/unread in the header.
+                // ZFPlus: Pin and Mark read/unread in the header.
                 let plus = crate::plus::get();
                 let plus_buttons = f32::from(u8::from(plus.pin_button()))
                     + f32::from(u8::from(plus.mark_unread_button()));
@@ -1929,7 +1929,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat, review_send: Option<b
                                     })
                                     .layouter(&mut layouter)
                                     .show(ui);
-                                // ZapFast Plus: Private Mode veils the draft
+                                // ZFPlus: Private Mode veils the draft
                                 // until the pointer is over the box.
                                 if crate::plus::get().blur_composer()
                                     && !app.composer.is_empty()
@@ -4784,7 +4784,7 @@ fn reaction_affordance(
     let forward_rect = rect.translate(vec2(outward * if reply_fits { 2.0 } else { 1.0 }, 0.0));
     let forward_fits =
         crate::app::can_select(&message.content) && bounds.contains_rect(forward_rect);
-    // ZapFast Plus: Like and Translate take the next free slots outwards.
+    // ZFPlus: Like and Translate take the next free slots outwards.
     let plus = crate::plus::get();
     let mut slot = 1.0 + f32::from(u8::from(reply_fits)) + f32::from(u8::from(forward_fits));
     let like_rect = rect.translate(vec2(outward * slot, 0.0));
@@ -5188,7 +5188,7 @@ fn bubble(
             plus_notes(ui, view, message, with_avatar, max_width);
         },
     );
-    // ZapFast Plus: Private Mode hides the bubble until it is hovered.
+    // ZFPlus: Private Mode hides the bubble until it is hovered.
     if let Some(bubble) = &response
         && crate::plus::get().blur_messages()
         && !crate::plus::pointer_over(ui, bubble.rect)
@@ -5198,7 +5198,7 @@ fn bubble(
     response
 }
 
-/// ZapFast Plus: under a bubble, the mark of a message its sender deleted
+/// ZFPlus: under a bubble, the mark of a message its sender deleted
 /// and that was kept, and a translation asked for.
 fn plus_notes(
     ui: &mut egui::Ui,
@@ -5221,7 +5221,7 @@ fn plus_notes(
             if kept {
                 widgets::rich_text(
                     ui,
-                    "🚫 Deleted by the sender · kept by ZapFast Plus",
+                    "🚫 Deleted by the sender · kept by ZFPlus",
                     theme::regular(11.5),
                     view.palette.danger,
                 );

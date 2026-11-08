@@ -340,7 +340,7 @@ fn search_and_filters(app: &mut App, ui: &mut egui::Ui) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeaderButton {
     NewChat,
-    /// ZapFast Plus: message a number without saving it.
+    /// ZFPlus: message a number without saving it.
     PlusNewNumber,
     NewCall,
     HideList,
@@ -1393,7 +1393,7 @@ fn hit_row(app: &mut App, ui: &mut egui::Ui, hit: &Message) {
             1,
         );
         words.paint(ui, pos2(x, line_y), palette.dim);
-        // ZapFast Plus: search results are veiled like the chat list.
+        // ZFPlus: search results are veiled like the chat list.
         let plus = crate::plus::get();
         if !crate::plus::pointer_over(ui, rect) {
             let fill = palette.sidebar();
@@ -1543,7 +1543,7 @@ fn person_row(
                 );
             }
         }
-        // ZapFast Plus: contacts found by the search are veiled too.
+        // ZFPlus: contacts found by the search are veiled too.
         let plus = crate::plus::get();
         if !crate::plus::pointer_over(ui, rect) {
             if plus.blur_photos() {
@@ -1784,7 +1784,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
             widgets::line(ui, "", theme::regular(13.0), preview_color, 1.0, 1)
         };
         preview.paint(ui, pos2(x, line_y), preview_color);
-        // ZapFast Plus: Private Mode veils what a glance at the screen would
+        // ZFPlus: Private Mode veils what a glance at the screen would
         // give away, until the pointer is over the row.
         let plus = crate::plus::get();
         if !crate::plus::pointer_over(ui, rect) {

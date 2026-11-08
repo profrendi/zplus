@@ -186,7 +186,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
         .into_iter()
         .filter(|destination| destination.offered(app))
         .collect();
-        // ZapFast Plus: the Private Mode eye sits above the star.
+        // ZFPlus: the Private Mode eye sits above the star.
         let eye = app.settings.plus.show_eye_button && app.settings.plus.private_mode;
         let foot = (bottom.len() + usize::from(eye)) as f32 * (PLATE + GAP) + GAP + AVATAR + GAP;
         let minimum = 2.0 * CELL
@@ -255,7 +255,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
     }
 }
 
-/// ZapFast Plus: turns Private Mode (blur, invisible, and the rest of its
+/// ZFPlus: turns Private Mode (blur, invisible, and the rest of its
 /// group) on and off.
 fn private_mode_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette, height: f32) {
     let on = app.settings.plus.eye_on;

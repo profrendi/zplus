@@ -119,8 +119,9 @@ impl Palette {
             // panel, surface, and menu colours.
             secondary: Color32::from_rgb(0x97, 0xa5, 0xae),
             dim: Color32::from_rgb(0x8a, 0x98, 0x9f),
-            accent: Color32::from_rgb(0x00, 0xa8, 0x84),
-            accent_hover: Color32::from_rgb(0x06, 0xcf, 0x9c),
+            // ZFPlus violet instead of WhatsApp green.
+            accent: Color32::from_rgb(0xa7, 0x8b, 0xfa),
+            accent_hover: Color32::from_rgb(0xc4, 0xb5, 0xfd),
             on_accent: Color32::from_rgb(0x0b, 0x14, 0x1a),
             danger: Color32::from_rgb(0xf1, 0x5c, 0x6d),
             warning: Color32::from_rgb(0xff, 0xd2, 0x79),
@@ -128,7 +129,7 @@ impl Palette {
             shadow: Color32::from_black_alpha(140),
             chat: Color32::from_rgb(0x0b, 0x14, 0x1a),
             bubble_in: Color32::from_rgb(0x20, 0x2c, 0x33),
-            bubble_out: Color32::from_rgb(0x00, 0x5c, 0x4b),
+            bubble_out: Color32::from_rgb(0x4c, 0x2f, 0x8f),
             link: Color32::from_rgb(0x53, 0xbd, 0xeb),
             read: Color32::from_rgb(0x53, 0xbd, 0xeb),
             bubbles: BubbleStyle::WhatsApp,
@@ -217,8 +218,9 @@ impl Palette {
             // under white button labels.
             secondary: Color32::from_rgb(0x51, 0x5f, 0x67),
             dim: Color32::from_rgb(0x63, 0x6b, 0x72),
-            accent: Color32::from_rgb(0x00, 0x80, 0x69),
-            accent_hover: Color32::from_rgb(0x00, 0x6e, 0x5a),
+            // ZFPlus violet instead of WhatsApp green.
+            accent: Color32::from_rgb(0x6d, 0x28, 0xd9),
+            accent_hover: Color32::from_rgb(0x5b, 0x21, 0xb6),
             on_accent: Color32::WHITE,
             danger: Color32::from_rgb(0xea, 0x00, 0x38),
             warning: Color32::from_rgb(0xa0, 0x6b, 0x00),
@@ -226,7 +228,7 @@ impl Palette {
             shadow: Color32::from_black_alpha(LIGHT_SHADOW_ALPHA),
             chat: Color32::from_rgb(0xef, 0xea, 0xe2),
             bubble_in: Color32::from_rgb(0xff, 0xff, 0xff),
-            bubble_out: Color32::from_rgb(0xd9, 0xfd, 0xd3),
+            bubble_out: Color32::from_rgb(0xec, 0xe5, 0xff),
             link: Color32::from_rgb(0x02, 0x7e, 0xb5),
             // The lighter blue vanished on the green outgoing bubble.
             read: Color32::from_rgb(0x02, 0x7e, 0xb5),
@@ -1105,7 +1107,12 @@ pub fn mark(ui: &egui::Ui, center: egui::Pos2, diameter: f32) {
 /// Draws the logo's shape in two flat colours, for the empty conversation's
 /// faint watermark.
 pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, glyph: Color32) {
-    ui.painter().circle_filled(center, diameter / 2.0, disc);
+    // ZFPlus: a rounded square, as its icon.
+    ui.painter().rect_filled(
+        egui::Rect::from_center_size(center, Vec2::splat(diameter)),
+        diameter * 0.25,
+        disc,
+    );
     // Match `packaging/icons/zapfast-small.svg`: the bubble sits a little
     // right of and above the centre, where its tail balances it.
     let icon_size = diameter * 0.674;

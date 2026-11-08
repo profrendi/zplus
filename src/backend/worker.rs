@@ -778,9 +778,9 @@ impl Downloadable for PhoneSticker {
 fn device_name() -> String {
     let host = crate::util::hostname();
     if host.is_empty() {
-        "ZapFast".to_owned()
+        "ZFPlus".to_owned()
     } else {
-        format!("ZapFast ({host})")
+        format!("ZFPlus ({host})")
     }
 }
 
@@ -1562,7 +1562,7 @@ struct Worker {
     /// Next retry time for failed group metadata requests.
     group_info_retry: Vec<(Instant, String)>,
     presence_subscribed: HashSet<String>,
-    /// ZapFast Plus: when the recent chats' presence was last subscribed.
+    /// ZFPlus: when the recent chats' presence was last subscribed.
     plus_presence_at: Option<Instant>,
     /// Chosen folder for new downloads, when not the cache.
     download_folder: Option<PathBuf>,
@@ -3235,7 +3235,7 @@ impl Worker {
     /// WhatsApp holds back push notifications on the phone while a linked
     /// device is available, as WhatsApp Web does while its tab has focus.
     fn announce_presence(&mut self, online: bool) {
-        // ZapFast Plus: Invisible Mode never says we are online.
+        // ZFPlus: Invisible Mode never says we are online.
         let online = online && !crate::plus::get().invisible();
         if self.online_sent == Some(online)
             || self.presence_in_flight
@@ -3267,7 +3267,7 @@ impl Worker {
         });
     }
 
-    /// ZapFast Plus: files a message its sender deleted for everyone as kept.
+    /// ZFPlus: files a message its sender deleted for everyone as kept.
     fn plus_keep_deleted(&mut self, chat: &str, id: &str) {
         crate::plus::mark_kept(chat, id);
         if let Err(error) = self.archive.plus_keep_deleted(chat, id) {
@@ -3276,7 +3276,7 @@ impl Worker {
         self.emit_message(chat, id);
     }
 
-    /// ZapFast Plus: follows the presence of the most recent chats, so their
+    /// ZFPlus: follows the presence of the most recent chats, so their
     /// online and typing activity can be announced.
     fn plus_subscribe_presence(&mut self) {
         if !crate::plus::get().wants_presence() || !matches!(self.status, LinkStatus::Connected) {
@@ -5255,7 +5255,7 @@ impl Worker {
             match protocol.r#type {
                 Some(Type::REVOKE) => {
                     let old = self.archive.message(&chat, &target).ok().flatten();
-                    // ZapFast Plus: keep what someone else deleted for everyone.
+                    // ZFPlus: keep what someone else deleted for everyone.
                     if !from_me
                         && crate::plus::get().restore_deleted()
                         && let Some(old) = &old
@@ -11790,7 +11790,7 @@ impl Worker {
             None
         };
         let to = list.unwrap_or_else(|| jid.clone());
-        // ZapFast Plus: play voice messages without telling the sender.
+        // ZFPlus: play voice messages without telling the sender.
         if crate::plus::get().play_privately() {
             return;
         }

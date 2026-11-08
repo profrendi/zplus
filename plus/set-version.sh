@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sets ZapFast Plus's version from the official release it is built on
+# Sets ZFPlus's version from the official release it is built on
 # (plus/UPSTREAM, such as v0.21.1) and its own revision (plus/REVISION):
 # major.minor.(patch * 100 + revision), so 0.21.1 revision 1 is 0.21.101.
 # Every official release and every Plus revision then counts as newer, which

@@ -6,16 +6,20 @@
 //! ZapFast keeps its names, its key, its proxy and its interface.
 
 pub use fastframe_update::{
-    CHECK_INTERVAL, DownloadState, Installation, Kind, Prepared, Release, Source, Unsupported,
+    DownloadState, Installation, Kind, Prepared, Release, Source, Unsupported,
     Updater,
 };
 use fastframe_update::{MacConfig, ReqwestTransport, UpdateConfig};
 
-/// ZapFast Plus's own release feed: the GitHub repository its build
+/// How often ZFPlus asks its repository for a new release: a new official
+/// ZapFast release is rebuilt there within hours, so a day would be slow.
+pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
+/// ZFPlus's own release feed: the GitHub repository its build
 /// publishes to, set at build time. A build without one does not update.
 pub const PLUS_REPOSITORY: Option<&str> = option_env!("ZAPFAST_PLUS_REPO");
 
-/// ZapFast Plus's releases. They are signed with ZapFast Plus's own key,
+/// ZFPlus's releases. They are signed with ZFPlus's own key,
 /// never ZapFast's, so an official release can never replace this build and
 /// lose its Enhancements: updates come from the Plus repository, which
 /// rebuilds every official release with the Enhancements on top.
@@ -32,7 +36,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
             Some(repository) => repository,
             None => "crmne/zapfast",
         },
-        "ZapFast Plus",
+        "ZFPlus",
         "zapfast",
         env!("CARGO_PKG_VERSION"),
     )
@@ -41,7 +45,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
 /// An updater on the proxy-aware reqwest client.
 pub fn updater() -> anyhow::Result<Updater> {
     if PLUS_REPOSITORY.is_none() && !cfg!(test) {
-        anyhow::bail!("This ZapFast Plus build has no update channel");
+        anyhow::bail!("This ZFPlus build has no update channel");
     }
     let mut builder = reqwest::blocking::Client::builder();
     if let Some(proxy) = crate::proxy::reqwest_proxy() {

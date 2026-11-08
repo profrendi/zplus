@@ -936,6 +936,7 @@ fn plus_sections() -> Vec<Section> {
         Tick("Restore deleted messages", "When someone deletes a message for everyone, keep it here, marked as deleted.", |p| &mut p.restore_deleted),
     ];
     let custom: Vec<PlusOption> = vec![
+        Tick("Install updates automatically", "When a new ZFPlus release is out (it follows every official ZapFast release), download it, install it and restart by itself. It waits while you are in a call, recording, or typing.", |p| &mut p.auto_install_updates),
         Tick("Notify about online activities", "A notification when a contact from your recent chats comes online.", |p| &mut p.notify_online),
         Tick("Notify about typing and recording activities", "A notification when someone starts typing or recording to you in a chat that is not open.", |p| &mut p.notify_typing),
         Tick("Prevent chats list jumping on message submission", "A chat you send to keeps its place until someone answers.", |p| &mut p.prevent_list_jump),
@@ -1091,6 +1092,12 @@ fn app_lock_rows(app: &App, privacy: &mut Section) {
         );
     }
     if enabled {
+        // ZFPlus: lock as soon as the window is left.
+        privacy.toggle(
+            "Lock when minimized or inactive",
+            "Locks ZFPlus as soon as its window is minimized or closed to the tray, or 5 seconds after another window comes in front.",
+            |settings| &mut settings.plus.lock_when_away,
+        );
         privacy.row(
             translated(locale, "Lock after"),
             keyed(translated(
