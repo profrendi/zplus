@@ -1758,6 +1758,27 @@ pub struct Backend {
     demo_waker: Waker,
 }
 
+/// Runs the calling thread a step below normal priority. A history sync can
+/// keep the protocol threads busy for minutes on a slow processor; below
+/// the window's thread, the window still answers at once while they work.
+/// They lose nothing on an idle machine: priority only orders threads that
+/// wait for the same processor.
+fn below_normal_priority() {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThread() -> *mut core::ffi::c_void;
+            fn SetThreadPriority(thread: *mut core::ffi::c_void, priority: i32) -> i32;
+        }
+        // THREAD_PRIORITY_BELOW_NORMAL.
+        // SAFETY: the pseudo handle names the calling thread.
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), -1);
+        }
+    }
+}
+
 impl Backend {
     pub fn spawn(dirs: AccountDirs, waker: Waker) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -1765,6 +1786,7 @@ impl Backend {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("zapfast-runtime")
+            .on_thread_start(below_normal_priority)
             .enable_all()
             .build()
             .expect("unable to start the async runtime");
@@ -1773,6 +1795,7 @@ impl Backend {
         let thread = std::thread::Builder::new()
             .name("zapfast-backend".to_string())
             .spawn(move || {
+                below_normal_priority();
                 runtime.block_on(async move {
                     if started.await.is_ok() {
                         worker::run(dirs, event_tx, worker_commands, command_rx, waker).await;

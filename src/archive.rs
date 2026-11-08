@@ -380,6 +380,23 @@ fn search_pattern(needle: &str) -> Option<String> {
     })
 }
 
+/// The same pattern for the stored JSON as it is, or `None` when the needle
+/// holds a character JSON escapes (a quote, a backslash, a control
+/// character), which the stored text would then spell differently. A row
+/// whose JSON does not hold the needle cannot hold it in any field, so
+/// matching the raw JSON first spares the field extraction on almost every
+/// row. SQLite's `LIKE` folds ASCII case on its own, and other letters were
+/// never folded, so the two patterns agree on every row.
+fn raw_search_pattern(needle: &str) -> Option<String> {
+    if needle
+        .chars()
+        .any(|c| c == '"' || c == '\\' || c.is_control())
+    {
+        return None;
+    }
+    search_pattern(needle)
+}
+
 /// A message from a row of [`SEARCH_COLUMNS`].
 fn searched_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
     let content: String = row.get(6)?;
@@ -1695,6 +1712,7 @@ impl Archive {
             "SELECT {SEARCH_COLUMNS}
              FROM messages
              WHERE chat = ?1 AND timestamp >= ?2 AND timestamp < ?3
+             AND (?6 IS NULL OR content LIKE ?6 ESCAPE '\\')
              AND json_valid(content)
              AND json_extract(content, '$.kind') != 'disappearing_timer'
              AND (?4 IS NULL OR {SEARCHED_TEXT} LIKE ?4 ESCAPE '\\')
@@ -1708,7 +1726,8 @@ impl Archive {
                 from.unwrap_or(i64::MIN),
                 until.unwrap_or(i64::MAX),
                 search_pattern(needle),
-                limit as i64
+                limit as i64,
+                raw_search_pattern(needle),
             ],
             searched_message,
         )?;
@@ -1777,13 +1796,14 @@ impl Archive {
         let sql = format!(
             "SELECT {SEARCH_COLUMNS}
              FROM messages
-             WHERE json_valid(content) AND {SEARCHED_TEXT} LIKE ?1 ESCAPE '\\'
+             WHERE (?3 IS NULL OR content LIKE ?3 ESCAPE '\\')
+               AND json_valid(content) AND {SEARCHED_TEXT} LIKE ?1 ESCAPE '\\'
              ORDER BY timestamp DESC, COALESCE(history_order, 9223372036854775807) DESC, rowid DESC
              LIMIT ?2"
         );
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(
-            params![search_pattern(needle), limit as i64],
+            params![search_pattern(needle), limit as i64, raw_search_pattern(needle)],
             searched_message,
         )?;
         rows.collect()
@@ -3784,6 +3804,14 @@ pub(crate) mod tests {
         let hits = archive.search_messages("ENGINE", 10).expect("search");
         let ids: Vec<&str> = hits.iter().map(|hit| hit.id.as_str()).collect();
         assert_eq!(ids, vec!["m2", "m1"]);
+        // A quote, which the stored JSON escapes, still matches.
+        let mut quoted = message("1@s.whatsapp.net", "m4", 40, false);
+        quoted.content = Content::text("she said \"engine\" twice");
+        archive.insert_message(&quoted, None).expect("insert");
+        let hits = archive.search_messages("\"engine\"", 10).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "m4");
+        archive.execute_for_tests("DELETE FROM messages WHERE id = 'm4'");
         // Escape LIKE wildcards from the search query.
         let hits = archive.search_messages("100%", 10).expect("search");
         assert_eq!(hits.len(), 1);

@@ -174,7 +174,7 @@ const MAX_ERROR_TOASTS: usize = 3;
 const TYPING_TIMEOUT: Duration = Duration::from_secs(12);
 /// How long the chat list's search waits after the last keystroke before it
 /// scans the archive, which takes seconds on a long history.
-const SEARCH_DELAY: Duration = Duration::from_millis(250);
+const SEARCH_DELAY: Duration = Duration::from_millis(400);
 /// How long other apps' media stays paused while the next voice message of a
 /// run downloads. A stalled download must not keep music paused for good.
 const VOICE_FETCH_HOLD: Duration = Duration::from_secs(10);
@@ -5656,6 +5656,14 @@ impl App {
         self.search_due = None;
         let query = self.search.trim().to_owned();
         if query.is_empty() || self.locked_folder_open() || self.secret_code_matched() {
+            return;
+        }
+        // One Latin letter or digit is in nearly every message: scanning the
+        // whole archive for it costs seconds and lists nothing useful. Chat
+        // names still match it. One character of another script, a word in
+        // itself in Chinese or Japanese, is searched as before.
+        if query.chars().count() < 2 && query.is_ascii() {
+            self.search_hits.clear();
             return;
         }
         self.backend.send(Command::SearchMessages { query });
@@ -23650,7 +23658,7 @@ mod tests {
         let (backend, mut commands) = Backend::recording();
         app.backend = backend;
         let ctx = egui::Context::default();
-        for text in ["a", "ab", "a"] {
+        for text in ["ab", "abc", "ab"] {
             app.apply(Action::Search(text.into()), &ctx);
         }
         let due = app
@@ -23659,7 +23667,7 @@ mod tests {
         events_for(
             &mut app,
             Event::SearchHits {
-                query: "a".into(),
+                query: "ab".into(),
                 messages: Vec::new(),
             },
         );
@@ -23676,7 +23684,30 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(queries, ["a"], "the waiting scan still runs");
+        assert_eq!(queries, ["ab"], "the waiting scan still runs");
+    }
+
+    #[test]
+    fn one_latin_letter_matches_chats_without_scanning_the_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::headless(AppDirs::under(directory.path()), Settings::default()).0;
+        let (backend, mut commands) = Backend::recording();
+        app.backend = backend;
+        let ctx = egui::Context::default();
+        let mut scanned = |app: &mut App, text: &str| {
+            app.apply(Action::Search(text.into()), &ctx);
+            app.search_due = Some(Instant::now());
+            app.tick(&ctx);
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .filter_map(|command| match command {
+                    Command::SearchMessages { query } => Some(query),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(scanned(&mut app, "a").is_empty());
+        assert_eq!(scanned(&mut app, "ab"), ["ab"]);
+        assert_eq!(scanned(&mut app, "猫"), ["猫"]);
     }
 
     #[test]
