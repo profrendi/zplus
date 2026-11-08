@@ -863,7 +863,10 @@ pub async fn run(
         let path = dirs.archive_db();
         let opened = tokio::task::spawn_blocking(move || Archive::open(&path)).await;
         match opened {
-            Ok(Ok(archive)) => break archive,
+            Ok(Ok(archive)) => {
+                crate::plus::load_kept(archive.plus_deleted_ids().unwrap_or_default());
+                break archive;
+            }
             result => {
                 let error = match result {
                     Ok(Err(error)) => format!("{error:#}"),
@@ -1023,6 +1026,7 @@ pub async fn run(
         group_info_tries: HashMap::new(),
         group_info_retry: Vec::new(),
         presence_subscribed: HashSet::new(),
+        plus_presence_at: None,
         download_folder: None,
         cleaned_download_folders: HashSet::new(),
         keep_chats_archived: true,
@@ -1558,6 +1562,8 @@ struct Worker {
     /// Next retry time for failed group metadata requests.
     group_info_retry: Vec<(Instant, String)>,
     presence_subscribed: HashSet<String>,
+    /// ZapFast Plus: when the recent chats' presence was last subscribed.
+    plus_presence_at: Option<Instant>,
     /// Chosen folder for new downloads, when not the cache.
     download_folder: Option<PathBuf>,
     /// Clean each chosen root once, before this worker can start downloads there.
@@ -3210,6 +3216,11 @@ impl Worker {
 
     /// Announces the current state, once the offline linger has elapsed.
     fn settle_presence(&mut self) {
+        self.plus_subscribe_presence();
+        if crate::plus::get().invisible() && self.online_sent == Some(true) {
+            self.announce_presence(false);
+            return;
+        }
         if self.online_wanted || self.unavailable_due() {
             self.announce_presence(self.online_wanted);
         }
@@ -3224,6 +3235,8 @@ impl Worker {
     /// WhatsApp holds back push notifications on the phone while a linked
     /// device is available, as WhatsApp Web does while its tab has focus.
     fn announce_presence(&mut self, online: bool) {
+        // ZapFast Plus: Invisible Mode never says we are online.
+        let online = online && !crate::plus::get().invisible();
         if self.online_sent == Some(online)
             || self.presence_in_flight
             || !matches!(self.status, LinkStatus::Connected)
@@ -3251,6 +3264,58 @@ impl Worker {
                 online,
                 succeeded: result.is_ok(),
             });
+        });
+    }
+
+    /// ZapFast Plus: files a message its sender deleted for everyone as kept.
+    fn plus_keep_deleted(&mut self, chat: &str, id: &str) {
+        crate::plus::mark_kept(chat, id);
+        if let Err(error) = self.archive.plus_keep_deleted(chat, id) {
+            log::warn!("could not remember a kept message: {error}");
+        }
+        self.emit_message(chat, id);
+    }
+
+    /// ZapFast Plus: follows the presence of the most recent chats, so their
+    /// online and typing activity can be announced.
+    fn plus_subscribe_presence(&mut self) {
+        if !crate::plus::get().wants_presence() || !matches!(self.status, LinkStatus::Connected) {
+            return;
+        }
+        if self
+            .plus_presence_at
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(15 * 60))
+        {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.plus_presence_at = Some(Instant::now());
+        let me = self.me();
+        let chats: Vec<String> = self
+            .archive
+            .chats()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|chat| chat.id)
+            .filter(|id| {
+                *id != me
+                    && matches!(ChatKind::from_id(id), ChatKind::Direct | ChatKind::Group)
+            })
+            .take(25)
+            .collect();
+        let jids: Vec<_> = chats.iter().filter_map(|chat| Self::jid_of(chat)).collect();
+        for chat in chats {
+            self.presence_subscribed.insert(chat);
+        }
+        tokio::spawn(async move {
+            for jid in jids {
+                if let Err(error) = client.presence().subscribe(jid).await {
+                    log::debug!("presence not subscribed: {error}");
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         });
     }
 
@@ -5190,6 +5255,16 @@ impl Worker {
             match protocol.r#type {
                 Some(Type::REVOKE) => {
                     let old = self.archive.message(&chat, &target).ok().flatten();
+                    // ZapFast Plus: keep what someone else deleted for everyone.
+                    if !from_me
+                        && crate::plus::get().restore_deleted()
+                        && let Some(old) = &old
+                        && !old.from_me
+                        && !matches!(old.content, Content::Revoked)
+                    {
+                        self.plus_keep_deleted(&chat, &target);
+                        return;
+                    }
                     // A late answer to an edit sent from here must not
                     // replace what the phone did since.
                     self.edits.remove(&(chat.clone(), target.clone()));
@@ -6652,6 +6727,19 @@ impl Worker {
                 );
             }
             for revoked in chat.revoked {
+                if crate::plus::get().restore_deleted()
+                    && self
+                        .archive
+                        .message(&id, &revoked)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|old| {
+                            !old.from_me && !matches!(old.content, Content::Revoked)
+                        })
+                {
+                    self.plus_keep_deleted(&id, &revoked);
+                    continue;
+                }
                 if self
                     .archive
                     .message(&id, &revoked)
@@ -11702,6 +11790,10 @@ impl Worker {
             None
         };
         let to = list.unwrap_or_else(|| jid.clone());
+        // ZapFast Plus: play voice messages without telling the sender.
+        if crate::plus::get().play_privately() {
+            return;
+        }
         let commands = self.commands.clone();
         tokio::spawn(async move {
             if !played_receipt_allowed(&client, &jid, &commands).await {
@@ -20073,6 +20165,7 @@ mod receipt_tests {
             group_info_tries: HashMap::new(),
             group_info_retry: Vec::new(),
             presence_subscribed: HashSet::new(),
+            plus_presence_at: None,
             download_folder: None,
             cleaned_download_folders: HashSet::new(),
             keep_chats_archived: true,

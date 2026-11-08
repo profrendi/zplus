@@ -2673,6 +2673,41 @@ impl Archive {
         Ok(changed > 0)
     }
 
+    /// ZapFast Plus: remembers a message its sender deleted for everyone and
+    /// that was kept.
+    pub fn plus_keep_deleted(&self, chat: &str, id: &str) -> Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plus_deleted (
+                chat TEXT NOT NULL,
+                id TEXT NOT NULL,
+                PRIMARY KEY (chat, id)
+            )",
+        )?;
+        self.connection.execute(
+            "INSERT OR IGNORE INTO plus_deleted (chat, id) VALUES (?1, ?2)",
+            params![chat, id],
+        )?;
+        Ok(())
+    }
+
+    /// ZapFast Plus: every kept message, as (chat, id).
+    pub fn plus_deleted_ids(&self) -> Result<Vec<(String, String)>> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plus_deleted (
+                chat TEXT NOT NULL,
+                id TEXT NOT NULL,
+                PRIMARY KEY (chat, id)
+            )",
+        )?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT chat, id FROM plus_deleted")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Replaces an edited body and its mention metadata in one write.
     pub fn set_edited_content(
         &self,

@@ -36,6 +36,11 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
 
 /// An updater on the proxy-aware reqwest client.
 pub fn updater() -> anyhow::Result<Updater> {
+    // ZapFast Plus is a personal build: an official update would replace it
+    // with a copy that has none of the Enhancements.
+    if !cfg!(test) {
+        anyhow::bail!("ZapFast Plus is a personal build and does not update itself");
+    }
     let mut builder = reqwest::blocking::Client::builder();
     if let Some(proxy) = crate::proxy::reqwest_proxy() {
         builder = builder.proxy(proxy);

@@ -186,7 +186,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
         .into_iter()
         .filter(|destination| destination.offered(app))
         .collect();
-        let foot = bottom.len() as f32 * (PLATE + GAP) + GAP + AVATAR + GAP;
+        // ZapFast Plus: the Private Mode eye sits above the star.
+        let foot = (bottom.len() + 1) as f32 * (PLATE + GAP) + GAP + AVATAR + GAP;
         let minimum = 2.0 * CELL
             + foot
             + if hidden {
@@ -230,6 +231,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                 }
                 let rest = (ui.available_height() - foot).max(0.0);
                 ui.add_space(rest);
+                ui.add_space(GAP);
+                private_mode_button(app, ui, &palette, PLATE);
                 for destination in bottom {
                     ui.add_space(GAP);
                     destination_button(app, ui, &palette, destination, PLATE);
@@ -246,6 +249,44 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
     // beside the conversation the rail ends as the list does.
     if hidden {
         widgets::paint_edge_beside(ui, &palette, rect);
+    }
+}
+
+/// ZapFast Plus: turns Private Mode (blur, invisible, and the rest of its
+/// group) on and off.
+fn private_mode_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette, height: f32) {
+    let on = app.settings.plus.private_mode;
+    let (cell, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let plate = Rect::from_center_size(cell.center(), Vec2::splat(PLATE));
+    let response = ui
+        .interact(plate, egui::Id::new("plus-private-mode"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if ui.is_rect_visible(plate) {
+        let hovered = response.hovered();
+        if on {
+            widgets::highlight_card(ui, palette, plate, palette.surface_active);
+        } else if hovered {
+            widgets::highlight_card(ui, palette, plate, palette.surface_hover);
+        }
+        let tint = if on {
+            palette.accent
+        } else if hovered {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        let icon = if on { Icon::EyeOff } else { Icon::Eye };
+        theme::paint_icon(ui, icon, plate, ICON, tint);
+    }
+    let label = if on {
+        "Private Mode is on: click to turn it off"
+    } else {
+        "Turn on Private Mode (blur and privacy options in Settings → Enhancements)"
+    };
+    if response.on_hover_text(label).clicked() {
+        app.settings.plus.private_mode = !on;
+        crate::plus::set(app.settings.plus);
+        app.actions.push(Action::SettingsChanged);
     }
 }
 

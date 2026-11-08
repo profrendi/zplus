@@ -891,7 +891,8 @@ fn sections(app: &App) -> Vec<Section> {
         |ui, app| about(app, ui),
     );
 
-    vec![
+    let mut sections = plus_sections();
+    sections.extend([
         appearance,
         chats,
         notifications,
@@ -900,7 +901,151 @@ fn sections(app: &App) -> Vec<Section> {
         account_section,
         files,
         about_section,
-    ]
+    ]);
+    sections
+}
+
+/// One Enhancements option: a field of the Plus settings.
+type PlusField = fn(&mut crate::plus::PlusSettings) -> &mut bool;
+
+/// One line of an Enhancements group: a box you tick, or a fixed line that
+/// says ZapFast already behaves that way.
+#[derive(Clone, Copy)]
+enum PlusOption {
+    Tick(&'static str, &'static str, PlusField),
+    Always(&'static str, &'static str),
+}
+
+/// The Enhancements page, after WA Web Plus: three groups, each a master
+/// switch over the boxes under it.
+fn plus_sections() -> Vec<Section> {
+    use PlusOption::{Always, Tick};
+    let private: Vec<PlusOption> = vec![
+        Tick("Blur contact names", "Names in the chat list, the chat header and group senders. Hover to reveal.", |p| &mut p.blur_names),
+        Tick("Blur contact photos", "Profile pictures. Hover to reveal.", |p| &mut p.blur_photos),
+        Tick("Blur recent messages", "The last-message preview in the chat list. Hover to reveal.", |p| &mut p.blur_recent),
+        Tick("Blur conversation messages", "Every bubble in the open chat. Hover a message to read it.", |p| &mut p.blur_messages),
+        Tick("Blur message composer input", "What you are typing. Hover the box to see it.", |p| &mut p.blur_composer),
+        Tick("Hide typing status", "Nobody sees \"typing…\" from you.", |p| &mut p.hide_typing),
+        Always("Hide recording status", "ZapFast never sends \"recording audio…\"."),
+        Always("View statuses privately", "ZapFast does not open statuses, so it never marks one as seen."),
+        Tick("Play audio messages privately", "The blue microphone (played) is not sent to the sender.", |p| &mut p.play_privately),
+        Tick("Disable read receipts", "No blue ticks are sent when you read a chat.", |p| &mut p.disable_read_receipts),
+        Tick("Hide online status (Invisible Mode)", "Never announce yourself as online. Your phone keeps its notifications.", |p| &mut p.hide_online),
+        Tick("Restore deleted messages", "When someone deletes a message for everyone, keep it here, marked as deleted.", |p| &mut p.restore_deleted),
+    ];
+    let custom: Vec<PlusOption> = vec![
+        Tick("Notify about online activities", "A notification when a contact from your recent chats comes online.", |p| &mut p.notify_online),
+        Tick("Notify about typing and recording activities", "A notification when someone starts typing or recording to you in a chat that is not open.", |p| &mut p.notify_typing),
+        Tick("Prevent chats list jumping on message submission", "A chat you send to keeps its place until someone answers.", |p| &mut p.prevent_list_jump),
+        Always("Set custom chat background image", "Settings → Appearance → Wallpaper → Choose image."),
+    ];
+    let buttons: Vec<PlusOption> = vec![
+        Tick("Like button", "A 👍 beside each message you hover, one click to react.", |p| &mut p.like_button),
+        Tick("Pin chat button", "Pin or unpin the open chat from its header.", |p| &mut p.pin_button),
+        Always("Start new chat", "Type any phone number in the chat search to message it without saving the contact."),
+        Tick("Mark conversation as read/unread", "A button in the chat header.", |p| &mut p.mark_unread_button),
+        Tick("Translate message button", "Translates a message into the interface language through Google Translate. Only the message you click is sent.", |p| &mut p.translate_button),
+    ];
+    let mut sections = Vec::new();
+    for (title, master_title, master_description, master, options) in [
+        (
+            "Enhancements · Private Mode",
+            "Private Mode",
+            "Anti screen and status spying. The eye above the star in the left rail turns it on and off.",
+            (|settings: &mut Settings| &mut settings.plus.private_mode) as fn(&mut Settings) -> &mut bool,
+            private,
+        ),
+        (
+            "Enhancements · Customizations",
+            "Customizations",
+            "Other different useful functions.",
+            (|settings: &mut Settings| &mut settings.plus.customizations) as fn(&mut Settings) -> &mut bool,
+            custom,
+        ),
+        (
+            "Enhancements · Extra buttons",
+            "Extra buttons",
+            "Add new buttons with additional functions.",
+            (|settings: &mut Settings| &mut settings.plus.extra_buttons) as fn(&mut Settings) -> &mut bool,
+            buttons,
+        ),
+    ] {
+        let mut section = Section::new(Text::from(title));
+        section.toggle(master_title, master_description, master);
+        let keywords = options
+            .iter()
+            .map(|option| match option {
+                Tick(label, _, _) | Always(label, _) => Text::from(*label),
+            })
+            .collect();
+        section.block(keywords, move |ui, app| {
+            let active = *master(&mut app.settings);
+            for option in options {
+                plus_option(ui, app, option, active);
+            }
+            ui.add_space(8.0);
+        });
+        sections.push(section);
+    }
+    sections
+}
+
+/// Draws one Enhancements box.
+fn plus_option(ui: &mut egui::Ui, app: &mut App, option: PlusOption, active: bool) {
+    let palette = app.palette;
+    let (label, hint, field, fixed) = match option {
+        PlusOption::Tick(label, hint, field) => (label, hint, Some(field), false),
+        PlusOption::Always(label, hint) => (label, hint, None, true),
+    };
+    let value = field.is_none_or(|field| *field(&mut app.settings.plus));
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), 28.0),
+        if fixed { Sense::hover() } else { Sense::click() },
+    );
+    if ui.is_rect_visible(rect) {
+        if response.hovered() && !fixed {
+            ui.painter()
+                .rect_filled(rect.expand2(vec2(6.0, 0.0)), 6.0, palette.surface_hover);
+        }
+        let ink = if active && !fixed {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        let tick = Rect::from_min_size(pos2(rect.left(), rect.center().y - 8.0), Vec2::splat(16.0));
+        if value {
+            let fill = if active && !fixed {
+                palette.accent
+            } else {
+                palette.dim
+            };
+            ui.painter().rect_filled(tick, 3.0, fill);
+            theme::paint_icon(ui, Icon::Check, tick.shrink(1.5), 13.0, palette.on_accent);
+        } else {
+            ui.painter().rect_stroke(
+                tick,
+                3.0,
+                Stroke::new(1.5, palette.secondary),
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().text(
+            pos2(tick.right() + 10.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            theme::regular(13.5),
+            ink,
+        );
+    }
+    let response = response.on_hover_text(hint);
+    if let Some(field) = field
+        && response.clicked()
+    {
+        let slot = field(&mut app.settings.plus);
+        *slot = !*slot;
+        app.actions.push(Action::SettingsChanged);
+    }
 }
 
 /// The app lock: a password, how long ZapFast may go unused, and the form

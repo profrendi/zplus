@@ -340,6 +340,7 @@ fn run() -> eframe::Result<()> {
         icon: Some("zapfast".into()),
     });
     let settings = settings::Settings::load(&dirs.settings_file());
+    zapfast::plus::set(settings.plus);
     // The drawn title bar (Windows and Linux): GNOME's button layout and
     // icons, read once, and the choice every window is made with.
     fastframe_titlebar::init();
@@ -396,6 +397,10 @@ fn run() -> eframe::Result<()> {
     if demo {
         zapfast::demo::populate(&mut app);
         zapfast::demo::apply_flags(&mut app, cli.demo_page.as_deref());
+        // ZapFast Plus: preview Private Mode in demo screenshots.
+        if std::env::var_os("ZAPFAST_PLUS_PRIVATE").is_some() {
+            app.settings.plus.private_mode = true;
+        }
         if cli.demo_tour {
             tour_script(&cli.demo_tour_script).prepare(&mut app);
         }
@@ -788,6 +793,7 @@ impl Shell {
         if let Some(tour) = self.tour.as_mut() {
             tour.drive(app, ctx);
         }
+        zapfast::plus::set(app.settings.plus);
         app.background_frame(ctx);
         app.window_logic(ctx);
         #[cfg(target_os = "windows")]

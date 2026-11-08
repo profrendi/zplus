@@ -1572,6 +1572,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         };
         let name = widgets::line(ui, &title, name_font, palette.text, name_width, 1);
         name.paint(ui, pos2(left, name_top), palette.text);
+        let name_rect = Rect::from_min_size(pos2(left, name_top), name.size());
 
         // Leave room for badges beside the latest-message preview.
         let mut badge_right = right;
@@ -1714,6 +1715,25 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
             widgets::line(ui, "", theme::regular(13.0), preview_color, 1.0, 1)
         };
         preview.paint(ui, pos2(x, line_y), preview_color);
+        // ZapFast Plus: Private Mode veils what a glance at the screen would
+        // give away, until the pointer is over the row.
+        let plus = crate::plus::get();
+        if !crate::plus::pointer_over(ui, rect) {
+            let fill = palette.sidebar();
+            if plus.blur_photos() {
+                crate::plus::veil_avatar(ui, &palette, avatar_rect);
+            }
+            if plus.blur_names() {
+                crate::plus::veil_text(ui, &palette, name_rect, fill);
+            }
+            if plus.blur_recent() {
+                let area = Rect::from_min_max(
+                    pos2(left, line_y),
+                    pos2((x + preview.size().x).min(badge_right).max(left + 40.0), line_y + 16.0),
+                );
+                crate::plus::veil_text(ui, &palette, area, fill);
+            }
+        }
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if let Some((area, prefix, full)) = full_preview {
@@ -2038,6 +2058,9 @@ fn compact_row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response 
             &chat.id,
             picture.as_deref(),
         );
+        if crate::plus::get().blur_photos() && !crate::plus::pointer_over(ui, rect) {
+            crate::plus::veil_avatar(ui, &palette, avatar_rect);
+        }
         if chat.disappearing_timer().is_some() {
             widgets::paint_disappearing_badge(ui, &palette, avatar_rect);
         }

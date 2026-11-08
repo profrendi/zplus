@@ -2569,6 +2569,82 @@ impl App {
         self.wants_attention = true;
     }
 
+    /// ZapFast Plus: a contact came online.
+    fn plus_online_notice(&mut self, id: &str) {
+        if !crate::plus::get().notify_online()
+            || self.events_hidden
+            || self.me.as_deref() == Some(id)
+        {
+            return;
+        }
+        if !crate::plus::allow_notice(&format!("online:{id}"), Duration::from_secs(300)) {
+            return;
+        }
+        let name = match self.chat(id) {
+            Some(chat) => self.chat_title(chat),
+            None => self.display_name_or(id, None),
+        };
+        self.plus_notice(id, format!("{} is online", name.trim_start_matches('~')), "Online now".into());
+    }
+
+    /// ZapFast Plus: someone started typing or recording in a chat we are
+    /// not looking at.
+    fn plus_typing_notice(
+        &mut self,
+        chat_id: &str,
+        sender: &str,
+        activity: crate::model::ChatActivity,
+    ) {
+        if !crate::plus::get().notify_typing() || self.events_hidden {
+            return;
+        }
+        if self.window_focused && self.open_chat.as_deref() == Some(chat_id) {
+            return;
+        }
+        if !crate::plus::allow_notice(&format!("typing:{chat_id}:{sender}"), Duration::from_secs(60)) {
+            return;
+        }
+        let Some(chat) = self.chat(chat_id) else {
+            return;
+        };
+        let is_group = chat.is_group();
+        let title = self.chat_title(chat);
+        let who = self.display_name_or(sender, None);
+        let what = if activity == crate::model::ChatActivity::RecordingAudio {
+            "recording audio…"
+        } else {
+            "typing…"
+        };
+        let body = if is_group {
+            format!("{} is {what}", who.trim_start_matches('~'))
+        } else {
+            format!("is {what}")
+        };
+        self.plus_notice(chat_id, title.trim_start_matches('~').to_owned(), body);
+    }
+
+    fn plus_notice(&mut self, chat_id: &str, title: String, body: String) {
+        if self.app_lock.is_locked() || !self.settings.notifications {
+            return;
+        }
+        let picture = self.avatar(chat_id).or_else(|| self.cached_avatar(chat_id));
+        let waker = self.waker.clone();
+        self.notifications.show(
+            title,
+            body,
+            picture,
+            NotificationSound::None,
+            crate::notify::NotificationTarget {
+                account: self.account().id.clone(),
+                chat: chat_id.to_owned(),
+                message: None,
+            },
+            std::sync::Arc::clone(&self.notification_opens),
+            move || waker.wake(),
+            false,
+        );
+    }
+
     /// Announces a message while the app lock is on, or with notification
     /// content turned off: "New message" from ZapFast, without the chat, the
     /// sender, the text or a picture, so the desktop shows nothing the lock
@@ -3419,7 +3495,9 @@ impl App {
                 } else {
                     self.draft_priority(&b.id)
                         .cmp(&self.draft_priority(&a.id))
-                        .then_with(|| b.last_activity.cmp(&a.last_activity))
+                        .then_with(|| {
+                            crate::plus::sort_activity(b).cmp(&crate::plus::sort_activity(a))
+                        })
                         .then(a.id.cmp(&b.id))
                 }
             })
@@ -4233,10 +4311,14 @@ impl App {
                 sender,
                 activity,
             } => {
-                let typers = self.typing.entry(chat).or_default();
+                let typers = self.typing.entry(chat.clone()).or_default();
+                let started = !typers.iter().any(|(who, _, _)| *who == sender);
                 typers.retain(|(who, _, _)| *who != sender);
                 if let Some(activity) = activity {
-                    typers.push((sender, activity, Instant::now()));
+                    typers.push((sender.clone(), activity, Instant::now()));
+                    if started {
+                        self.plus_typing_notice(&chat, &sender, activity);
+                    }
                 }
             }
             Event::Presence {
@@ -4244,6 +4326,10 @@ impl App {
                 online,
                 last_seen,
             } => {
+                let was = self.presence.get(&id).map(|presence| presence.online);
+                if online && was == Some(false) {
+                    self.plus_online_notice(&id);
+                }
                 self.presence.insert(id, Presence { online, last_seen });
             }
             Event::Avatar { id, full, path } => {
@@ -6094,7 +6180,8 @@ impl App {
         // Clear local unread state regardless of receipt settings.
         self.backend.send(Command::MarkRead {
             chat: chat.to_owned(),
-            receipts: self.account().settings.send_read_receipts,
+            receipts: self.account().settings.send_read_receipts
+                && !crate::plus::get().no_read_receipts(),
         });
     }
 
@@ -6488,6 +6575,7 @@ impl App {
         self.last_keystroke = Some(Instant::now());
         if !self.composing
             && self.account().settings.send_typing
+            && !crate::plus::get().hide_typing()
             && let Some(chat) = self.open_chat.clone()
         {
             self.composing = true;
@@ -7307,6 +7395,23 @@ impl App {
         let Some(action) = self.apply_call_action(action, ctx) else {
             return;
         };
+        // ZapFast Plus: a chat we send to keeps its place in the list.
+        if crate::plus::get().prevent_list_jump() {
+            let sent_to = match &action {
+                Action::SendText { chat, .. }
+                | Action::SendLocation { chat, .. }
+                | Action::SendPending { chat, .. } => Some(chat.clone()),
+                Action::SendGif(_) | Action::SendSticker(_) | Action::StartRecording => {
+                    self.open_chat.clone()
+                }
+                _ => None,
+            };
+            if let Some(chat) = sent_to
+                && let Some(known) = self.chat(&chat)
+            {
+                crate::plus::freeze(&chat, known.last_activity);
+            }
+        }
         let reply_send = match &action {
             Action::SendText { chat, quoting, .. } | Action::SendLocation { chat, quoting, .. } => {
                 Some((chat.as_str(), quoting.as_ref()))
@@ -10987,7 +11092,8 @@ impl App {
             chat,
             message,
             sender,
-            receipts: self.account().settings.send_read_receipts,
+            receipts: self.account().settings.send_read_receipts
+                && !crate::plus::get().no_read_receipts(),
         });
     }
 

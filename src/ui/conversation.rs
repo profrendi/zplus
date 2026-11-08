@@ -481,7 +481,11 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                     0.0
                 };
                 let extra = room.right + caption_gap(room.right);
-                let buttons = if narrow { 3.0 } else { 2.0 } + call_buttons;
+                // ZapFast Plus: Pin and Mark read/unread in the header.
+                let plus = crate::plus::get();
+                let plus_buttons = f32::from(u8::from(plus.pin_button()))
+                    + f32::from(u8::from(plus.mark_unread_button()));
+                let buttons = if narrow { 3.0 } else { 2.0 } + call_buttons + plus_buttons;
                 // In a narrow pane, or on vibrant glass, which takes more room,
                 // Search and the call buttons go into More rather than push
                 // the name under them.
@@ -636,6 +640,17 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                 let block = ui
                     .interact(block.rect, ui.id().with("chat-header-info"), Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
+                {
+                    let plus = crate::plus::get();
+                    if !crate::plus::pointer_over(ui, block.rect) {
+                        if plus.blur_photos() {
+                            crate::plus::veil_avatar(ui, &palette, avatar);
+                        }
+                        if plus.blur_names() && text.is_positive() {
+                            crate::plus::veil_text(ui, &palette, text, palette.panel);
+                        }
+                    }
+                }
                 if block.clicked() {
                     app.actions.push(Action::OpenInfo(chat.id.clone()));
                 }
@@ -837,6 +852,58 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                                 app.actions.push(Action::CloseChat);
                             }
                         });
+                    if plus.mark_unread_button() {
+                        let unread = chat.looks_unread();
+                        if palette.vibrant() {
+                            ui.add_space(BUTTON_GAP);
+                        }
+                        let glass_shape = ui.painter().add(egui::Shape::Noop);
+                        let button = theme::icon_button(
+                            ui,
+                            if unread { Icon::MailOpen } else { Icon::Mail },
+                            18.0,
+                            palette.secondary,
+                            palette.text,
+                            if unread { "Mark as read" } else { "Mark as unread" },
+                        );
+                        if palette.vibrant() {
+                            ui.painter()
+                                .set(glass_shape, glass_button(&palette, button.rect));
+                        }
+                        if button.clicked() {
+                            app.actions.push(if unread {
+                                Action::MarkRead(chat.id.clone())
+                            } else {
+                                Action::MarkUnread(chat.id.clone())
+                            });
+                        }
+                    }
+                    if plus.pin_button() {
+                        if palette.vibrant() {
+                            ui.add_space(BUTTON_GAP);
+                        }
+                        let glass_shape = ui.painter().add(egui::Shape::Noop);
+                        let button = theme::icon_button(
+                            ui,
+                            if chat.pinned { Icon::PinOff } else { Icon::Pin },
+                            18.0,
+                            if chat.pinned {
+                                palette.accent
+                            } else {
+                                palette.secondary
+                            },
+                            palette.text,
+                            if chat.pinned { "Unpin chat" } else { "Pin chat" },
+                        );
+                        if palette.vibrant() {
+                            ui.painter()
+                                .set(glass_shape, glass_button(&palette, button.rect));
+                        }
+                        if button.clicked() {
+                            app.actions
+                                .push(Action::SetPinned(chat.id.clone(), !chat.pinned));
+                        }
+                    }
                     // A person's chat calls them and a group's starts a call
                     // in the group; a channel, a broadcast list and the chat
                     // with ourselves have no call button. While this chat has
@@ -1862,6 +1929,24 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat, review_send: Option<b
                                     })
                                     .layouter(&mut layouter)
                                     .show(ui);
+                                // ZapFast Plus: Private Mode veils the draft
+                                // until the pointer is over the box.
+                                if crate::plus::get().blur_composer()
+                                    && !app.composer.is_empty()
+                                    && !crate::plus::pointer_over(ui, output.response.response.rect)
+                                {
+                                    let fill = if palette.vibrant() {
+                                        palette.panel
+                                    } else {
+                                        palette.bubble_in
+                                    };
+                                    crate::plus::veil_text(
+                                        ui,
+                                        &palette,
+                                        output.galley.rect.translate(output.galley_pos.to_vec2()),
+                                        fill,
+                                    );
+                                }
                                 // egui moves the caret on any pointer press, including a
                                 // secondary click. A modal menu also disables the field.
                                 // Keep the selection the menu acts on until it closes.
@@ -4699,13 +4784,35 @@ fn reaction_affordance(
     let forward_rect = rect.translate(vec2(outward * if reply_fits { 2.0 } else { 1.0 }, 0.0));
     let forward_fits =
         crate::app::can_select(&message.content) && bounds.contains_rect(forward_rect);
-    let reach = if forward_fits {
+    // ZapFast Plus: Like and Translate take the next free slots outwards.
+    let plus = crate::plus::get();
+    let mut slot = 1.0 + f32::from(u8::from(reply_fits)) + f32::from(u8::from(forward_fits));
+    let like_rect = rect.translate(vec2(outward * slot, 0.0));
+    let like_fits = plus.like_button() && can_reply && bounds.contains_rect(like_rect);
+    if like_fits {
+        slot += 1.0;
+    }
+    let translate_text = match &message.content {
+        Content::Location { .. } | Content::LiveLocation { .. } | Content::Contact { .. } => None,
+        content => copyable_text(content),
+    }
+    .filter(|text| !text.trim().is_empty());
+    let translate_rect = rect.translate(vec2(outward * slot, 0.0));
+    let translate_fits =
+        plus.translate_button() && translate_text.is_some() && bounds.contains_rect(translate_rect);
+    let mut reach = if forward_fits {
         rect.union(forward_rect)
     } else if reply_fits {
         rect.union(reply_rect)
     } else {
         rect
     };
+    if like_fits {
+        reach = reach.union(like_rect);
+    }
+    if translate_fits {
+        reach = reach.union(translate_rect);
+    }
     ui.ctx().data_mut(|data| {
         data.insert_temp(bubble.id.with("forward-rect"), forward_rect);
     });
@@ -4809,6 +4916,77 @@ fn reaction_affordance(
                 chat: view.chat.id.clone(),
                 messages: vec![target],
             }));
+        }
+    }
+    if like_fits {
+        let like = ui.interact(like_rect, bubble.id.with("plus-like"), Sense::CLICK);
+        if ui.is_rect_visible(like_rect) && uncovered && revealed {
+            floating_circle(ui, &view.palette, like_rect, like.hovered());
+            theme::paint_icon(
+                ui,
+                Icon::ThumbsUp,
+                like_rect.shrink(5.0),
+                15.0,
+                if own_reaction(message) == Some("👍") {
+                    view.palette.accent
+                } else if like.hovered() {
+                    view.palette.text
+                } else {
+                    view.palette.secondary
+                },
+            );
+        }
+        if like
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Like 👍")
+            .clicked()
+        {
+            actions.push(Action::React {
+                chat: view.chat.id.clone(),
+                message: message.id.clone(),
+                emoji: reaction_choice(own_reaction(message), "👍"),
+            });
+        }
+    }
+    if translate_fits && let Some(text) = translate_text {
+        let shown = crate::plus::translation(&view.chat.id, &message.id);
+        let translate = ui.interact(translate_rect, bubble.id.with("plus-translate"), Sense::CLICK);
+        if ui.is_rect_visible(translate_rect) && uncovered && revealed {
+            floating_circle(ui, &view.palette, translate_rect, translate.hovered());
+            theme::paint_icon(
+                ui,
+                Icon::Languages,
+                translate_rect.shrink(5.0),
+                15.0,
+                if shown.is_some() {
+                    view.palette.accent
+                } else if translate.hovered() {
+                    view.palette.text
+                } else {
+                    view.palette.secondary
+                },
+            );
+        }
+        if translate
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(if shown.is_some() {
+                "Hide the translation"
+            } else {
+                "Translate (Google Translate)"
+            })
+            .clicked()
+        {
+            if matches!(shown, Some(crate::plus::Translation::Done(_) | crate::plus::Translation::Failed(_))) {
+                crate::plus::clear_translation(&view.chat.id, &message.id);
+            } else {
+                crate::plus::request_translation(
+                    ui.ctx(),
+                    &view.chat.id,
+                    &message.id,
+                    text,
+                    crate::plus::target_language(view.locale),
+                );
+            }
         }
     }
 }
@@ -4973,6 +5151,11 @@ fn bubble(
                                 .get(&message.sender)
                                 .and_then(|picture| picture.as_deref()),
                         );
+                        if crate::plus::get().blur_photos()
+                            && !crate::plus::pointer_over(ui, rect)
+                        {
+                            crate::plus::veil_avatar(ui, &view.palette, rect);
+                        }
                     }
                 });
             } else {
@@ -5002,9 +5185,84 @@ fn bubble(
                 });
                 ui.add_space(2.0);
             }
+            plus_notes(ui, view, message, with_avatar, max_width);
         },
     );
+    // ZapFast Plus: Private Mode hides the bubble until it is hovered.
+    if let Some(bubble) = &response
+        && crate::plus::get().blur_messages()
+        && !crate::plus::pointer_over(ui, bubble.rect)
+    {
+        crate::plus::veil_bubble(ui, &view.palette, bubble.rect, own);
+    }
     response
+}
+
+/// ZapFast Plus: under a bubble, the mark of a message its sender deleted
+/// and that was kept, and a translation asked for.
+fn plus_notes(
+    ui: &mut egui::Ui,
+    view: &View<'_>,
+    message: &Message,
+    with_avatar: bool,
+    max_width: f32,
+) {
+    let kept = crate::plus::is_kept(&view.chat.id, &message.id);
+    let translation = crate::plus::translation(&view.chat.id, &message.id);
+    if !kept && translation.is_none() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        if with_avatar {
+            ui.add_space(SENDER_AVATAR + 8.0);
+        }
+        ui.vertical(|ui| {
+            ui.set_max_width(max_width);
+            if kept {
+                widgets::rich_text(
+                    ui,
+                    "🚫 Deleted by the sender · kept by ZapFast Plus",
+                    theme::regular(11.5),
+                    view.palette.danger,
+                );
+            }
+            match translation {
+                Some(crate::plus::Translation::Pending) => {
+                    widgets::rich_text(ui, "Translating…", theme::regular(12.0), view.palette.secondary);
+                }
+                Some(crate::plus::Translation::Done(text)) => {
+                    let frame = Frame::new()
+                        .fill(view.palette.surface)
+                        .stroke(egui::Stroke::new(1.0, view.palette.outline))
+                        .corner_radius(8)
+                        .inner_margin(Margin::symmetric(10, 6));
+                    frame.show(ui, |ui| {
+                        ui.set_max_width(max_width - 20.0);
+                        widgets::rich_text(ui, "🌐 Translation", theme::medium(11.0), view.palette.accent);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(text)
+                                    .font(theme::regular(13.5))
+                                    .color(view.palette.text),
+                            )
+                            .wrap()
+                            .selectable(true),
+                        );
+                    });
+                }
+                Some(crate::plus::Translation::Failed(error)) => {
+                    widgets::rich_text(
+                        ui,
+                        &format!("Translation failed: {error}"),
+                        theme::regular(11.5),
+                        view.palette.danger,
+                    );
+                }
+                None => {}
+            }
+        });
+    });
+    ui.add_space(4.0);
 }
 
 /// Clamps message-selection drags to the view while the pointer is outside it.

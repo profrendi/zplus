@@ -546,6 +546,8 @@ pub struct Settings {
     pub window_y: Option<f32>,
     /// Whether the window was maximized when it last closed.
     pub window_maximized: bool,
+    /// ZapFast Plus: the Enhancements page.
+    pub plus: crate::plus::PlusSettings,
 }
 
 impl Default for Settings {
@@ -603,6 +605,7 @@ impl Default for Settings {
             window_x: None,
             window_y: None,
             window_maximized: false,
+            plus: crate::plus::PlusSettings::default(),
         }
     }
 }
