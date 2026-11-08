@@ -131,6 +131,9 @@ fn confirmed_download(
     }
 }
 
+/// How many automatic downloads run at once, per account.
+const AUTOMATIC_DOWNLOADS: usize = 3;
+
 /// How long a download of `size` bytes may take, re-upload request included.
 fn attachment_deadline(size: Option<u64>) -> Duration {
     ATTACHMENT_TIMEOUT + Duration::from_secs(size.unwrap_or(0) / ATTACHMENT_SLOWEST_RATE)
@@ -154,6 +157,8 @@ struct Progress {
     waker: Waker,
     event: Arc<dyn Fn(u8, Option<u32>) -> Event + Send + Sync>,
     shown: Option<u8>,
+    /// When the last report went out.
+    sent: Option<Instant>,
     /// When the transfer of this total began, and how much it had then.
     start: Option<(Instant, u64, u64)>,
 }
@@ -169,6 +174,7 @@ impl Progress {
             waker,
             event: Arc::new(event),
             shown: None,
+            sent: None,
             start: None,
         }
     }
@@ -186,8 +192,9 @@ impl Progress {
                 (now, done)
             }
         };
-        if self.shown != Some(percent) {
+        if self.shown != Some(percent) && self.due(now, percent) {
             self.shown = Some(percent);
+            self.sent = Some(now);
             let left = seconds_left(
                 now - started,
                 done.saturating_sub(from),
@@ -196,6 +203,22 @@ impl Progress {
             let _ = self.events.send((self.event)(percent, left));
             self.waker.wake();
         }
+    }
+}
+
+impl Progress {
+    /// Reports go out at most every [`Progress::GAP`]: a fast download
+    /// would otherwise send a hundred in a second. The first and the last
+    /// percent always go, and so does a restart from a lower one.
+    const GAP: Duration = Duration::from_millis(250);
+
+    fn due(&self, now: Instant, percent: u8) -> bool {
+        percent == 100
+            // A retry starts again from nothing.
+            || self.shown.is_none_or(|shown| percent < shown)
+            || self
+                .sent
+                .is_none_or(|sent| now.saturating_duration_since(sent) >= Self::GAP)
     }
 }
 
@@ -260,14 +283,17 @@ impl WakePacer {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            self.pending.store(false, std::sync::atomic::Ordering::Release);
+            self.pending
+                .store(false, std::sync::atomic::Ordering::Release);
             return self.wake_now(waker);
         };
         let pacer = self.clone();
         let waker = waker.clone();
         runtime.spawn(async move {
             tokio::time::sleep(wait).await;
-            pacer.pending.store(false, std::sync::atomic::Ordering::Release);
+            pacer
+                .pending
+                .store(false, std::sync::atomic::Ordering::Release);
             pacer.wake_now(&waker);
         });
     }
@@ -1143,6 +1169,7 @@ pub async fn run(
         stars_recovered,
         stars_recovering: false,
         downloads: HashSet::new(),
+        automatic_downloads: Arc::new(tokio::sync::Semaphore::new(AUTOMATIC_DOWNLOADS)),
         read_sync: ReadSync::default(),
         favorite_chats: Default::default(),
         poll_decrypting: 0,
@@ -1735,6 +1762,10 @@ struct Worker {
     stars_recovering: bool,
     /// Active attachment downloads by chat, message id, and carousel card.
     downloads: HashSet<(ChatId, String, Option<usize>)>,
+    /// Turns for automatic downloads: a chat full of pictures, or a search
+    /// through many, fetches [`AUTOMATIC_DOWNLOADS`] at a time instead of
+    /// all at once. A download the reader asked for never waits for one.
+    automatic_downloads: Arc<tokio::sync::Semaphore>,
     /// Serial forward in flight. The next send waits for the running one.
     forward_queue: Option<ForwardQueue<ForwardJob>>,
     call: Option<calls::CallRuntime>,
@@ -2322,6 +2353,7 @@ impl Worker {
     }
 
     fn emit_chats_mapped(&mut self, mapping: Option<(ChatId, ChatId)>) {
+        let _scope = crate::prof::scope("backend: whole chat list");
         match self.archive.chats() {
             Ok(mut chats) => {
                 // Early preference sync can create an empty privacy-id row.
@@ -2377,6 +2409,7 @@ impl Worker {
     }
 
     fn emit_chat(&self, id: &str) {
+        let _scope = crate::prof::scope("backend: chat updates");
         match self.archive.chat(id) {
             Ok(Some(mut chat)) => {
                 if chat.locked {
@@ -3382,8 +3415,7 @@ impl Worker {
             .into_iter()
             .map(|chat| chat.id)
             .filter(|id| {
-                *id != me
-                    && matches!(ChatKind::from_id(id), ChatKind::Direct | ChatKind::Group)
+                *id != me && matches!(ChatKind::from_id(id), ChatKind::Direct | ChatKind::Group)
             })
             .take(25)
             .collect();
@@ -4149,7 +4181,11 @@ impl Worker {
     /// receipts into the archive of the account that replaced it.
     async fn whatsapp_event(&mut self, session: u64, event: Arc<wa_events::Event>) {
         if session == self.account_session {
-            self.handle_wa_event(event).await;
+            let started = crate::prof::enabled().then(Instant::now);
+            self.handle_wa_event(Arc::clone(&event)).await;
+            if let Some(started) = started {
+                crate::prof::work(&*event, started.elapsed().as_secs_f64());
+            }
         }
     }
 
@@ -6337,6 +6373,7 @@ impl Worker {
     // --- history ---------------------------------------------------------
 
     async fn on_history_sync(&mut self, lazy: &wa_events::LazyHistorySync) {
+        let _scope = crate::prof::scope("backend: history chunks");
         // The id of the request an on-demand chunk answers.
         let session = lazy.peer_data_request_session_id().map(str::to_owned);
         let on_demand =
@@ -6815,9 +6852,7 @@ impl Worker {
                         .message(&id, &revoked)
                         .ok()
                         .flatten()
-                        .is_some_and(|old| {
-                            !old.from_me && !matches!(old.content, Content::Revoked)
-                        })
+                        .is_some_and(|old| !old.from_me && !matches!(old.content, Content::Revoked))
                 {
                     self.plus_keep_deleted(&id, &revoked);
                     continue;
@@ -7318,6 +7353,7 @@ impl Worker {
 
     /// Applies a UI or task command after checking current send permissions.
     async fn handle_command(&mut self, command: Command) {
+        let _scope = crate::prof::scope("backend: commands");
         let destination = match &command {
             Command::SendText { chat, .. }
             | Command::ReplyInteractive { chat, .. }
@@ -10515,7 +10551,13 @@ impl Worker {
                 },
             )
         });
+        let turns = (!manual).then(|| self.automatic_downloads.clone());
         tokio::spawn(async move {
+            // Waits its turn before the deadline starts counting.
+            let _turn = match &turns {
+                Some(turns) => turns.clone().acquire_owned().await.ok(),
+                None => None,
+            };
             let cache_id = card.map_or_else(|| id.clone(), |index| format!("{id}-card-{index}"));
             let cache_path = media_path(&cache, &chat, &cache_id, &mime, file_name.as_deref());
             let named = file_name
@@ -15631,20 +15673,38 @@ mod tests {
         })
     }
 
-    /// A file read a byte at a time tells the window each percent once, and a
-    /// download of unknown length tells it nothing rather than a guess.
+    /// A file read in one go tells the window where it started and that it
+    /// finished, not every percent between, and a download of unknown length
+    /// tells it nothing rather than a guess.
     #[test]
-    fn progress_reports_each_percent_once() {
+    fn progress_reports_are_paced() {
         let (sender, events) = std::sync::mpsc::channel();
         let mut tracked = progress(sender);
         for done in 0..=1000 {
             tracked.report(done, 1000);
         }
-        assert_eq!(heard(&events), (0..=100).collect::<Vec<_>>());
+        assert_eq!(heard(&events), [0, 100]);
         tracked.report(2000, 1000);
         assert!(heard(&events).is_empty(), "past the end stays at 100");
         tracked.report(5, 0);
         assert!(heard(&events).is_empty(), "an unknown size reports nothing");
+    }
+
+    /// Between the first and the last percent a report goes out once a
+    /// quarter of a second has passed since the one before, each percent
+    /// at most once.
+    #[test]
+    fn progress_goes_out_each_quarter_second() {
+        let (sender, _events) = std::sync::mpsc::channel();
+        let mut tracked = progress(sender);
+        let start = Instant::now();
+        assert!(tracked.due(start, 0), "the first report goes at once");
+        tracked.shown = Some(10);
+        tracked.sent = Some(start);
+        assert!(!tracked.due(start + Duration::from_millis(100), 20));
+        assert!(tracked.due(start + Progress::GAP, 20));
+        assert!(tracked.due(start, 100), "the last always goes");
+        assert!(tracked.due(start, 5), "a retry from a lower percent goes");
     }
 
     /// A download sink reports how much of the declared length it holds, and
@@ -20298,6 +20358,7 @@ mod receipt_tests {
             stars_recovered: true,
             stars_recovering: false,
             downloads: HashSet::new(),
+            automatic_downloads: Arc::new(tokio::sync::Semaphore::new(AUTOMATIC_DOWNLOADS)),
             read_sync: ReadSync::default(),
             favorite_chats: Default::default(),
             poll_decrypting: 0,

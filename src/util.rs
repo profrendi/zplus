@@ -857,11 +857,15 @@ fn plain_disc(size: usize) -> Vec<u8> {
 pub fn tray_template_rgba(size: usize) -> Vec<u8> {
     // The flat mark at every size: a template has no room for shading.
     let mut rgba = render_mark(SMALL_MARK, size).unwrap_or_else(|| plain_disc(size));
-    // The disc's green against the ink's says how much of a pixel is disc.
-    const INK: f32 = 14.0;
-    const DISC: f32 = 168.0;
+    // ZFPlus: the mark is a violet square (with a yellow badge) and a white
+    // bubble outline. How far a pixel's darkest channel is from white says
+    // how much of it is square: the outline is cut out, the rest is solid.
+    // The square's violet has the lightest darkest channel of its colours.
+    const OUTLINE: f32 = 255.0;
+    const SQUARE: f32 = 58.0;
     for pixel in rgba.as_chunks_mut::<4>().0 {
-        let disc = ((f32::from(pixel[1]) - INK) / (DISC - INK)).clamp(0.0, 1.0);
+        let darkest = f32::from(pixel[0].min(pixel[1]).min(pixel[2]));
+        let disc = ((OUTLINE - darkest) / (OUTLINE - SQUARE)).clamp(0.0, 1.0);
         pixel[3] = (f32::from(pixel[3]) * disc).round() as u8;
         pixel[0] = 0;
         pixel[1] = 0;

@@ -864,7 +864,11 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                             18.0,
                             palette.secondary,
                             palette.text,
-                            if unread { "Mark as read" } else { "Mark as unread" },
+                            if unread {
+                                "Mark as read"
+                            } else {
+                                "Mark as unread"
+                            },
                         );
                         if palette.vibrant() {
                             ui.painter()
@@ -893,7 +897,11 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                                 palette.secondary
                             },
                             palette.text,
-                            if chat.pinned { "Unpin chat" } else { "Pin chat" },
+                            if chat.pinned {
+                                "Unpin chat"
+                            } else {
+                                "Pin chat"
+                            },
                         );
                         if palette.vibrant() {
                             ui.painter()
@@ -3552,19 +3560,6 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                     // and their height remembered, so scrolling finds them
                     // measured before they show.
                     let margin = (viewport.height() * 3.0).max(600.0);
-                    // Rows already measured are laid out again only when
-                    // they come within half a screen of the view. Further
-                    // out their remembered height stands in for them, so a
-                    // frame costs the rows near the screen, not seven
-                    // screens' worth. A new width measures them all again.
-                    let close = (viewport.height() * 0.5).max(240.0);
-                    let width_id = scroll_id.with("measured-width");
-                    let width_changed = ui
-                        .ctx()
-                        .data(|data| data.get_temp::<f32>(width_id))
-                        .is_none_or(|width| (width - layout_width).abs() > 0.5);
-                    ui.ctx()
-                        .data_mut(|data| data.insert_temp(width_id, layout_width));
                     let _rows_scope = crate::prof::scope("messages: rows loop");
                     for (message_index, message) in conversation.messages.iter().enumerate() {
                         let index = message_index;
@@ -3594,22 +3589,19 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                         };
                         let row_is_anchor = view.anchor.is_some_and(row_contains);
                         let before = ui.cursor().top();
-                        // Worked out only for rows that need it: a row left
-                        // out of the layout below keeps its known height, and
-                        // the day it starts lies far off screen, where the
-                        // date chip it would move cannot show.
-                        let day_changes = || {
-                            previous.is_none_or(|previous| {
-                                crate::util::day_key(previous.timestamp)
-                                    != crate::util::day_key(message.timestamp)
-                            })
-                        };
+                        let new_day = previous.is_none_or(|previous| {
+                            crate::util::day_key(previous.timestamp)
+                                != crate::util::day_key(message.timestamp)
+                        });
+                        if new_day {
+                            day_separator_top = before + 8.0;
+                        }
                         let here = notices_above(&notices[placed..], message.timestamp);
                         let known = rows.get(&message.id).copied();
-                        let height = match known {
-                            Some(row) => row.height,
-                            None => estimated_height(message, layout_width, day_changes(), here),
-                        };
+                        let height = known.map_or_else(
+                            || estimated_height(message, layout_width, new_day, here),
+                            |row| row.height,
+                        );
                         // A pass redone after the offset followed rows that
                         // grew keeps to the rows it laid out before (and any
                         // now on screen): measuring rows the shift brought
@@ -3623,13 +3615,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                         } else {
                             margin
                         };
-                        let within = |reach: f32| {
-                            before + height >= viewport.top() - reach
-                                && before <= viewport.bottom() + reach
-                        };
-                        let measured = !width_changed
-                            && known.is_some_and(|row| row.pass.is_some());
-                        let near = within(reach.min(close)) || (!measured && within(reach));
+                        let near = before + height >= viewport.top() - reach
+                            && before <= viewport.bottom() + reach;
                         let selected = selected_rows.as_ref().is_some_and(|(anchor, span)| {
                             span.contains(&index)
                                 || (drag_frame
@@ -3661,10 +3648,6 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                         crate::prof::count("rows laid out", 1);
                         if before + height >= viewport.top() && before <= viewport.bottom() {
                             crate::prof::count("rows on screen", 1);
-                        }
-                        let new_day = day_changes();
-                        if new_day {
-                            day_separator_top = before + 8.0;
                         }
                         // A row laid out again after a skip still has the
                         // rect it last had on screen, where other rows are
@@ -4982,7 +4965,11 @@ fn reaction_affordance(
     }
     if translate_fits && let Some(text) = translate_text {
         let shown = crate::plus::translation(&view.chat.id, &message.id);
-        let translate = ui.interact(translate_rect, bubble.id.with("plus-translate"), Sense::CLICK);
+        let translate = ui.interact(
+            translate_rect,
+            bubble.id.with("plus-translate"),
+            Sense::CLICK,
+        );
         if ui.is_rect_visible(translate_rect) && uncovered && revealed {
             floating_circle(ui, &view.palette, translate_rect, translate.hovered());
             theme::paint_icon(
@@ -5008,7 +4995,10 @@ fn reaction_affordance(
             })
             .clicked()
         {
-            if matches!(shown, Some(crate::plus::Translation::Done(_) | crate::plus::Translation::Failed(_))) {
+            if matches!(
+                shown,
+                Some(crate::plus::Translation::Done(_) | crate::plus::Translation::Failed(_))
+            ) {
                 crate::plus::clear_translation(&view.chat.id, &message.id);
             } else {
                 crate::plus::request_translation(
@@ -5184,8 +5174,7 @@ fn bubble(
                                 .get(&message.sender)
                                 .and_then(|picture| picture.as_deref()),
                         );
-                        if crate::plus::get().blur_photos()
-                            && !crate::plus::pointer_over(ui, rect)
+                        if crate::plus::get().blur_photos() && !crate::plus::pointer_over(ui, rect)
                         {
                             crate::plus::blur_avatar(ui, &view.palette, rect);
                         }
@@ -5261,7 +5250,12 @@ fn plus_notes(
             }
             match translation {
                 Some(crate::plus::Translation::Pending) => {
-                    widgets::rich_text(ui, "Translating…", theme::regular(12.0), view.palette.secondary);
+                    widgets::rich_text(
+                        ui,
+                        "Translating…",
+                        theme::regular(12.0),
+                        view.palette.secondary,
+                    );
                 }
                 Some(crate::plus::Translation::Done(text)) => {
                     let frame = Frame::new()
@@ -5271,7 +5265,12 @@ fn plus_notes(
                         .inner_margin(Margin::symmetric(10, 6));
                     frame.show(ui, |ui| {
                         ui.set_max_width(max_width - 20.0);
-                        widgets::rich_text(ui, "🌐 Translation", theme::medium(11.0), view.palette.accent);
+                        widgets::rich_text(
+                            ui,
+                            "🌐 Translation",
+                            theme::medium(11.0),
+                            view.palette.accent,
+                        );
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(text)
@@ -9350,7 +9349,13 @@ fn album_tile(
             .as_ref()
             .filter(|_| matches!(message.content, Content::Image { .. }))
             .map(|path| {
-                let uri = crate::util::image_uri(path);
+                let pixels = vec2(PICTURE_WIDTH, PICTURE_HEIGHT) * ui.ctx().pixels_per_point();
+                let uri = crate::picture_loader::uri(
+                    path,
+                    pixels.x.ceil() as u32,
+                    pixels.y.ceil() as u32,
+                )
+                .unwrap_or_else(|| crate::util::image_uri(path));
                 crate::image_cache::touch(ui.ctx(), &uri);
                 uri
             })
@@ -10491,7 +10496,11 @@ fn picture(
         if !ui.is_rect_visible(Rect::from_min_size(position, reserved)) {
             return ui.allocate_exact_size(reserved, Sense::hover()).0;
         }
-        let image = widgets::file_image(ui, path);
+        let image = if sticker.is_some() {
+            widgets::file_image(ui, path)
+        } else {
+            widgets::bubble_image(ui, path, vec2(PICTURE_WIDTH, PICTURE_HEIGHT))
+        };
         return match image.load_for_size(ui.ctx(), vec2(max_width, max_height)) {
             Ok(egui::load::TexturePoll::Ready { texture }) => {
                 if drawn != Some(texture.size) {

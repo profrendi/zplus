@@ -6,8 +6,7 @@
 //! ZapFast keeps its names, its key, its proxy and its interface.
 
 pub use fastframe_update::{
-    DownloadState, Installation, Kind, Prepared, Release, Source, Unsupported,
-    Updater,
+    DownloadState, Installation, Kind, Prepared, Release, Source, Unsupported, Updater,
 };
 use fastframe_update::{MacConfig, ReqwestTransport, UpdateConfig};
 

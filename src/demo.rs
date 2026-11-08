@@ -1338,7 +1338,10 @@ fn long_chat_sample(app: &mut App) {
     // Text only, short rows as most chats have: ZFPLUS_DEMO_TEXT=1.
     if std::env::var_os("ZFPLUS_DEMO_TEXT").is_some() {
         base.retain(|message| {
-            matches!(&message.content, crate::model::Content::Text { preview: None, .. })
+            matches!(
+                &message.content,
+                crate::model::Content::Text { preview: None, .. }
+            )
         });
     }
     let wanted = std::env::var("ZFPLUS_DEMO_MESSAGES")

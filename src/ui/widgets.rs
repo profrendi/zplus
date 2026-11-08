@@ -305,6 +305,20 @@ pub fn file_image(ui: &Ui, path: &Path) -> egui::Image<'static> {
     egui::Image::new(uri)
 }
 
+/// A photo in a message bubble: scaled to cover `cover` points on threads
+/// of its own (`crate::picture_loader`) when it is a still picture, else as
+/// [`file_image`] draws it. Either way the texture reports the file's size.
+pub fn bubble_image(ui: &Ui, path: &Path, cover: Vec2) -> egui::Image<'static> {
+    let pixels = cover * ui.ctx().pixels_per_point();
+    match crate::picture_loader::uri(path, pixels.x.ceil() as u32, pixels.y.ceil() as u32) {
+        Some(uri) => {
+            crate::image_cache::touch(ui.ctx(), &uri);
+            egui::Image::new(uri)
+        }
+        None => file_image(ui, path),
+    }
+}
+
 /// Round profile picture, or id-colored initials when no picture is available.
 pub fn avatar(
     ui: &mut Ui,
@@ -2645,9 +2659,14 @@ mod tests {
         let rect = Rect::from_min_size(pos2(100.5, 50.25), vec2(213.75, 41.5));
         // FNV-1a, stable across toolchains, over every shape's debug text.
         let mut fingerprint: u64 = 0xcbf2_9ce4_8422_2325;
-        for palette in [Palette::dark(), Palette::light()] {
+        // ZFPlus colours its outgoing bubbles violet; the fingerprint keeps
+        // WhatsApp's green fills, so it still checks the shapes upstream's.
+        for (palette, out) in [
+            (Palette::dark(), Color32::from_rgb(0x00, 0x5c, 0x4b)),
+            (Palette::light(), Color32::from_rgb(0xd9, 0xfd, 0xd3)),
+        ] {
             for tail in [None, Some(Side::Left), Some(Side::Right)] {
-                for (fill, ppp) in [(palette.bubble_out, 1.0), (palette.bubble_in, 1.5)] {
+                for (fill, ppp) in [(out, 1.0), (palette.bubble_in, 1.5)] {
                     let shape = bubble_shape(&palette, rect, fill, tail, ppp, SCREEN);
                     for byte in format!("{shape:?}").bytes() {
                         fingerprint = (fingerprint ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);

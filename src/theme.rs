@@ -660,6 +660,9 @@ fn tabular_family(weight: fastframe_fonts::Weight) -> egui::FontFamily {
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
     egui_extras::install_image_loaders(ctx);
+    // Message photos, scaled to the bubble on threads of their own. Added
+    // after egui's loaders, so it is asked first.
+    crate::picture_loader::install(ctx);
     // Served by a loader that never forgets them, so `reduce_texture_memory`
     // below cannot leave an icon drawn at two sizes without bytes.
     fastframe_icons::install::<Icon>(ctx);

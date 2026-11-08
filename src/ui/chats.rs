@@ -1883,7 +1883,10 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
             if plus.blur_recent() {
                 let area = Rect::from_min_max(
                     pos2(left, line_y),
-                    pos2((x + preview.size().x).min(badge_right).max(left + 40.0), line_y + 16.0),
+                    pos2(
+                        (x + preview.size().x).min(badge_right).max(left + 40.0),
+                        line_y + 16.0,
+                    ),
                 );
                 crate::plus::blur_text(ui, &palette, area, fill);
             }
@@ -2594,8 +2597,16 @@ mod tests {
             output.textures_delta.clear();
             buttons
         };
-        assert_eq!(buttons(1000.0), [NewChat, HideList]);
-        assert_eq!(buttons(400.0), [NewChat]);
+        // ZFPlus: Start new chat sits beside New chat while its Extra
+        // buttons option is on (by default it is).
+        let number = crate::plus::get().new_chat_button();
+        let narrow: Vec<_> = [NewChat]
+            .into_iter()
+            .chain(number.then_some(HeaderButton::PlusNewNumber))
+            .collect();
+        let wide: Vec<_> = narrow.iter().copied().chain([HideList]).collect();
+        assert_eq!(buttons(1000.0), wide);
+        assert_eq!(buttons(400.0), narrow);
     }
 
     /// The Calls tab's header carries New call, as WhatsApp's Calls pane

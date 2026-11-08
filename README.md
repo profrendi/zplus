@@ -72,6 +72,8 @@ WA Web Plus — not just a grey box on top.
 | Install updates automatically | Downloads a new release, installs it and restarts by itself (it waits while you're in a call, recording or typing). |
 | About and updates | The ⓘ button above Settings shows what ZFPlus is, links to this repository and the original, and checks, downloads and installs updates on the spot. Settings → System has the same "Check for updates now". |
 | Tidier left rail | Archived sits under Chats, Starred under Calls, and Chats shows how many chats are unread, the same number as the taskbar. |
+| Lighter on old computers | An open chat draws only the messages on screen, the window repaints only when something changes, search skips one-letter scans, sync runs below the window's priority, and photos are decoded at bubble size on two background threads. |
+| Diagnostics | Settings → Diagnostics → Record performance writes CPU and frame times once a second (`prof.csv`, `prof-summary.txt`; numbers only, no messages, names or phone numbers; the CSV is capped at 50 MB, two files kept). F12 shows the numbers live, Copy performance report puts the summary on the clipboard. Off by default. |
 
 #### Extra buttons
 | Feature | What it does |

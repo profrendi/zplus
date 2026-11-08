@@ -1803,7 +1803,11 @@ impl Archive {
         );
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(
-            params![search_pattern(needle), limit as i64, raw_search_pattern(needle)],
+            params![
+                search_pattern(needle),
+                limit as i64,
+                raw_search_pattern(needle)
+            ],
             searched_message,
         )?;
         rows.collect()

@@ -1763,7 +1763,7 @@ pub struct Backend {
 /// the window's thread, the window still answers at once while they work.
 /// They lose nothing on an idle machine: priority only orders threads that
 /// wait for the same processor.
-fn below_normal_priority() {
+pub(crate) fn below_normal_priority() {
     #[cfg(windows)]
     {
         #[link(name = "kernel32")]

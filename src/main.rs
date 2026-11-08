@@ -356,9 +356,6 @@ fn run() -> eframe::Result<()> {
         log::warn!("could not set the Dock icon: {error}");
     }
     let demo_persistence = demo.then(|| dirs.state.join("window.ron"));
-    // ZFPlus Prof: measures from here, on the interface thread.
-    #[cfg(feature = "prof")]
-    zapfast::prof::start(&zapfast::prof::data_dir());
 
     #[allow(unused_mut)]
     let mut app = if demo {
@@ -623,13 +620,7 @@ fn native_options(
     let default_size = demo_size_arg().unwrap_or([1180.0, 780.0]);
     let demo = demo_persistence.is_some();
     let viewport = egui::ViewportBuilder::default()
-        .with_title(if demo {
-            "ZapFast Demo"
-        } else if zapfast::prof::ENABLED {
-            "ZFPlus Prof"
-        } else {
-            "ZFPlus"
-        })
+        .with_title(if demo { "ZapFast Demo" } else { "ZFPlus" })
         .with_app_id(if demo {
             "zapfast-demo".to_owned()
         } else {
@@ -776,14 +767,26 @@ impl eframe::App for Shell {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if zapfast::prof::ENABLED {
+        if zapfast::prof::enabled() {
             let app = &self.app;
             let view = format!(
                 "{:?}{}{}{}",
                 app.page,
-                if app.current_chat().is_some() { "+chat" } else { "" },
-                if app.chat_search_open { "+chat search" } else { "" },
-                if app.search.trim().is_empty() { "" } else { "+list search" },
+                if app.current_chat().is_some() {
+                    "+chat"
+                } else {
+                    ""
+                },
+                if app.chat_search_open {
+                    "+chat search"
+                } else {
+                    ""
+                },
+                if app.search.trim().is_empty() {
+                    ""
+                } else {
+                    "+list search"
+                },
             );
             zapfast::prof::frame(ctx, frame.info().cpu_usage, &view);
         }

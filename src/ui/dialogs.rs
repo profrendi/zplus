@@ -1769,7 +1769,8 @@ fn pair_with_phone(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         if let Some(picked) = country_picker(ui, &palette, "pair-phone-country-picker", country) {
             country = picked;
-            ui.ctx().data_mut(|data| data.insert_temp(country_id, picked));
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(country_id, picked));
         }
         let field = Frame::new()
             .fill(palette.surface)
@@ -1807,7 +1808,10 @@ fn pair_with_phone(app: &mut App, ui: &mut egui::Ui) {
             "Example: 0812 3456 7890 becomes +62 812 3456 7890".to_owned(),
             palette.secondary,
         ),
-        None => ("This is not a valid phone number yet".to_owned(), palette.danger),
+        None => (
+            "This is not a valid phone number yet".to_owned(),
+            palette.danger,
+        ),
     };
     theme::text(ui, preview, theme::regular(12.5), color);
     ui.add_space(8.0);

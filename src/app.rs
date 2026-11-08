@@ -2584,7 +2584,11 @@ impl App {
             Some(chat) => self.chat_title(chat),
             None => self.display_name_or(id, None),
         };
-        self.plus_notice(id, format!("{} is online", name.trim_start_matches('~')), "Online now".into());
+        self.plus_notice(
+            id,
+            format!("{} is online", name.trim_start_matches('~')),
+            "Online now".into(),
+        );
     }
 
     /// ZFPlus: someone started typing or recording in a chat we are
@@ -2601,7 +2605,10 @@ impl App {
         if self.window_focused && self.open_chat.as_deref() == Some(chat_id) {
             return;
         }
-        if !crate::plus::allow_notice(&format!("typing:{chat_id}:{sender}"), Duration::from_secs(60)) {
+        if !crate::plus::allow_notice(
+            &format!("typing:{chat_id}:{sender}"),
+            Duration::from_secs(60),
+        ) {
             return;
         }
         let Some(chat) = self.chat(chat_id) else {
@@ -7132,7 +7139,10 @@ impl App {
     /// typed in the open window. Then it waits for that to end.
     fn plus_auto_install(&mut self) {
         if !(self.settings.plus.auto_install_updates || crate::plus::install_wanted())
-            || !matches!(self.update_download, crate::updates::DownloadState::Ready(_))
+            || !matches!(
+                self.update_download,
+                crate::updates::DownloadState::Ready(_)
+            )
             || self.call.is_some()
             || self.recording.is_some()
             || (self.window_focused && !self.composer.trim().is_empty())
@@ -10558,6 +10568,7 @@ impl App {
         }
         self.tick_app_lock(ctx);
         self.plus_lock_when_away(ctx);
+        self.sync_diagnostics();
         self.tick_login_item();
         // Nobody reads behind the lock screen: messages stay unread, the
         // phone keeps notifying, and notifications here say nothing.
@@ -10603,6 +10614,16 @@ impl App {
         self.follow_receipts();
         self.sync_badge();
         self.request_attention(ctx);
+    }
+
+    /// Starts or stops the diagnostics recording to follow its switch in
+    /// Settings. Here, on the interface thread, which it measures apart.
+    fn sync_diagnostics(&self) {
+        let wanted = self.settings.plus.diagnostics && !cfg!(test);
+        if wanted != crate::prof::enabled() {
+            let dir = self.dirs.diagnostics();
+            crate::prof::set(wanted.then_some(dir.as_path()));
+        }
     }
 
     /// Answers the system's sleep and wake. Every account reconnects its link
@@ -19121,6 +19142,8 @@ mod tests {
     fn automatic_updates_require_opt_in_and_explicit_restart() {
         use crate::updates::{DownloadState, Installation, Kind, Prepared};
         let mut app = app();
+        // ZapFast's own switch; ZFPlus's (on by default) is tested below.
+        app.settings.plus.auto_install_updates = false;
         let ctx = egui::Context::default();
         app.update = Some(crate::updates::Release {
             version: "99.0.0".into(),
@@ -19152,6 +19175,54 @@ mod tests {
         app.apply(Action::InstallUpdate, &ctx);
         assert!(matches!(app.update_download, DownloadState::Installing));
         assert!(!app.quit_requested, "wait for the helper before closing");
+    }
+
+    /// ZFPlus: Install updates automatically downloads without ZapFast's
+    /// own switch and asks to install once the download is ready, but not
+    /// while a message is being typed.
+    #[test]
+    fn zfplus_installs_updates_by_itself_when_nothing_is_lost() {
+        use crate::updates::{DownloadState, Installation, Kind, Prepared};
+        let mut app = app();
+        assert!(app.settings.plus.auto_install_updates, "on by default");
+        app.settings.download_updates_automatically = false;
+        app.update = Some(crate::updates::Release {
+            version: "99.0.0".into(),
+            url: "https://github.com/profrendi/zplus/releases/latest".into(),
+        });
+        let installation = Installation {
+            executable: PathBuf::from("/fixture/zapfast"),
+            kind: Kind::Portable,
+        };
+        app.update_support = Some(Ok(installation.clone()));
+        app.maybe_download_update();
+        assert!(matches!(
+            app.update_download,
+            DownloadState::Downloading { .. }
+        ));
+        app.update_download =
+            DownloadState::Ready(Box::new(Prepared::sample(installation, "99.0.0")));
+        app.window_focused = true;
+        app.composer = "half a sentence".into();
+        app.actions.clear();
+        app.maybe_download_update();
+        assert!(
+            !app.actions
+                .iter()
+                .any(|action| matches!(action, Action::InstallUpdate)),
+            "waits while typing"
+        );
+        app.composer.clear();
+        app.maybe_download_update();
+        assert!(
+            app.actions
+                .iter()
+                .any(|action| matches!(action, Action::InstallUpdate))
+        );
+        assert!(
+            !app.quit_requested,
+            "the install itself still waits for the helper"
+        );
     }
 
     #[test]
@@ -27021,7 +27092,7 @@ mod app_lock_tests {
         app.lock_app();
         app.maybe_notify(CHAT, &message);
         let shown = app.notifications.shown.last().unwrap();
-        assert_eq!(shown.title, "ZapFast");
+        assert_eq!(shown.title, "ZFPlus", "the app's name only");
         assert_eq!(shown.body, "New message");
         assert_eq!(shown.picture, None);
         assert_eq!(
@@ -27056,7 +27127,7 @@ mod app_lock_tests {
         app.settings.notification_content = false;
         app.maybe_notify(CHAT, &message);
         let shown = app.notifications.shown.last().unwrap().clone();
-        assert_eq!(shown.title, "ZapFast");
+        assert_eq!(shown.title, "ZFPlus", "the app's name only");
         assert_eq!(shown.body, "New message");
         assert_eq!(shown.picture, None);
         assert_eq!(shown.sound, app.settings.message_sound);

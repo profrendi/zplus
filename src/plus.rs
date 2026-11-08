@@ -54,6 +54,9 @@ pub struct PlusSettings {
     pub pin_button: bool,
     pub mark_unread_button: bool,
     pub translate_button: bool,
+    /// Settings > Diagnostics: record CPU and frame times to the
+    /// diagnostics folder (`crate::prof`). Off unless turned on.
+    pub diagnostics: bool,
 }
 
 impl Default for PlusSettings {
@@ -85,6 +88,7 @@ impl Default for PlusSettings {
             pin_button: true,
             mark_unread_button: true,
             translate_button: true,
+            diagnostics: false,
         }
     }
 }
@@ -196,8 +200,7 @@ pub fn is_kept(chat: &str, id: &str) -> bool {
 // ---------------------------------------------------------------------------
 // The chat list that does not jump when we send.
 
-static FROZEN: LazyLock<Mutex<HashMap<String, i64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static FROZEN: LazyLock<Mutex<HashMap<String, i64>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Remembers where a chat sorted before we sent to it.
 pub fn freeze(chat: &str, activity: i64) {
@@ -375,7 +378,11 @@ pub fn veil_text(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, fil
     let used = rows as f32 * pitch;
     let mut y = rect.center().y - used / 2.0 + pitch / 2.0;
     for row in 0..rows {
-        let share = if row + 1 == rows && rows > 1 { 0.6 } else { 0.92 };
+        let share = if row + 1 == rows && rows > 1 {
+            0.6
+        } else {
+            0.92
+        };
         let bar = Rect::from_center_size(
             pos2(rect.left() + rect.width() * share / 2.0, y),
             vec2(rect.width() * share, line),
@@ -406,7 +413,11 @@ pub fn veil_avatar(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect) {
     }
     let painter = ui.painter();
     let radius = rect.width().min(rect.height()) / 2.0;
-    painter.circle_filled(rect.center(), radius + 0.5, opaque(palette, palette.surface_hover));
+    painter.circle_filled(
+        rect.center(),
+        radius + 0.5,
+        opaque(palette, palette.surface_hover),
+    );
     painter.circle_filled(
         rect.center() + vec2(0.0, -radius * 0.22),
         radius * 0.33,
@@ -501,7 +512,13 @@ pub enum Shape {
 
 /// Blurs whatever is drawn under `rect` so far, as WA Web Plus does. Draw
 /// it after the content it hides.
-pub fn blur(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, shape: Shape, fill: Color32) {
+pub fn blur(
+    ui: &egui::Ui,
+    palette: &crate::theme::Palette,
+    rect: Rect,
+    shape: Shape,
+    fill: Color32,
+) {
     let visible = rect
         .intersect(ui.clip_rect())
         .intersect(ui.ctx().content_rect());
@@ -621,9 +638,19 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
     let modern = version.is_new_shader_interface();
     let es = declaration.contains(" es");
     let (vertex_out, fragment_in, fragment_out, sample) = if modern {
-        ("out", "in", "out vec4 f_color;\n#define FRAG f_color", "texture")
+        (
+            "out",
+            "in",
+            "out vec4 f_color;\n#define FRAG f_color",
+            "texture",
+        )
     } else {
-        ("varying", "varying", "#define FRAG gl_FragColor", "texture2D")
+        (
+            "varying",
+            "varying",
+            "#define FRAG gl_FragColor",
+            "texture2D",
+        )
     };
     let precision = if es { "precision highp float;\n" } else { "" };
     let vertex = format!(
@@ -696,10 +723,26 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
         let vao = gl.create_vertex_array()?;
         let texture = gl.create_texture()?;
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
         gl.bind_texture(glow::TEXTURE_2D, None);
         Ok(BlurGl {
             context,
@@ -723,7 +766,13 @@ pub fn blur_avatar(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect) {
 /// Blurs a line or block of text, with a little room for the blur to spread.
 pub fn blur_text(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, fill: Color32) {
     if rect.is_positive() {
-        blur(ui, palette, rect.expand2(vec2(4.0, 3.0)), Shape::Rounded(6.0), fill);
+        blur(
+            ui,
+            palette,
+            rect.expand2(vec2(4.0, 3.0)),
+            Shape::Rounded(6.0),
+            fill,
+        );
     }
 }
 
@@ -732,7 +781,11 @@ pub fn blur_bubble(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, o
     if BLUR_BROKEN.load(Ordering::Relaxed) {
         veil_bubble(ui, palette, rect, own);
     } else {
-        let fill = if own { palette.bubble_out } else { palette.bubble_in };
+        let fill = if own {
+            palette.bubble_out
+        } else {
+            palette.bubble_in
+        };
         blur(ui, palette, rect, Shape::Rounded(8.0), fill);
     }
 }
@@ -740,8 +793,7 @@ pub fn blur_bubble(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, o
 // ---------------------------------------------------------------------------
 // Lock when away.
 
-static AWAY_SINCE: LazyLock<Mutex<Option<std::time::Instant>>> =
-    LazyLock::new(|| Mutex::new(None));
+static AWAY_SINCE: LazyLock<Mutex<Option<std::time::Instant>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Whether the app should lock now: at once when minimized or hidden (with
 /// `on_minimize`), or once another window has been in front for
@@ -791,7 +843,10 @@ static CHECK_REQUESTED: AtomicBool = AtomicBool::new(false);
 static INSTALL_WANTED: AtomicBool = AtomicBool::new(false);
 
 pub fn update_check() -> UpdateCheck {
-    UPDATE_CHECK.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    UPDATE_CHECK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
 }
 
 pub fn set_update_check(state: UpdateCheck) {
@@ -822,7 +877,11 @@ pub fn install_wanted() -> bool {
 pub fn upstream_version() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let mut parts = version.split('.');
-    match (parts.next(), parts.next(), parts.next().and_then(|p| p.parse::<u32>().ok())) {
+    match (
+        parts.next(),
+        parts.next(),
+        parts.next().and_then(|p| p.parse::<u32>().ok()),
+    ) {
         (Some(major), Some(minor), Some(patch)) => format!("{major}.{minor}.{}", patch / 100),
         _ => version.to_owned(),
     }

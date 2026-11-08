@@ -883,6 +883,8 @@ fn sections(app: &App) -> Vec<Section> {
         },
     );
 
+    let diagnostics = diagnostics_section(app);
+
     let mut about_section = Section::new(translated(locale, "About"));
     about_section.block(
         vec![
@@ -902,9 +904,55 @@ fn sections(app: &App) -> Vec<Section> {
         system,
         account_section,
         files,
+        diagnostics,
         about_section,
     ]);
     sections
+}
+
+/// Settings > Diagnostics: performance recording, its report and folder.
+fn diagnostics_section(app: &App) -> Section {
+    let palette = app.palette;
+    let folder = app.dirs.diagnostics();
+    let mut section = Section::new(Text::from("Diagnostics"));
+    section.toggle(
+        "Record performance",
+        "Writes CPU use and frame times to prof.csv and prof-summary.txt, once a second, while it is on. Only numbers and names of parts of ZFPlus: no messages, names or phone numbers. Press F12 to see the numbers live. Turn it off when you are done.",
+        |settings| &mut settings.plus.diagnostics,
+    );
+    section.row(
+        "Copy performance report",
+        "The summary of the current recording, or of the last one, to paste in a message.",
+        {
+            let folder = folder.clone();
+            move |ui, app| {
+                if theme::soft_button(ui, &palette, Some(Icon::Copy), "Copy", false).clicked() {
+                    match crate::prof::report(&folder) {
+                        Some(report) => {
+                            ui.ctx().copy_text(report);
+                            app.toast("Performance report copied");
+                        }
+                        None => {
+                            app.toast("Nothing recorded yet. Turn on Record performance first.")
+                        }
+                    }
+                }
+            }
+        },
+    );
+    section.row(
+        "Diagnostics folder",
+        folder.display().to_string(),
+        move |ui, app| {
+            if theme::soft_button(ui, &palette, Some(Icon::ExternalLink), "Open folder", false)
+                .clicked()
+            {
+                let _ = std::fs::create_dir_all(&folder);
+                app.actions.push(Action::OpenFolder(folder.clone()));
+            }
+        },
+    );
+    section
 }
 
 /// One Enhancements option: a field of the Plus settings.
@@ -923,33 +971,122 @@ enum PlusOption {
 fn plus_sections() -> Vec<Section> {
     use PlusOption::{Always, Tick};
     let private: Vec<PlusOption> = vec![
-        Tick("Show the Private Mode eye in the left rail", "On: Private Mode works while this switch and the eye above the star are both on, so the eye turns it on and off in one click. Off: this switch alone turns it on and off.", |p| &mut p.show_eye_button),
-        Tick("Blur contact names", "Names in the chat list, the chat header and group senders. Hover to reveal.", |p| &mut p.blur_names),
-        Tick("Blur contact photos", "Profile pictures. Hover to reveal.", |p| &mut p.blur_photos),
-        Tick("Blur recent messages", "The last-message preview in the chat list. Hover to reveal.", |p| &mut p.blur_recent),
-        Tick("Blur conversation messages", "Every bubble in the open chat. Hover a message to read it.", |p| &mut p.blur_messages),
-        Tick("Blur message composer input", "What you are typing. Hover the box to see it.", |p| &mut p.blur_composer),
-        Tick("Hide typing status", "Nobody sees \"typing…\" from you.", |p| &mut p.hide_typing),
-        Always("Hide recording status", "ZapFast never sends \"recording audio…\"."),
-        Always("View statuses privately", "ZapFast does not open statuses, so it never marks one as seen."),
-        Tick("Play audio messages privately", "The blue microphone (played) is not sent to the sender.", |p| &mut p.play_privately),
-        Tick("Disable read receipts", "No blue ticks are sent when you read a chat.", |p| &mut p.disable_read_receipts),
-        Tick("Hide online status (Invisible Mode)", "Never announce yourself as online. Your phone keeps its notifications.", |p| &mut p.hide_online),
-        Tick("Restore deleted messages", "When someone deletes a message for everyone, keep it here, marked as deleted.", |p| &mut p.restore_deleted),
+        Tick(
+            "Show the Private Mode eye in the left rail",
+            "On: Private Mode works while this switch and the eye above the star are both on, so the eye turns it on and off in one click. Off: this switch alone turns it on and off.",
+            |p| &mut p.show_eye_button,
+        ),
+        Tick(
+            "Blur contact names",
+            "Names in the chat list, the chat header and group senders. Hover to reveal.",
+            |p| &mut p.blur_names,
+        ),
+        Tick(
+            "Blur contact photos",
+            "Profile pictures. Hover to reveal.",
+            |p| &mut p.blur_photos,
+        ),
+        Tick(
+            "Blur recent messages",
+            "The last-message preview in the chat list. Hover to reveal.",
+            |p| &mut p.blur_recent,
+        ),
+        Tick(
+            "Blur conversation messages",
+            "Every bubble in the open chat. Hover a message to read it.",
+            |p| &mut p.blur_messages,
+        ),
+        Tick(
+            "Blur message composer input",
+            "What you are typing. Hover the box to see it.",
+            |p| &mut p.blur_composer,
+        ),
+        Tick(
+            "Hide typing status",
+            "Nobody sees \"typing…\" from you.",
+            |p| &mut p.hide_typing,
+        ),
+        Always(
+            "Hide recording status",
+            "ZapFast never sends \"recording audio…\".",
+        ),
+        Always(
+            "View statuses privately",
+            "ZapFast does not open statuses, so it never marks one as seen.",
+        ),
+        Tick(
+            "Play audio messages privately",
+            "The blue microphone (played) is not sent to the sender.",
+            |p| &mut p.play_privately,
+        ),
+        Tick(
+            "Disable read receipts",
+            "No blue ticks are sent when you read a chat.",
+            |p| &mut p.disable_read_receipts,
+        ),
+        Tick(
+            "Hide online status (Invisible Mode)",
+            "Never announce yourself as online. Your phone keeps its notifications.",
+            |p| &mut p.hide_online,
+        ),
+        Tick(
+            "Restore deleted messages",
+            "When someone deletes a message for everyone, keep it here, marked as deleted.",
+            |p| &mut p.restore_deleted,
+        ),
     ];
     let custom: Vec<PlusOption> = vec![
-        Tick("Install updates automatically", "When a new ZFPlus release is out (it follows every official ZapFast release), download it, install it and restart by itself. It waits while you are in a call, recording, or typing.", |p| &mut p.auto_install_updates),
-        Tick("Notify about online activities", "A notification when a contact from your recent chats comes online.", |p| &mut p.notify_online),
-        Tick("Notify about typing and recording activities", "A notification when someone starts typing or recording to you in a chat that is not open.", |p| &mut p.notify_typing),
-        Tick("Prevent chats list jumping on message submission", "A chat you send to keeps its place until someone answers.", |p| &mut p.prevent_list_jump),
-        Always("Set custom chat background image", "Settings → Appearance → Wallpaper → Choose image."),
+        Tick(
+            "Install updates automatically",
+            "When a new ZFPlus release is out (it follows every official ZapFast release), download it, install it and restart by itself. It waits while you are in a call, recording, or typing.",
+            |p| &mut p.auto_install_updates,
+        ),
+        Tick(
+            "Notify about online activities",
+            "A notification when a contact from your recent chats comes online.",
+            |p| &mut p.notify_online,
+        ),
+        Tick(
+            "Notify about typing and recording activities",
+            "A notification when someone starts typing or recording to you in a chat that is not open.",
+            |p| &mut p.notify_typing,
+        ),
+        Tick(
+            "Prevent chats list jumping on message submission",
+            "A chat you send to keeps its place until someone answers.",
+            |p| &mut p.prevent_list_jump,
+        ),
+        Always(
+            "Set custom chat background image",
+            "Settings → Appearance → Wallpaper → Choose image.",
+        ),
     ];
     let buttons: Vec<PlusOption> = vec![
-        Tick("Like button", "A 👍 beside each message you hover, one click to react.", |p| &mut p.like_button),
-        Tick("Pin chat button", "Pin or unpin the open chat from its header.", |p| &mut p.pin_button),
-        Tick("Start new chat", "A button beside New chat: pick the country code, type any number and message it without saving the contact.", |p| &mut p.new_chat_button),
-        Tick("Mark conversation as read/unread", "A button in the chat header.", |p| &mut p.mark_unread_button),
-        Tick("Translate message button", "Translates a message into the interface language through Google Translate. Only the message you click is sent.", |p| &mut p.translate_button),
+        Tick(
+            "Like button",
+            "A 👍 beside each message you hover, one click to react.",
+            |p| &mut p.like_button,
+        ),
+        Tick(
+            "Pin chat button",
+            "Pin or unpin the open chat from its header.",
+            |p| &mut p.pin_button,
+        ),
+        Tick(
+            "Start new chat",
+            "A button beside New chat: pick the country code, type any number and message it without saving the contact.",
+            |p| &mut p.new_chat_button,
+        ),
+        Tick(
+            "Mark conversation as read/unread",
+            "A button in the chat header.",
+            |p| &mut p.mark_unread_button,
+        ),
+        Tick(
+            "Translate message button",
+            "Translates a message into the interface language through Google Translate. Only the message you click is sent.",
+            |p| &mut p.translate_button,
+        ),
     ];
     let mut sections = Vec::new();
     for (title, master_title, master_description, master, options) in [
@@ -957,21 +1094,24 @@ fn plus_sections() -> Vec<Section> {
             "Enhancements · Private Mode",
             "Private Mode",
             "Anti screen and status spying.",
-            (|settings: &mut Settings| &mut settings.plus.private_mode) as fn(&mut Settings) -> &mut bool,
+            (|settings: &mut Settings| &mut settings.plus.private_mode)
+                as fn(&mut Settings) -> &mut bool,
             private,
         ),
         (
             "Enhancements · Customizations",
             "Customizations",
             "Other different useful functions.",
-            (|settings: &mut Settings| &mut settings.plus.customizations) as fn(&mut Settings) -> &mut bool,
+            (|settings: &mut Settings| &mut settings.plus.customizations)
+                as fn(&mut Settings) -> &mut bool,
             custom,
         ),
         (
             "Enhancements · Extra buttons",
             "Extra buttons",
             "Add new buttons with additional functions.",
-            (|settings: &mut Settings| &mut settings.plus.extra_buttons) as fn(&mut Settings) -> &mut bool,
+            (|settings: &mut Settings| &mut settings.plus.extra_buttons)
+                as fn(&mut Settings) -> &mut bool,
             buttons,
         ),
     ] {
@@ -1005,7 +1145,11 @@ fn plus_option(ui: &mut egui::Ui, app: &mut App, option: PlusOption, active: boo
     let value = field.is_none_or(|field| *field(&mut app.settings.plus));
     let (rect, response) = ui.allocate_exact_size(
         vec2(ui.available_width(), 28.0),
-        if fixed { Sense::hover() } else { Sense::click() },
+        if fixed {
+            Sense::hover()
+        } else {
+            Sense::click()
+        },
     );
     if ui.is_rect_visible(rect) {
         if response.hovered() && !fixed {

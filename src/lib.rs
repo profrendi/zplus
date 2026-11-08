@@ -42,6 +42,7 @@ pub mod new_group;
 pub mod notify;
 pub mod opener;
 pub mod paths;
+pub mod picture_loader;
 pub mod plus;
 pub mod privacy;
 pub mod prof;

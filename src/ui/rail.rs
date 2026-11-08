@@ -246,14 +246,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                             private_mode_button(app, ui, &palette, PLATE);
                         }
                         ui.add_space(GAP);
-                        plus_plate(app, ui, &palette, Icon::Info, "About ZFPlus and updates", false, "plus-about", |app| {
-                            app.actions.push(Action::ShowDialog(crate::model::Dialog::About));
-                        });
+                        plus_plate(
+                            app,
+                            ui,
+                            &palette,
+                            Icon::Info,
+                            "About ZFPlus and updates",
+                            false,
+                            "plus-about",
+                            |app| {
+                                app.actions
+                                    .push(Action::ShowDialog(crate::model::Dialog::About));
+                            },
+                        );
                         if lock {
                             ui.add_space(GAP);
-                            plus_plate(app, ui, &palette, Icon::Lock, "Lock ZFPlus now (Ctrl+Shift+L)", false, "plus-lock", |app| {
-                                app.actions.push(Action::LockApp);
-                            });
+                            plus_plate(
+                                app,
+                                ui,
+                                &palette,
+                                Icon::Lock,
+                                "Lock ZFPlus now (Ctrl+Shift+L)",
+                                false,
+                                "plus-lock",
+                                |app| {
+                                    app.actions.push(Action::LockApp);
+                                },
+                            );
                         }
                     }
                     ui.add_space(GAP);

@@ -7,7 +7,9 @@ private voice playback, restore deleted messages), online and typing
 notifications, a chat list that does not jump, and extra buttons (Like,
 Translate, Pin, Mark read/unread, Start new chat with any number).
 
-Settings -> Enhancements holds every option. The eye above the star in the
+Settings -> Enhancements holds every option. Settings -> Diagnostics can
+record CPU use and frame times (numbers only, off by default; F12 shows them
+live, "Copy performance report" copies the summary). The eye above the star in the
 left rail turns Private Mode on and off.
 
 Installed copy: updates itself from the ZFPlus releases.

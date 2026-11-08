@@ -10,7 +10,8 @@ use crate::theme::{self, Icon};
 use crate::updates::DownloadState;
 
 /// Rendi's words, as the author of ZFPlus.
-const RENDI_QUOTE: &str = "“Privasi itu bukan soal menyembunyikan sesuatu, tapi soal memilih apa yang ingin kita bagi.”";
+const RENDI_QUOTE: &str =
+    "“Privasi itu bukan soal menyembunyikan sesuatu, tapi soal memilih apa yang ingin kita bagi.”";
 
 pub fn about(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
@@ -35,26 +36,14 @@ pub fn about(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(8.0);
     theme::paragraph(
         ui,
-        "ZFPlus is ZapFast with Enhancements inspired by WA Web Plus: real blur of names, photos and messages, Invisible Mode, no read receipts or typing status, private voice playback, restored deleted messages, online and typing alerts, Like, Translate, Pin and Mark unread buttons, chatting with any number, locking when you step away, and updates that install themselves.",
+        "ZapFast with WA Web Plus extras: blur, Invisible Mode, no read receipts or typing status, restored deleted messages, extra buttons, app lock and self-installing updates.",
         theme::regular(13.0),
         palette.text,
     );
     ui.add_space(4.0);
     theme::paragraph(
         ui,
-        crate::i18n::gettext(
-            app.locale,
-            "A native WhatsApp client written in Rust with egui. It connects through whatsapp-rust. Messages are end-to-end encrypted on this device.",
-        ),
-        theme::regular(12.5),
-        palette.secondary,
-    );
-    theme::paragraph(
-        ui,
-        crate::i18n::gettext(
-            app.locale,
-            "This is an unofficial client. Using it may be against WhatsApp's terms of service and could get an account suspended.",
-        ),
+        "A native, end-to-end encrypted WhatsApp client in Rust. Unofficial: using it may break WhatsApp's terms and get an account suspended.",
         theme::regular(12.5),
         palette.secondary,
     );
@@ -86,8 +75,13 @@ pub fn about(app: &mut App, ui: &mut egui::Ui) {
             theme::paragraph(ui, RENDI_QUOTE, theme::regular(13.0), palette.text);
             ui.horizontal(|ui| {
                 theme::text(ui, "— ", theme::regular(12.5), palette.secondary);
-                if theme::link(ui, "Rendi (profrendi), ZFPlus", theme::medium(12.5), palette.link)
-                    .clicked()
+                if theme::link(
+                    ui,
+                    "Rendi (profrendi), ZFPlus",
+                    theme::medium(12.5),
+                    palette.link,
+                )
+                .clicked()
                 {
                     app.actions
                         .push(Action::OpenUrl(crate::plus::ZFPLUS_URL.to_owned()));
@@ -142,18 +136,25 @@ pub fn updates(app: &mut App, ui: &mut egui::Ui) {
             app.update_download,
             DownloadState::Downloading { .. } | DownloadState::Ready(_) | DownloadState::Installing
         );
-        if available.is_some() && !busy {
-            if theme::pill_button(ui, &palette, "Download, install and restart", true).clicked() {
-                crate::plus::want_install();
-                // The download starts on the next tick, once this copy is
-                // known to update itself.
-                app.actions.push(Action::DownloadUpdate);
-            }
+        if available.is_some()
+            && !busy
+            && theme::pill_button(ui, &palette, "Download, install and restart", true).clicked()
+        {
+            crate::plus::want_install();
+            // The download starts on the next tick, once this copy is
+            // known to update itself.
+            app.actions.push(Action::DownloadUpdate);
         }
         if !busy
             && check != UpdateCheck::Checking
-            && theme::soft_button(ui, &palette, Some(Icon::Refresh), "Check for updates now", false)
-                .clicked()
+            && theme::soft_button(
+                ui,
+                &palette,
+                Some(Icon::Refresh),
+                "Check for updates now",
+                false,
+            )
+            .clicked()
         {
             crate::plus::request_check();
         }
