@@ -1,0 +1,60 @@
+# Builds ZapFast Plus for Windows (installer and portable), signs the
+# checksums the updater checks, and publishes a GitHub release. Runs when
+# plus/REVISION or plus/UPSTREAM change on main, by hand, or after the
+# daily sync merged a new ZapFast release.
+name: plus-release
+on:
+  push:
+    branches: [main]
+    paths: [plus/REVISION, plus/UPSTREAM]
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: write
+concurrency:
+  group: plus-release
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends mingw-w64 wixl msitools zip nasm cmake
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-pc-windows-gnu
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: plus-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: plus-windows-
+      - name: Build and package
+        id: build
+        env:
+          SIGNING_KEY: ${{ secrets.ZAPFAST_PLUS_SIGNING_KEY }}
+        run: |
+          key=$(mktemp)
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          plus/build-windows.sh dist "$key"
+          rm -f "$key"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${{ steps.build.outputs.version }}
+          upstream=$(cat plus/UPSTREAM)
+          if gh release view "v$version" >/dev/null 2>&1; then
+            gh release upload "v$version" dist/* --clobber
+          else
+            gh release create "v$version" dist/* --target main \
+              --title "ZapFast Plus $version" \
+              --notes "ZapFast Plus $version, built on ZapFast $upstream (https://github.com/crmne/zapfast/releases/tag/$upstream) with the Enhancements. Install: zapfast-v$version-x86_64-pc-windows-gnu.msi (no admin rights). Portable: the .zip."
+          fi

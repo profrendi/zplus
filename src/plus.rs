@@ -511,7 +511,7 @@ pub fn blur(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, shape: S
     // The circle's centre in the copied area, when the rectangle was clipped.
     let offset = (rect.min - visible.min) * pixels_per_point;
     let full = rect.size() * pixels_per_point;
-    let spread = 1.6 * pixels_per_point;
+    let spread = 2.3 * pixels_per_point;
     let callback = egui_glow::CallbackFn::new(move |info, painter| {
         // SAFETY: GL calls on the painting thread, inside egui_glow's paint.
         unsafe { paint_blur(&info, painter, corner, offset, full, spread) };

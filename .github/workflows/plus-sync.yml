@@ -1,0 +1,44 @@
+# Every day: when ZapFast has a new release, merge it into ZapFast Plus and
+# release ZapFast Plus on top of it. A conflict in ZapFast's own code opens
+# an issue instead.
+name: plus-sync
+on:
+  schedule:
+    - cron: "17 21 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  issues: write
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    outputs:
+      updated: ${{ steps.sync.outputs.updated }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Merge the newest ZapFast release
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "zapfast-plus-bot"
+          git config user.email "zapfast-plus-bot@users.noreply.github.com"
+          if plus/sync-upstream.sh; then
+            git push origin HEAD:main
+          else
+            latest=$(gh api repos/crmne/zapfast/releases/latest -q .tag_name)
+            title="ZapFast $latest needs a manual merge"
+            if ! gh issue list --state open --search "$title in:title" --json number -q '.[0].number' | grep -q .; then
+              gh issue create --title "$title" --label upstream-conflict --body "The daily sync could not merge ZapFast $latest into ZapFast Plus automatically. Run plus/sync-upstream.sh $latest locally, resolve the conflicts keeping the Enhancements, and push to main." || \
+              gh issue create --title "$title" --body "The daily sync could not merge ZapFast $latest into ZapFast Plus automatically. Run plus/sync-upstream.sh $latest locally, resolve the conflicts keeping the Enhancements, and push to main."
+            fi
+            exit 1
+          fi
+  release:
+    needs: sync
+    if: needs.sync.outputs.updated == 'true'
+    uses: ./.github/workflows/plus-release.yml
+    secrets: inherit
