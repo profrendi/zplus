@@ -1,144 +1,149 @@
 <p align="center">
-  <img src="docs/assets/images/logo.svg" alt="Logo ZapFast" width="88" height="88">
+  <img src="docs/assets/images/logo.svg" alt="ZapFast logo" width="88" height="88">
 </p>
 
 <h1 align="center">ZapFast Plus</h1>
 
-<p align="center"><strong>ZapFast + fitur privasi &amp; produktivitas ala WA Web Plus.</strong><br>
-Aplikasi WhatsApp desktop yang ringan (Rust, tanpa browser) untuk Windows, dengan menu <em>Enhancements</em>.</p>
-
 <p align="center">
-  <a href="https://github.com/profrendi/zplus/releases/latest"><strong>Unduh rilis terbaru</strong></a> ·
-  <a href="#cara-pasang">Cara pasang</a> ·
-  <a href="#apa-yang-kami-tambahkan">Apa yang ditambahkan</a> ·
-  <a href="#sumber-asli-dan-kredit">Sumber asli</a>
+  <strong>🇬🇧 English</strong> · <a href="README.id.md">🇮🇩 Bahasa Indonesia</a>
 </p>
 
-> **ZapFast Plus adalah modifikasi pribadi (fork), bukan rilis resmi ZapFast.**
-> Seluruh dasar aplikasinya adalah karya [ZapFast](https://github.com/crmne/zapfast)
-> oleh Carmine Paolino. Repo ini hanya menambahkan fitur di atasnya dan ikut
-> setiap rilis resmi ZapFast secara otomatis.
+<p align="center"><strong>ZapFast, plus the privacy and productivity features of WA Web Plus.</strong><br>
+A lightweight native WhatsApp app for Windows (Rust, no browser inside), with an <em>Enhancements</em> menu.</p>
 
 <p align="center">
-  <img src="docs/plus/private-mode.png" alt="ZapFast Plus dengan Private Mode aktif: nama, foto, dan pesan di-blur" width="820">
+  <a href="https://github.com/profrendi/zplus/releases/latest"><strong>Download the latest release</strong></a> ·
+  <a href="#install">Install</a> ·
+  <a href="#what-we-added">What we added</a> ·
+  <a href="#original-sources-and-credits">Original sources</a>
 </p>
 
-## Kenapa ada repo ini
-
-ZapFast sudah sangat bagus: WhatsApp native, cepat, dan hemat RAM. Yang belum ada
-adalah fitur-fitur privasi dan produktivitas yang biasa didapat dari ekstensi
-browser [WA Web Plus](https://www.wawplus.com/en#benefits) untuk WhatsApp Web.
-Karena ZapFast tidak memakai browser, ekstensi itu tidak bisa dipasang, jadi
-fitur-fiturnya dibuat ulang langsung di kode ZapFast.
-
-## Apa yang kami tambahkan
-
-Semua opsi ada di **Settings → Enhancements** (paling atas), dibagi tiga grup
-seperti di WA Web Plus. Setiap grup punya saklar utama dan daftar centang.
+> **ZapFast Plus is a personal fork, not an official ZapFast release.**
+> Everything it is built on is [ZapFast](https://github.com/crmne/zapfast) by
+> Carmine Paolino. This repository only adds features on top, and follows every
+> official ZapFast release automatically.
 
 <p align="center">
-  <img src="docs/plus/enhancements.png" alt="Halaman Settings → Enhancements" width="820">
+  <img src="docs/plus/private-mode.png" alt="ZapFast Plus with Private Mode on: names, pictures and messages are blurred" width="820">
+</p>
+
+## Why this exists
+
+ZapFast is already great: native WhatsApp, fast, and light on memory. What it
+lacks are the privacy and productivity tools people get from the
+[WA Web Plus](https://www.wawplus.com/en#benefits) browser extension for
+WhatsApp Web. ZapFast has no browser, so the extension can't be installed —
+instead, its features were rebuilt directly in ZapFast's code.
+
+## What we added
+
+Every option lives in **Settings → Enhancements** (at the top), in three groups
+like WA Web Plus. Each group has a main switch and a list of checkboxes.
+
+<p align="center">
+  <img src="docs/plus/enhancements.png" alt="Settings → Enhancements" width="820">
 </p>
 
 ### Private Mode
-| Fitur | Keterangan |
+| Feature | What it does |
 |---|---|
-| Blur nama kontak | Di daftar chat, hasil pencarian, header chat. Arahkan mouse untuk melihat. |
-| Blur foto kontak | Foto profil di daftar chat, header, dan di dalam grup. |
-| Blur pesan terakhir | Pratinjau pesan di daftar chat dan hasil pencarian. |
-| Blur isi percakapan | Setiap gelembung pesan di chat yang terbuka. |
-| Blur kotak ketik | Teks yang sedang diketik. |
-| Sembunyikan "mengetik…" | Lawan bicara tidak melihat Anda sedang mengetik. |
-| Putar voice note diam-diam | Tanda "sudah diputar" (mikrofon biru) tidak dikirim. |
-| Matikan centang biru | Tanda "sudah dibaca" tidak dikirim. |
-| Invisible Mode | Tidak pernah tampil "online". |
-| Pulihkan pesan yang dihapus | Pesan yang dihapus pengirim untuk semua orang tetap tersimpan, diberi tanda 🚫. |
-| Tombol mata 👁 di sisi kiri | Menyalakan/mematikan Private Mode sekali klik; bisa disembunyikan. |
+| Blur contact names | In the chat list, search results and chat header. Hover to reveal. |
+| Blur contact photos | Profile pictures in the chat list, header and group chats. |
+| Blur recent messages | The last-message preview in the chat list and search results. |
+| Blur conversation messages | Every message bubble in the open chat. |
+| Blur message composer | What you're typing. |
+| Hide "typing…" | Others don't see you typing. |
+| Play voice messages privately | The "played" receipt (blue microphone) isn't sent. |
+| Disable read receipts | No blue ticks are sent. |
+| Invisible Mode | You never show as "online". |
+| Restore deleted messages | Messages deleted for everyone stay visible, marked with 🚫. |
+| Eye button 👁 in the left rail | Turns Private Mode on and off in one click; can be hidden. |
 
-Blur memakai efek kabur sungguhan di GPU (shader OpenGL), seperti `filter: blur()`
-di WA Web Plus, bukan sekadar menutupi dengan kotak.
+The blur is a real GPU blur (an OpenGL shader), like `filter: blur()` in
+WA Web Plus — not just a grey box on top.
 
 ### Customizations
-| Fitur | Keterangan |
+| Feature | What it does |
 |---|---|
-| Notifikasi kontak online | Notifikasi saat kontak dari chat terbaru mulai online. |
-| Notifikasi mengetik/merekam | Notifikasi saat seseorang mulai mengetik atau merekam di chat yang tidak sedang dibuka. |
-| Daftar chat tidak melompat | Chat yang baru Anda kirimi pesan tetap di posisinya sampai ada balasan. |
+| Notify when contacts come online | A notification when someone from your recent chats comes online. |
+| Notify about typing and recording | A notification when someone starts typing or recording in a chat you don't have open. |
+| Chat list doesn't jump | A chat you just sent to keeps its place until someone replies. |
 
 ### Extra buttons
-| Fitur | Keterangan |
+| Feature | What it does |
 |---|---|
-| Tombol Like 👍 | Reaksi jempol sekali klik di samping pesan. |
-| Tombol Translate 🌐 | Menerjemahkan pesan ke bahasa antarmuka lewat Google Translate (hanya pesan yang diklik yang dikirim). |
-| Start new chat | Pilih kode negara, ketik nomor, langsung chat tanpa menyimpan kontak. |
-| Pin chat | Sematkan/lepas chat dari header. |
-| Tandai dibaca/belum dibaca | Tombol di header chat. |
+| Like 👍 | React with a thumbs-up in one click, next to any message. |
+| Translate 🌐 | Translates a message into the app's language with Google Translate (only the message you click is sent). |
+| Start new chat | Pick a country code, type a number, and chat without saving the contact. |
+| Pin chat | Pin or unpin the chat from its header. |
+| Mark read/unread | A button in the chat header. |
 
-Belum tersedia: transkripsi voice note (butuh mesin speech-to-text) dan unduh
-status (ZapFast tidak menampilkan Status).
+Not available yet: voice message transcription (needs a speech-to-text engine)
+and status downloads (ZapFast doesn't show Status).
 
-## Cara pasang
+## Install
 
-Unduh dari [halaman Releases](https://github.com/profrendi/zplus/releases/latest):
+Get the files from the [Releases page](https://github.com/profrendi/zplus/releases/latest):
 
-- **Installer**: `zapfast-v…-x86_64-pc-windows-msvc.msi`. Dipasang per pengguna ke
-  `%LOCALAPPDATA%\Programs\ZapFast Plus`, **tanpa hak admin**, dengan shortcut di
-  Start menu dan desktop.
-- **Portable**: `zapfast-v…-x86_64-pc-windows-msvc.zip`. Ekstrak di mana saja; data
-  chat dan login disimpan di folder `zapfast-data` di sebelahnya.
+- **Installer**: `zapfast-v…-x86_64-pc-windows-msvc.msi`. Installs for your user
+  only, into `%LOCALAPPDATA%\Programs\ZapFast Plus`, **no admin rights needed**,
+  with Start menu and desktop shortcuts.
+- **Portable**: `zapfast-v…-x86_64-pc-windows-msvc.zip`. Unzip it anywhere; your
+  chats and login are kept in a `zapfast-data` folder next to it.
 
-Tidak perlu ZapFast asli terpasang. Kalau ZapFast asli juga ada di komputer,
-keduanya memakai login yang sama, tetapi hanya satu yang bisa berjalan pada satu
-waktu (tutup yang satu lewat ikon tray → Quit sebelum membuka yang lain).
+You don't need the original ZapFast installed. If it is, both share the same
+login, but only one can run at a time (quit one from its tray icon → Quit
+before opening the other).
 
-Windows SmartScreen mungkin memberi peringatan karena file tidak ditandatangani
-sertifikat: pilih *More info → Run anyway*.
+Windows SmartScreen may warn you because the files aren't signed with a
+certificate: choose *More info → Run anyway*.
 
-## Cara update bekerja
+## How updates work
 
-1. **Setiap hari**, workflow [`plus-sync`](.github/workflows/plus-sync.yml) mengecek
-   rilis terbaru [ZapFast resmi](https://github.com/crmne/zapfast/releases).
-2. Kalau ada versi baru, rilis itu digabungkan (merge) dengan fitur Plus, lalu
-   workflow [`plus-release`](.github/workflows/plus-release.yml) membangun installer
-   dan versi portable, menandatangani `checksums.txt` (Ed25519), dan menerbitkan
-   rilis di repo ini.
-3. ZapFast Plus di komputer, baik yang di-install maupun portable, mendeteksi
-   rilis baru dan memperbarui dirinya sendiri; fitur Plus tetap ada.
-4. Kalau penggabungan bentrok dengan perubahan kode resmi, otomatis dibuat
-   *issue* untuk diselesaikan secara manual.
+1. **Every day**, the [`plus-sync`](.github/workflows/plus-sync.yml) workflow
+   checks for a new [official ZapFast release](https://github.com/crmne/zapfast/releases).
+2. If there is one, it's merged with the Plus features, and the
+   [`plus-release`](.github/workflows/plus-release.yml) workflow builds the
+   installer and the portable zip, signs `checksums.txt` (Ed25519) and
+   publishes a release here.
+3. ZapFast Plus on your computer — installed or portable — sees the new
+   release and updates itself, keeping the Plus features.
+4. If the merge clashes with the official code, an issue is opened so it can be
+   resolved by hand.
 
-Penomoran versi: `mayor.minor.(patch × 100 + revisi Plus)`. Contoh: ZapFast 0.21.1
-dengan revisi Plus pertama menjadi **0.21.101**; ZapFast 0.21.2 menjadi 0.21.201.
+Version numbers: `major.minor.(patch × 100 + Plus revision)`. For example,
+ZapFast 0.21.1 with the first Plus revision is **0.21.101**; ZapFast 0.21.2
+becomes 0.21.201.
 
-## Untuk pengembang
+## For developers
 
-- Fitur Plus: [`src/plus.rs`](src/plus.rs), [`src/ui/plus_new_chat.rs`](src/ui/plus_new_chat.rs),
-  dan bagian kode bertanda komentar `ZapFast Plus:` di `src/`.
-- Pembuatan paket: folder [`plus/`](plus) (build silang Windows dari Linux dengan
-  MinGW, installer MSI dengan `wixl`, zip portable).
-- Catatan teknis singkat: [`PLUS.md`](PLUS.md).
-- Panduan asli ZapFast untuk kontributor tetap berlaku: [`AGENTS.md`](AGENTS.md),
+- Plus features: [`src/plus.rs`](src/plus.rs), [`src/ui/plus_new_chat.rs`](src/ui/plus_new_chat.rs),
+  and the code marked with `ZapFast Plus:` comments in `src/`.
+- Packaging: the [`plus/`](plus) folder (Windows cross-build from Linux with
+  MinGW, MSI installer with `wixl`, portable zip).
+- Short technical notes: [`PLUS.md`](PLUS.md).
+- ZapFast's own contributor guides still apply: [`AGENTS.md`](AGENTS.md),
   [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Sumber asli dan kredit
+## Original sources and credits
 
-- **ZapFast**: aplikasi dasarnya. Karya Carmine Paolino, lisensi MIT.
-  - Kode sumber: https://github.com/crmne/zapfast
-  - Situs dan panduan: https://zapfast.rocks
-  - README asli: https://github.com/crmne/zapfast#readme
-- **WA Web Plus** by Elbruz Technologies: inspirasi daftar fitur. Tidak ada kode
-  dari ekstensi tersebut yang dipakai; fiturnya dibuat ulang dari awal.
+- **ZapFast** — the app this is built on. By Carmine Paolino, MIT licence.
+  - Source code: https://github.com/crmne/zapfast
+  - Website and guides: https://zapfast.rocks
+  - Original README: https://github.com/crmne/zapfast#readme
+- **WA Web Plus** by Elbruz Technologies — the inspiration for the feature list.
+  No code from the extension is used; the features were rebuilt from scratch.
   - https://www.wawplus.com
   - https://chromewebstore.google.com/detail/wa-web-plus-by-elbruz-tec/ekcgkejcjdcmonfpmnljobemcbpnkamh
-- **whatsapp-rust**: pustaka protokol WhatsApp yang dipakai ZapFast,
+- **whatsapp-rust** — the WhatsApp protocol library ZapFast uses:
   https://github.com/oxidezap/whatsapp-rust
 
-## Lisensi dan penafian
+## Licence and disclaimer
 
-Mengikuti lisensi ZapFast: [MIT](LICENSE). Hak cipta asli tetap milik
-Carmine Paolino; daftar komponen pihak ketiga ada di
+Same licence as ZapFast: [MIT](LICENSE). The original copyright stays with
+Carmine Paolino; third-party components are listed in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
-ZapFast Plus tidak berafiliasi dengan WhatsApp, Meta, ZapFast, maupun WA Web Plus.
-Fitur seperti menyembunyikan status online atau centang biru hanya mengubah apa
-yang dikirim aplikasi ini; gunakan dengan bijak.
+ZapFast Plus is not affiliated with WhatsApp, Meta, ZapFast or WA Web Plus.
+Features like hiding your online status or blue ticks only change what this
+app sends — use them considerately.
