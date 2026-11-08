@@ -56,5 +56,5 @@ jobs:
           else
             gh release create "v$version" dist/* --target main \
               --title "ZapFast Plus $version" \
-              --notes "ZapFast Plus $version, built on ZapFast $upstream (https://github.com/crmne/zapfast/releases/tag/$upstream) with the Enhancements. Install: zapfast-v$version-x86_64-pc-windows-gnu.msi (no admin rights). Portable: the .zip."
+              --notes "ZapFast Plus $version, built on ZapFast $upstream (https://github.com/crmne/zapfast/releases/tag/$upstream) with the Enhancements. Install: zapfast-v$version-x86_64-pc-windows-msvc.msi (no admin rights). Portable: the .zip."
           fi

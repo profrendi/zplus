@@ -20,5 +20,6 @@ export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 # The update channel: this repository's releases.
 export ZAPFAST_PLUS_REPO="${ZAPFAST_PLUS_REPO:-${GITHUB_REPOSITORY:-profrendi/zplus}}"
 cargo build --locked --release --target "$target"
-plus/package-windows.sh "target/$target/release/zapfast.exe" "$version" "$target" "$out" "$key"
+# The updater names Windows downloads after the MSVC target, whatever built them.
+plus/package-windows.sh "target/$target/release/zapfast.exe" "$version" x86_64-pc-windows-msvc "$out" "$key"
 echo "version=$version" >> "${GITHUB_OUTPUT:-/dev/null}"
