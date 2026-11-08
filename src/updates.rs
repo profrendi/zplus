@@ -11,24 +11,28 @@ pub use fastframe_update::{
 };
 use fastframe_update::{MacConfig, ReqwestTransport, UpdateConfig};
 
-/// ZapFast's releases and the names its installations have had.
+/// ZapFast Plus's own release feed: the GitHub repository its build
+/// publishes to, set at build time. A build without one does not update.
+pub const PLUS_REPOSITORY: Option<&str> = option_env!("ZAPFAST_PLUS_REPO");
+
+/// ZapFast Plus's releases. They are signed with ZapFast Plus's own key,
+/// never ZapFast's, so an official release can never replace this build and
+/// lose its Enhancements: updates come from the Plus repository, which
+/// rebuilds every official release with the Enhancements on top.
 pub const CONFIG: UpdateConfig = UpdateConfig {
-    // Cask and bundle names from before the rename. This also accepts
-    // fastsapp-* marker files and `fastsapp <version>` answers, which no
-    // release produces.
     legacy_names: &["fastsapp"],
     macos: MacConfig {
         bundle_ids: &["me.paolino.fastsapp"],
         executable_names: &[],
         legacy_bundle_names: &["FastsApp.app"],
     },
-    publisher_key: Some(include_str!("../assets/update-public-key.hex")),
-    // The next release key, backed up outside GitHub. Releases stay signed
-    // with the current key until installs trust this one too.
-    additional_publisher_keys: &[include_str!("../assets/update-public-key-next.hex")],
+    publisher_key: Some(include_str!("../assets/plus-update-public-key.hex")),
     ..UpdateConfig::new(
-        "crmne/zapfast",
-        "ZapFast",
+        match PLUS_REPOSITORY {
+            Some(repository) => repository,
+            None => "crmne/zapfast",
+        },
+        "ZapFast Plus",
         "zapfast",
         env!("CARGO_PKG_VERSION"),
     )
@@ -36,10 +40,8 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
 
 /// An updater on the proxy-aware reqwest client.
 pub fn updater() -> anyhow::Result<Updater> {
-    // ZapFast Plus is a personal build: an official update would replace it
-    // with a copy that has none of the Enhancements.
-    if !cfg!(test) {
-        anyhow::bail!("ZapFast Plus is a personal build and does not update itself");
+    if PLUS_REPOSITORY.is_none() && !cfg!(test) {
+        anyhow::bail!("This ZapFast Plus build has no update channel");
     }
     let mut builder = reqwest::blocking::Client::builder();
     if let Some(proxy) = crate::proxy::reqwest_proxy() {

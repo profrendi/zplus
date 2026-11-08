@@ -340,6 +340,8 @@ fn search_and_filters(app: &mut App, ui: &mut egui::Ui) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeaderButton {
     NewChat,
+    /// ZapFast Plus: message a number without saving it.
+    PlusNewNumber,
     NewCall,
     HideList,
 }
@@ -363,6 +365,9 @@ fn header_buttons(ctx: &egui::Context, calls: bool) -> Vec<HeaderButton> {
         return vec![HeaderButton::NewCall];
     }
     let mut buttons = vec![HeaderButton::NewChat];
+    if crate::plus::get().new_chat_button() {
+        buttons.push(HeaderButton::PlusNewNumber);
+    }
     if !super::narrow(ctx) {
         buttons.push(HeaderButton::HideList);
     }
@@ -398,6 +403,20 @@ fn header_button_row(app: &mut App, ui: &mut egui::Ui, buttons: &[HeaderButton],
                 .clicked()
                 {
                     app.actions.push(Action::ShowDialog(Dialog::NewChat));
+                }
+            }
+            HeaderButton::PlusNewNumber => {
+                if theme::icon_button(
+                    ui,
+                    Icon::PhonePlus,
+                    HEADER_ICON,
+                    palette.secondary,
+                    palette.text,
+                    "Start new chat with a phone number",
+                )
+                .clicked()
+                {
+                    super::plus_new_chat::open(ui.ctx());
                 }
             }
             HeaderButton::NewCall => {
@@ -1374,6 +1393,33 @@ fn hit_row(app: &mut App, ui: &mut egui::Ui, hit: &Message) {
             1,
         );
         words.paint(ui, pos2(x, line_y), palette.dim);
+        // ZapFast Plus: search results are veiled like the chat list.
+        let plus = crate::plus::get();
+        if !crate::plus::pointer_over(ui, rect) {
+            let fill = palette.sidebar();
+            if plus.blur_photos() {
+                crate::plus::blur_avatar(ui, &palette, avatar_rect);
+            }
+            if plus.blur_names() {
+                crate::plus::blur_text(
+                    ui,
+                    &palette,
+                    Rect::from_min_size(pos2(left, name_top), name.size()),
+                    fill,
+                );
+            }
+            if plus.blur_recent() {
+                crate::plus::blur_text(
+                    ui,
+                    &palette,
+                    Rect::from_min_max(
+                        pos2(left, line_y),
+                        pos2((x + words.size().x).min(right), line_y + 16.0),
+                    ),
+                    fill,
+                );
+            }
+        }
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
@@ -1488,6 +1534,29 @@ fn person_row(
                 1,
             );
             phone_line.paint(ui, pos2(left, rect.top() + 38.0), palette.dim);
+            if crate::plus::get().blur_names() && !crate::plus::pointer_over(ui, rect) {
+                crate::plus::blur_text(
+                    ui,
+                    &palette,
+                    Rect::from_min_size(pos2(left, rect.top() + 38.0), phone_line.size()),
+                    palette.sidebar(),
+                );
+            }
+        }
+        // ZapFast Plus: contacts found by the search are veiled too.
+        let plus = crate::plus::get();
+        if !crate::plus::pointer_over(ui, rect) {
+            if plus.blur_photos() {
+                crate::plus::blur_avatar(ui, &palette, avatar_rect);
+            }
+            if plus.blur_names() {
+                crate::plus::blur_text(
+                    ui,
+                    &palette,
+                    Rect::from_min_size(pos2(left, rect.top() + 14.0), name_line.size()),
+                    palette.sidebar(),
+                );
+            }
         }
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1721,17 +1790,17 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         if !crate::plus::pointer_over(ui, rect) {
             let fill = palette.sidebar();
             if plus.blur_photos() {
-                crate::plus::veil_avatar(ui, &palette, avatar_rect);
+                crate::plus::blur_avatar(ui, &palette, avatar_rect);
             }
             if plus.blur_names() {
-                crate::plus::veil_text(ui, &palette, name_rect, fill);
+                crate::plus::blur_text(ui, &palette, name_rect, fill);
             }
             if plus.blur_recent() {
                 let area = Rect::from_min_max(
                     pos2(left, line_y),
                     pos2((x + preview.size().x).min(badge_right).max(left + 40.0), line_y + 16.0),
                 );
-                crate::plus::veil_text(ui, &palette, area, fill);
+                crate::plus::blur_text(ui, &palette, area, fill);
             }
         }
     }
@@ -2059,7 +2128,7 @@ fn compact_row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response 
             picture.as_deref(),
         );
         if crate::plus::get().blur_photos() && !crate::plus::pointer_over(ui, rect) {
-            crate::plus::veil_avatar(ui, &palette, avatar_rect);
+            crate::plus::blur_avatar(ui, &palette, avatar_rect);
         }
         if chat.disappearing_timer().is_some() {
             widgets::paint_disappearing_badge(ui, &palette, avatar_rect);

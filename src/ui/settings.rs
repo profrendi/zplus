@@ -921,6 +921,7 @@ enum PlusOption {
 fn plus_sections() -> Vec<Section> {
     use PlusOption::{Always, Tick};
     let private: Vec<PlusOption> = vec![
+        Tick("Show the Private Mode eye in the left rail", "On: Private Mode works while this switch and the eye above the star are both on, so the eye turns it on and off in one click. Off: this switch alone turns it on and off.", |p| &mut p.show_eye_button),
         Tick("Blur contact names", "Names in the chat list, the chat header and group senders. Hover to reveal.", |p| &mut p.blur_names),
         Tick("Blur contact photos", "Profile pictures. Hover to reveal.", |p| &mut p.blur_photos),
         Tick("Blur recent messages", "The last-message preview in the chat list. Hover to reveal.", |p| &mut p.blur_recent),
@@ -943,7 +944,7 @@ fn plus_sections() -> Vec<Section> {
     let buttons: Vec<PlusOption> = vec![
         Tick("Like button", "A 👍 beside each message you hover, one click to react.", |p| &mut p.like_button),
         Tick("Pin chat button", "Pin or unpin the open chat from its header.", |p| &mut p.pin_button),
-        Always("Start new chat", "Type any phone number in the chat search to message it without saving the contact."),
+        Tick("Start new chat", "A button beside New chat: pick the country code, type any number and message it without saving the contact.", |p| &mut p.new_chat_button),
         Tick("Mark conversation as read/unread", "A button in the chat header.", |p| &mut p.mark_unread_button),
         Tick("Translate message button", "Translates a message into the interface language through Google Translate. Only the message you click is sent.", |p| &mut p.translate_button),
     ];
@@ -952,7 +953,7 @@ fn plus_sections() -> Vec<Section> {
         (
             "Enhancements · Private Mode",
             "Private Mode",
-            "Anti screen and status spying. The eye above the star in the left rail turns it on and off.",
+            "Anti screen and status spying.",
             (|settings: &mut Settings| &mut settings.plus.private_mode) as fn(&mut Settings) -> &mut bool,
             private,
         ),

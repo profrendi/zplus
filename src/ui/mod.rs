@@ -24,6 +24,7 @@ pub mod message_info;
 pub mod new_group;
 pub(crate) mod overlay;
 pub mod pane;
+pub mod plus_new_chat;
 pub mod picker;
 pub mod polls;
 pub mod rail;
@@ -118,6 +119,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     update::show(app, ctx);
     picker::show(app, ctx);
     dialogs::show(app, ctx);
+    plus_new_chat::show(app, ctx);
     image_preview::show(app, ctx);
     image_preview::show_sticker(app, ctx);
     call::show(app, ctx);

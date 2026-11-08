@@ -644,10 +644,10 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                     let plus = crate::plus::get();
                     if !crate::plus::pointer_over(ui, block.rect) {
                         if plus.blur_photos() {
-                            crate::plus::veil_avatar(ui, &palette, avatar);
+                            crate::plus::blur_avatar(ui, &palette, avatar);
                         }
                         if plus.blur_names() && text.is_positive() {
-                            crate::plus::veil_text(ui, &palette, text, palette.panel);
+                            crate::plus::blur_text(ui, &palette, text, palette.panel);
                         }
                     }
                 }
@@ -1940,7 +1940,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat, review_send: Option<b
                                     } else {
                                         palette.bubble_in
                                     };
-                                    crate::plus::veil_text(
+                                    crate::plus::blur_text(
                                         ui,
                                         &palette,
                                         output.galley.rect.translate(output.galley_pos.to_vec2()),
@@ -5154,7 +5154,7 @@ fn bubble(
                         if crate::plus::get().blur_photos()
                             && !crate::plus::pointer_over(ui, rect)
                         {
-                            crate::plus::veil_avatar(ui, &view.palette, rect);
+                            crate::plus::blur_avatar(ui, &view.palette, rect);
                         }
                     }
                 });
@@ -5193,7 +5193,7 @@ fn bubble(
         && crate::plus::get().blur_messages()
         && !crate::plus::pointer_over(ui, bubble.rect)
     {
-        crate::plus::veil_bubble(ui, &view.palette, bubble.rect, own);
+        crate::plus::blur_bubble(ui, &view.palette, bubble.rect, own);
     }
     response
 }

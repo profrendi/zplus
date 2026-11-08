@@ -400,6 +400,7 @@ fn run() -> eframe::Result<()> {
         // ZapFast Plus: preview Private Mode in demo screenshots.
         if std::env::var_os("ZAPFAST_PLUS_PRIVATE").is_some() {
             app.settings.plus.private_mode = true;
+            app.settings.plus.eye_on = true;
         }
         if cli.demo_tour {
             tour_script(&cli.demo_tour_script).prepare(&mut app);
