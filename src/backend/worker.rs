@@ -4425,7 +4425,14 @@ impl Worker {
                     undecryptable.decrypt_fail_mode,
                 );
             }
-            E::Receipt(receipt) => self.on_receipt(receipt),
+            E::Receipt(receipt) => {
+                // A receipt can name dozens of messages, each its own write.
+                let batched = self.archive.begin_batch().is_ok();
+                self.on_receipt(receipt);
+                if batched && self.archive.end_batch().is_err() {
+                    log::warn!("could not commit a receipt");
+                }
+            }
             E::ChatPresence(presence) => {
                 self.learn_source(&presence.source);
                 // Match WhatsApp: only other participants appear as typing,

@@ -1084,6 +1084,34 @@ pub(crate) fn header_row_id() -> egui::Id {
 }
 
 /// Chat-header subtitle.
+/// A group's member names under its title, worked out at most once a
+/// second: a group of hundreds looks every member's name up, sorts them and
+/// joins them, which on every frame of a scroll cost more than the messages.
+/// A name that changes shows within the second.
+pub(crate) fn header_participant_names(app: &App, chat: &Chat) -> String {
+    use std::cell::RefCell;
+    use std::time::{Duration, Instant};
+    type Key = (String, usize, Option<String>);
+    thread_local! {
+        static NAMES: RefCell<Option<(Key, Instant, String)>> = const { RefCell::new(None) };
+    }
+    const FRESH: Duration = Duration::from_secs(1);
+    let key: Key = (chat.id.clone(), chat.participants.len(), app.me.clone());
+    let now = Instant::now();
+    NAMES.with(|cell| {
+        let mut cached = cell.borrow_mut();
+        if let Some((known, at, names)) = cached.as_ref()
+            && *known == key
+            && now.saturating_duration_since(*at) < FRESH
+        {
+            return names.clone();
+        }
+        let names = app.participant_names(chat);
+        *cached = Some((key, now, names.clone()));
+        names
+    })
+}
+
 fn subtitle(app: &App, chat: &Chat) -> (String, Color32) {
     let palette = app.palette;
     let typing = app.typing_in(&chat.id);
@@ -1126,7 +1154,7 @@ fn subtitle(app: &App, chat: &Chat) -> (String, Color32) {
         return (text, palette.accent);
     }
     if chat.is_group() {
-        let names = app.participant_names(chat);
+        let names = header_participant_names(app, chat);
         return (
             if names.is_empty() {
                 "Group".to_owned()

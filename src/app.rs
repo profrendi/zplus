@@ -3365,7 +3365,7 @@ impl App {
                 names.push(self.short_name(id, name.trim_start_matches('~')).to_owned());
             }
         }
-        names.sort_by_key(|name| name.to_lowercase());
+        names.sort_by_cached_key(|name| name.to_lowercase());
         let mut counted = Vec::new();
         let mut iter = names.into_iter().peekable();
         while let Some(name) = iter.next() {
@@ -26397,6 +26397,44 @@ mod name_tests {
         assert_eq!(
             compose_name("My Dih", ""),
             (Some("My Dih".into()), Some("My Dih".into()))
+        );
+    }
+
+    /// The chat header asks for a group's names at most once a second, and
+    /// at once when its members change.
+    #[test]
+    fn the_header_keeps_a_groups_names_for_a_second() {
+        let mut app = app();
+        let mut chat = Chat::new("header@g.us".into(), "Group".into());
+        let named = |app: &mut App, chat: &mut Chat, id: &str, name: &str| {
+            app.contacts.insert(
+                id.into(),
+                Contact {
+                    id: id.into(),
+                    full_name: Some(name.into()),
+                    first_name: Some(name.into()),
+                    push_name: None,
+                },
+            );
+            chat.participants.push(id.into());
+        };
+        named(&mut app, &mut chat, "15550000001@s.whatsapp.net", "Bea");
+        let first = crate::ui::conversation::header_participant_names(&app, &chat);
+        assert_eq!(first, app.participant_names(&chat));
+        if let Some(contact) = app.contacts.get_mut("15550000001@s.whatsapp.net") {
+            contact.full_name = Some("Bianca".into());
+            contact.first_name = Some("Bianca".into());
+        }
+        assert_eq!(
+            crate::ui::conversation::header_participant_names(&app, &chat),
+            first,
+            "a rename shows within the second, not on this frame"
+        );
+        named(&mut app, &mut chat, "15550000002@s.whatsapp.net", "Ciro");
+        assert_eq!(
+            crate::ui::conversation::header_participant_names(&app, &chat),
+            app.participant_names(&chat),
+            "a new member shows at once"
         );
     }
 
