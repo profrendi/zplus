@@ -109,15 +109,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // A vibrant window is flat, as Messages is: no shadows over the chat.
         return;
     }
-    let header = header(app, ui, &chat);
-    super::banner(app, ui);
-    super::voice_bar::show(app, ui);
-    pin_banner(app, ui, &chat);
+    let header = {
+        let _scope = crate::prof::scope("conversation: header");
+        header(app, ui, &chat)
+    };
+    {
+        let _scope = crate::prof::scope("conversation: banners");
+        super::banner(app, ui);
+        super::voice_bar::show(app, ui);
+        pin_banner(app, ui, &chat);
+    }
     let review = attachment_review(app, ui, &chat);
-    composer(app, ui, &chat, review);
+    {
+        let _scope = crate::prof::scope("conversation: composer");
+        composer(app, ui, &chat, review);
+    }
     if review.is_some() {
         super::attachment_preview::show(app, ui);
     } else {
+        let _scope = crate::prof::scope("conversation: messages");
         messages(app, ui, &chat, 0.0);
     }
     // Over the messages, which scroll under the header.

@@ -895,7 +895,13 @@ fn sections(app: &App) -> Vec<Section> {
         |ui, app| about(app, ui),
     );
 
-    let mut sections = plus_sections();
+    let enhancements = plus_sections();
+    let enhancements_last = enhancements_last();
+    let mut sections = if enhancements_last {
+        Vec::new()
+    } else {
+        enhancements
+    };
     sections.extend([
         appearance,
         chats,
@@ -907,6 +913,9 @@ fn sections(app: &App) -> Vec<Section> {
         diagnostics,
         about_section,
     ]);
+    if enhancements_last {
+        sections.extend(plus_sections());
+    }
     sections
 }
 
@@ -953,6 +962,25 @@ fn diagnostics_section(app: &App) -> Section {
         },
     );
     section
+}
+
+#[cfg(any(test, feature = "demo"))]
+thread_local! {
+    static ENHANCEMENTS_LAST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Demo tours film ZapFast's own Settings: their scripts point at rows
+/// where ZapFast has them, so there ZFPlus's Enhancements come last.
+#[cfg(any(test, feature = "demo"))]
+pub fn set_enhancements_last(last: bool) {
+    ENHANCEMENTS_LAST.with(|cell| cell.set(last));
+}
+
+fn enhancements_last() -> bool {
+    #[cfg(any(test, feature = "demo"))]
+    return ENHANCEMENTS_LAST.with(std::cell::Cell::get);
+    #[cfg(not(any(test, feature = "demo")))]
+    false
 }
 
 /// One Enhancements option: a field of the Plus settings.

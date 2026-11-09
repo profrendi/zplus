@@ -487,12 +487,67 @@ const UNARCHIVE_CHATS_AT: &str = "unarchive_chats_at";
 const LINK_PREVIEWS_DISABLED: &str = "link_previews_disabled";
 const LINK_PREVIEWS_DISABLED_AT: &str = "link_previews_disabled_at";
 
+/// A write that stands or falls as one: a transaction of its own, or, inside
+/// a [`Archive::batch`], a savepoint within it. It rolls back unless
+/// committed. Every multi-statement write goes through it, since SQLite
+/// cannot begin a transaction inside another.
+pub(crate) struct Write<'a> {
+    connection: &'a Connection,
+    open: bool,
+}
+
+impl<'a> Write<'a> {
+    pub(crate) fn begin(connection: &'a Connection) -> rusqlite::Result<Self> {
+        connection.execute_batch("SAVEPOINT write")?;
+        Ok(Self {
+            connection,
+            open: true,
+        })
+    }
+
+    pub(crate) fn commit(mut self) -> rusqlite::Result<()> {
+        self.open = false;
+        self.connection.execute_batch("RELEASE write")
+    }
+}
+
+impl Drop for Write<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = self
+                .connection
+                .execute_batch("ROLLBACK TO write; RELEASE write");
+        }
+    }
+}
+
+impl std::ops::Deref for Write<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.connection
+    }
+}
+
 impl Archive {
     /// Unlocks the on-disk archive with its OS keyring key, migrating plaintext
     /// archives before their first encrypted use. Never falls back to plaintext.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let key = encryption::key_for(path)?;
         Self::open_with_key(path, &key)
+    }
+
+    /// Holds every write until [`Archive::end_batch`], so a history chunk's
+    /// thousands of rows land in one commit instead of several each. A
+    /// [`Write`] inside that fails still rolls back alone, and a statement
+    /// that fails fails alone, as without the batch. Never across an await.
+    pub fn begin_batch(&self) -> Result<()> {
+        self.connection.execute_batch("SAVEPOINT batch")
+    }
+
+    /// Commits what [`Archive::begin_batch`] held.
+    pub fn end_batch(&self) -> Result<()> {
+        self.connection.execute_batch("RELEASE batch")
     }
 
     fn open_with_key(path: &Path, key: &[u8; 32]) -> anyhow::Result<Self> {
@@ -1184,7 +1239,7 @@ impl Archive {
     /// Stores a privacy id mapping and reconciles history already filed under
     /// the privacy id with the canonical phone-number chat.
     pub fn put_lid(&self, lid: &str, pn: &str) -> Result<bool> {
-        let transaction = self.connection.unchecked_transaction()?;
+        let transaction = crate::archive::Write::begin(&self.connection)?;
         let lid_chat = format!("{lid}@lid");
         let phone_chat = format!("{pn}@s.whatsapp.net");
         Self::merge_group_recipient(&transaction, &lid_chat, &phone_chat)?;
@@ -2047,7 +2102,7 @@ impl Archive {
 
     /// Commits removal, barriers, and pending cleanup for every known identity.
     pub fn delete_message_aliases(&self, chats: &[String], id: &str) -> Result<bool> {
-        let transaction = self.connection.unchecked_transaction()?;
+        let transaction = crate::archive::Write::begin(&self.connection)?;
         let mut deleted = 0;
         for chat in chats {
             transaction.execute(
@@ -2094,7 +2149,7 @@ impl Archive {
 
     /// Saves authoritative acceptance separately from fallible physical cleanup.
     pub fn confirm_message_removal(&self, account: &str, chats: &[String], id: &str) -> Result<()> {
-        let transaction = self.connection.unchecked_transaction()?;
+        let transaction = crate::archive::Write::begin(&self.connection)?;
         // The caller supplies the current protocol account, including before its
         // Connected event. Bind replay checks to that same persisted identity.
         transaction.execute(
@@ -2175,7 +2230,7 @@ impl Archive {
     /// Atomically removes only the range the linked device knew about, keeping
     /// newer messages and a durable barrier against replay after restart.
     pub fn remove_chat_through(&self, chat: &str, through: i64, delete: bool) -> Result<Removed> {
-        let transaction = self.connection.unchecked_transaction()?;
+        let transaction = crate::archive::Write::begin(&self.connection)?;
         let through = self
             .removal_point(chat)?
             .map_or(through, |old| old.max(through));
@@ -2605,7 +2660,7 @@ impl Archive {
     /// The chat's activity follows: an activity time this message set moves
     /// to the chat's newest message, and later activity stays.
     pub fn restamp_sent(&self, chat: &str, id: &str, timestamp: i64) -> Result<bool> {
-        let transaction = self.connection.unchecked_transaction()?;
+        let transaction = crate::archive::Write::begin(&self.connection)?;
         let Some(old) = transaction
             .query_row(
                 "SELECT timestamp FROM messages
@@ -2961,6 +3016,74 @@ pub(crate) mod tests {
         } else {
             "DROP TRIGGER reject_message_deletion"
         }).unwrap();
+    }
+
+    /// Measures filing history one autocommit at a time against one
+    /// transaction. Run by hand: `cargo test --release -- --ignored
+    /// history_filing_cost --nocapture`.
+    #[test]
+    #[ignore]
+    fn history_filing_cost() {
+        for batched in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let archive = Archive::open_with_key(&directory.path().join("a.db"), &[7; 32]).unwrap();
+            let chat = "1@s.whatsapp.net";
+            archive.ensure_chat(chat, "Fixture").unwrap();
+            let started = std::time::Instant::now();
+            if batched {
+                archive.begin_batch().unwrap();
+            }
+            for n in 0..3000 {
+                let id = format!("m{n}");
+                let _ = archive.message(chat, &id).unwrap();
+                archive
+                    .insert_message(&message(chat, &id, 1000 + n, n % 2 == 0), Some(&[1; 300]))
+                    .unwrap();
+            }
+            if batched {
+                archive.end_batch().unwrap();
+            }
+            eprintln!(
+                "batched={batched}: {:.3} ms per message",
+                started.elapsed().as_secs_f64() * 1000.0 / 3000.0
+            );
+        }
+    }
+
+    /// A batch commits everything once, and a write inside it that fails
+    /// rolls back alone, as it would without the batch.
+    #[test]
+    fn a_batch_keeps_each_write_whole_and_commits_the_rest() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("batch.db");
+        let key = [9; 32];
+        let chat = "1@s.whatsapp.net";
+        {
+            let archive = Archive::open_with_key(&path, &key).unwrap();
+            archive.ensure_chat(chat, "Fixture").unwrap();
+            archive.begin_batch().unwrap();
+            archive
+                .insert_message(&message(chat, "kept", 100, true), None)
+                .unwrap();
+            {
+                let write = Write::begin(&archive.connection).unwrap();
+                write
+                    .execute("UPDATE chats SET name = 'half done' WHERE id = ?1", [chat])
+                    .unwrap();
+                // Dropped uncommitted: its change goes, the batch stays.
+            }
+            let write = Write::begin(&archive.connection).unwrap();
+            write
+                .execute("UPDATE chats SET name = 'Renamed' WHERE id = ?1", [chat])
+                .unwrap();
+            write.commit().unwrap();
+            assert!(!archive.connection.is_autocommit(), "still batched");
+            archive.end_batch().unwrap();
+            assert!(archive.connection.is_autocommit());
+        }
+        let archive = Archive::open_with_key(&path, &key).unwrap();
+        assert!(archive.message(chat, "kept").unwrap().is_some());
+        assert_eq!(archive.chat(chat).unwrap().unwrap().name, "Renamed");
     }
 
     /// Failed unlink cannot apply the previous account's terminal barriers.

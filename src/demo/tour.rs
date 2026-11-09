@@ -130,6 +130,7 @@ pub fn prepare(app: &mut App) {
 /// local stickers and GIFs in place of downloads.
 fn common_setup(app: &mut App) {
     assert!(app.backend.is_offline(), "a tour requires an offline app");
+    crate::ui::settings::set_enhancements_last(true);
     // `ZAPFAST_DEMO_FONT=inter` draws the tour in the bundled Inter, the same
     // on every machine, instead of the platform's font.
     if std::env::var("ZAPFAST_DEMO_FONT").is_ok_and(|font| font.eq_ignore_ascii_case("inter")) {
@@ -1802,6 +1803,8 @@ mod tests {
         // Keep Follow system unique to the open menu while scrolling its choices.
         app.settings.theme = ThemeChoice::Dark;
         app.page = Page::Settings;
+        // ZFPlus's Enhancements push Appearance below the window.
+        app.settings_search = "theme".into();
         app.custom_themes =
             crate::theme::Catalog::preview(crate::theme::presets().collect(), false);
         let ctx = egui::Context::default();

@@ -6386,7 +6386,11 @@ impl Worker {
             }
         }
         let compressed = lazy.compressed_bytes().clone();
-        let parsed = tokio::task::spawn_blocking(move || parse_history(&compressed)).await;
+        let parsed = tokio::task::spawn_blocking(move || {
+            let _scope = crate::prof::scope("history: unpacking");
+            parse_history(&compressed)
+        })
+        .await;
         match parsed {
             Ok(Ok(parsed)) => {
                 if on_demand {
@@ -6415,7 +6419,17 @@ impl Worker {
                         );
                     }
                 }
-                let filed = self.apply_history(parsed, !on_demand);
+                // One commit for the whole chunk: filed a row at a time,
+                // each message took several commits (about three times the
+                // work, measured on an encrypted archive).
+                let batched = self.archive.begin_batch().is_ok();
+                let filed = {
+                    let _scope = crate::prof::scope("history: filing");
+                    self.apply_history(parsed, !on_demand)
+                };
+                if batched && self.archive.end_batch().is_err() {
+                    log::warn!("could not commit a history chunk");
+                }
                 if on_demand {
                     self.answer_older(filed, session.as_deref());
                 }

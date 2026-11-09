@@ -2113,6 +2113,46 @@ pub(super) fn compact_list(app: &mut App, ui: &mut egui::Ui) {
     // The rail itself scrolls in a short window. The inner scroll area has
     // consumed the avatar's focus target; reveal its viewport in the outer
     // one as well, so a focused avatar cannot stay clipped by the rail.
+    // A focused avatar is never left part hidden at the strip's edge: egui
+    // reveals it once, as focus arrives, and a short strip (ZFPlus's rail is
+    // taller, so the strip is shorter in a small window) can leave it a few
+    // points under the edge. Moved here by exactly what is hidden.
+    // Kept so while that focus stays and nothing scrolls the strip by hand:
+    // a wheel or a drag lets it go.
+    let settling = egui::Id::new("rail-avatar-focus-settling");
+    let scrolled = ui.input(|input| {
+        input.smooth_scroll_delta() != Vec2::ZERO
+            || input.is_scrolling()
+            || input.pointer.is_decidedly_dragging()
+    });
+    if scrolled {
+        ui.ctx().data_mut(|data| data.remove::<egui::Id>(settling));
+    }
+    if let Some(focused) = &output.inner
+        && !scrolled
+        && (focused.gained_focus()
+            || ui.ctx().data(|data| data.get_temp::<egui::Id>(settling)) == Some(focused.id))
+    {
+        let view = output.inner_rect;
+        let rect = focused.rect;
+        let shift = if rect.height() > view.height() {
+            0.0
+        } else if rect.top() < view.top() {
+            rect.top() - view.top()
+        } else if rect.bottom() > view.bottom() {
+            rect.bottom() - view.bottom()
+        } else {
+            0.0
+        };
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(settling, focused.id));
+        if shift != 0.0 {
+            let mut state = output.state;
+            state.offset.y = (state.offset.y + shift).max(0.0);
+            state.store(ui.ctx(), output.id);
+            ui.ctx().request_repaint();
+        }
+    }
     if let Some(mut focused) = output.inner {
         focused.rect = output.inner_rect;
         focused.interact_rect = focused.rect.intersect(ui.clip_rect());

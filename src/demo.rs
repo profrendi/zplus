@@ -17987,12 +17987,15 @@ mod tests {
                 .map(|(_, node)| node)
                 .collect();
         }
-        let bells: Vec<_> = nodes
+        let mut bells: Vec<_> = nodes
             .iter()
             .filter(|node| node.label() == Some("Mute notifications"))
             .map(|node| node.toggled() == Some(egui::accesskit::Toggled::True))
             .collect();
-        assert_eq!(bells, [false, true], "one bell per account, the second on");
+        // The update lists nodes in no set order; which account's bell is on
+        // is checked through the rows' labels below.
+        bells.sort();
+        assert_eq!(bells, [false, true], "one bell per account, one on");
         // Only the muted account's row says so, not the one on screen.
         let said: Vec<_> = nodes
             .iter()
@@ -20282,10 +20285,13 @@ mod tests {
         assert_eq!(reply.as_deref(), Some("text"));
     }
 
+    /// Past the hover buttons: ZFPlus's Like and Translate take the slots
+    /// beyond React, Reply and Forward, up to about 200 points out, and a
+    /// click there presses them.
     #[test]
     fn a_double_click_beside_the_bubble_replies() {
         let reply = reply_after_double_click("text", |rect, _| {
-            rect.right_center() + egui::vec2(120.0, 0.0)
+            rect.right_center() + egui::vec2(240.0, 0.0)
         });
         assert_eq!(reply.as_deref(), Some("text"));
     }
@@ -22156,6 +22162,9 @@ mod tests {
     fn the_theme_row_opens_the_guide_to_making_a_theme() {
         let mut app = app();
         app.page = crate::model::Page::Settings;
+        // ZFPlus's Enhancements come first and push Appearance below the
+        // window; the search brings the row up, where it can be clicked.
+        app.settings_search = "theme".into();
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         app.attach(&ctx);
@@ -23153,10 +23162,10 @@ mod tests {
         render(&mut app, &ctx);
         let texture = ctx
             .data_mut(|data| {
-                data.get_temp::<egui::TextureHandle>(egui::Id::new(("zapfast-mark", 44_usize)))
+                data.get_temp::<egui::TextureHandle>(egui::Id::new(("zapfast-mark", 48_usize)))
             })
-            .expect("the mark was drawn at 44 pixels");
-        assert_eq!(texture.size(), [44, 44]);
+            .expect("the mark was drawn at 48 pixels (ZFPlus's About)");
+        assert_eq!(texture.size(), [48, 48]);
     }
 
     /// The shortcuts dialog stays inside the window: two columns where the
@@ -25658,7 +25667,8 @@ mod rail_tests {
     }
 
     /// The rail stands at the window's left edge beside the list, with Chats
-    /// and Calls at its top and Starred, Settings and our avatar at its foot;
+    /// and Calls at its top (ZFPlus: Archived and Starred under them) and
+    /// Settings and our avatar at its foot;
     /// with the list hidden, the chats' avatars fill it between the two. On
     /// macOS it starts below the traffic lights.
     #[test]
@@ -25687,20 +25697,18 @@ mod rail_tests {
                 assert!(rail.contains_rect(*rect), "{macos}: {rect:?} in {rail:?}");
             }
             assert!(top[0].bottom() <= top[1].top());
-            // Starred heads the bottom group, a plate and a gap above
-            // Archived, or Settings when nothing is archived or locked.
-            let below = if Destination::Archived.offered(&app) {
-                destination_rect(&ctx, Destination::Archived)
-            } else {
-                settings
-            };
+            // ZFPlus: Starred sits under Calls as Archived sits under Chats,
+            // in the top group, a cell below it.
+            let cell = top[1].top() - top[0].top();
+            let under_calls = starred.top() - top[1].top();
             assert!(
-                (below.top() - starred.bottom() - 8.0).abs() < 0.5,
-                "{macos}: Starred directly above the next bottom button: {starred:?} {below:?}"
+                (under_calls - cell / 2.0).abs() < 0.5 || (under_calls - cell).abs() < 0.5,
+                "{macos}: Starred directly under Calls: {starred:?} {:?}",
+                top[1]
             );
             assert!(
-                starred.top() > top[1].bottom() + 100.0,
-                "{macos}: at the foot"
+                settings.top() > starred.bottom() + 100.0,
+                "{macos}: Settings still at the foot"
             );
             assert_eq!(starred.size(), egui::vec2(36.0, 36.0));
             assert!(
@@ -25740,7 +25748,7 @@ mod rail_tests {
             let settings = destination_rect(&ctx, Destination::Settings);
             let calls = destination_rect(&ctx, Destination::Calls);
             let show = stop_rect(&ctx, Stop::Sidebar).expect("Show the chat list");
-            assert!(rail.contains_rect(show) && show.top() >= calls.bottom());
+            assert!(rail.contains_rect(show) && show.top() >= starred.bottom());
             // Nothing the list's toggle leaves in place moves.
             assert_eq!(chats, top[0], "{macos}: Chats stays put");
             assert_eq!(calls, top[1], "{macos}: Calls stays put");
@@ -25754,8 +25762,8 @@ mod rail_tests {
                 "{macos}: {avatar:?} in {rail:?}"
             );
             assert!(
-                avatar.top() >= calls.bottom() && avatar.bottom() <= starred.top(),
-                "{macos}: between the top group and Starred: {avatar:?}"
+                avatar.top() >= starred.bottom() && avatar.bottom() <= settings.top(),
+                "{macos}: between the top group and the foot: {avatar:?}"
             );
             // Under Show the chat list, which takes a cell of its own.
             assert!(avatar.top() >= show.bottom());

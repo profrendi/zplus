@@ -463,7 +463,7 @@ fn sampler(dir: PathBuf, ui_thread: cpu::Thread, run: u64) {
             let causes = top(&second.causes, 4);
             let backend = top(&second.backend, 4);
             let row = format!(
-                "{},{},{},{},{:.1},{:.1},{:.1},{},{:.2},{:.2},{:.1},{:.1},{:.1},{},{},\"{}\",\"{}\",\"{}\"",
+                "{},{},\"{}\",{},{:.1},{:.1},{:.1},{},{:.2},{:.2},{:.1},{:.1},{:.1},{},{},\"{}\",\"{}\",\"{}\"",
                 jiff::Zoned::now().strftime("%H:%M:%S"),
                 elapsed,
                 window,
@@ -634,7 +634,10 @@ fn summary(state: &State) -> String {
         }
         let mut causes: Vec<_> = totals.causes.iter().collect();
         causes.sort_by(|a, b| b.1.cmp(a.1));
-        let _ = writeln!(out, "Why frames were drawn (per second):");
+        let _ = writeln!(
+            out,
+            "Repaint requests by source (per second; many can share one frame):"
+        );
         for (cause, count) in causes.iter().take(15) {
             let _ = writeln!(out, "  {:>7.2}  {cause}", **count as f64 / secs);
         }
