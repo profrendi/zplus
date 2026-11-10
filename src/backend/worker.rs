@@ -14987,6 +14987,59 @@ mod tests {
         assert!(events.try_recv().is_err(), "only one recovery is requested");
     }
 
+    /// Every dial fails, as on a PC whose network is not up yet, and each one
+    /// is counted.
+    struct NoNetwork(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[whatsapp_rust::async_trait]
+    impl whatsapp_rust::transport::TransportFactory for NoNetwork {
+        async fn create_transport(&self) -> Result<crate::transport::Link, anyhow::Error> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("no network yet")
+        }
+    }
+
+    /// The bug from the field: a link started before the network was up sat
+    /// in whatsapp-rust's growing backoff, and nothing the app did cut it
+    /// short. `connect_now` must dial again at once, mid-backoff.
+    #[tokio::test]
+    async fn connecting_now_cuts_a_backoff_short() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let store = whatsapp_rust::store::SqliteStore::open(
+            directory.path().join("session.db").to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        let dials = Arc::new(AtomicUsize::new(0));
+        let bot = Bot::builder()
+            .with_backend(store)
+            .with_transport_factory(NoNetwork(dials.clone()))
+            .build()
+            .await
+            .unwrap();
+        let handle = bot.spawn();
+        let client = handle.client();
+        let started = Instant::now();
+        while dials.load(Ordering::SeqCst) < 3 {
+            assert!(started.elapsed() < Duration::from_secs(20), "no retries");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // The library now waits about two seconds before the fourth dial.
+        let before = dials.load(Ordering::SeqCst);
+        let asked = Instant::now();
+        connect_now(client.clone()).await;
+        while dials.load(Ordering::SeqCst) == before {
+            assert!(
+                asked.elapsed() < Duration::from_millis(800),
+                "the backoff was waited out"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(!client.is_paused());
+        client.shutdown().await;
+    }
+
     /// A shutdown queued behind a search keeps the commands before it, which
     /// is how an unsent draft survives quitting while the search was scanning.
     #[test]
