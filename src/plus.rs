@@ -258,21 +258,19 @@ pub fn clear_translation(chat: &str, id: &str) {
         .remove(&(chat.to_owned(), id.to_owned()));
 }
 
-/// The Google Translate code for the interface language.
-pub fn target_language(locale: crate::i18n::Locale) -> &'static str {
-    use crate::i18n::Locale;
-    match locale {
-        Locale::English => "en",
-        Locale::PortugueseBrazil => "pt",
-        Locale::German => "de",
-        Locale::Spanish => "es",
-        Locale::Italian => "it",
-        Locale::French => "fr",
-        Locale::Russian => "ru",
-        Locale::ChineseSimplified => "zh-CN",
-        Locale::ChineseTraditional => "zh-TW",
-        Locale::Turkish => "tr",
-        Locale::Indonesian => "id",
+/// The Google Translate code for the interface language, read from the
+/// locale's own code so a language ZapFast adds is covered without a change
+/// here: `pt-BR` is `pt`, Chinese keeps its script as Google names it, and
+/// any other code is its language subtag.
+pub fn target_language(locale: crate::i18n::Locale) -> String {
+    let code = serde_json::to_value(locale)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "en".to_owned());
+    match code.as_str() {
+        "zh-Hans" => "zh-CN".to_owned(),
+        "zh-Hant" => "zh-TW".to_owned(),
+        _ => code.split('-').next().unwrap_or("en").to_owned(),
     }
 }
 
@@ -282,7 +280,7 @@ pub fn request_translation(
     chat: &str,
     id: &str,
     text: String,
-    target: &'static str,
+    target: String,
 ) {
     let key = (chat.to_owned(), id.to_owned());
     {
@@ -296,7 +294,7 @@ pub fn request_translation(
     let spawned = std::thread::Builder::new()
         .name("plus-translate".into())
         .spawn(move || {
-            let result = match translate(&text, target) {
+            let result = match translate(&text, &target) {
                 Ok(done) => Translation::Done(done),
                 Err(error) => Translation::Failed(error.to_string()),
             };
@@ -891,3 +889,30 @@ pub fn upstream_version() -> String {
 pub const ZFPLUS_URL: &str = "https://github.com/profrendi/zplus";
 pub const ZAPFAST_URL: &str = "https://github.com/crmne/zapfast";
 pub const WAWPLUS_URL: &str = "https://www.wawplus.com";
+
+#[cfg(test)]
+mod tests {
+    use crate::i18n::Locale;
+
+    #[test]
+    fn every_interface_language_has_a_translation_target() {
+        let expected = [
+            (Locale::English, "en"),
+            (Locale::PortugueseBrazil, "pt"),
+            (Locale::ChineseSimplified, "zh-CN"),
+            (Locale::ChineseTraditional, "zh-TW"),
+            (Locale::Indonesian, "id"),
+            (Locale::German, "de"),
+        ];
+        for (locale, code) in expected {
+            assert_eq!(super::target_language(locale), code, "{locale:?}");
+        }
+        for locale in Locale::ALL {
+            let code = super::target_language(locale);
+            assert!(
+                (2..=5).contains(&code.len()) && code.is_ascii(),
+                "{locale:?} gave {code:?}"
+            );
+        }
+    }
+}
