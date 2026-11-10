@@ -275,6 +275,27 @@ pub async fn websocket(
     Ok(from_websocket(ws))
 }
 
+/// Whether WhatsApp's host takes a TCP connection now, directly or through
+/// `proxy`, within `limit`. Nothing is sent over it: this only asks whether
+/// the network is up, so a link waiting out a long backoff can connect early.
+pub async fn whatsapp_reachable(proxy: Option<crate::proxy::Proxy>, limit: Duration) -> bool {
+    let Ok(uri) = WHATSAPP_WEB_WS_URL.parse::<http::Uri>() else {
+        return false;
+    };
+    let host = uri.host().unwrap_or("web.whatsapp.com").to_owned();
+    let port = uri.port_u16().unwrap_or(443);
+    let attempt = async {
+        match proxy {
+            Some(proxy) => proxy.connect(&host, port).await.is_ok(),
+            None => match tokio::net::lookup_host((host.as_str(), port)).await {
+                Ok(addrs) => dial(interleave(addrs.collect())).await.is_ok(),
+                Err(_) => false,
+            },
+        }
+    };
+    tokio::time::timeout(limit, attempt).await.unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

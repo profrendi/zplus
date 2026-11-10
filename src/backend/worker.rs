@@ -53,6 +53,7 @@ use early_events::WaitingReaction;
 mod favorite_chats;
 mod group_admin;
 mod interactive;
+mod link_nudge;
 mod link_preview;
 mod link_preview_setting;
 mod link_watch;
@@ -951,6 +952,22 @@ fn behind_a_search(queued: Vec<Command>) -> BehindASearch {
     sorted
 }
 
+/// Connects `client` now, without waiting out the library's backoff.
+///
+/// `reconnect_immediately` drops a live socket and skips the wait that would
+/// follow, but a client already between attempts has no socket to drop: it
+/// sleeps out its backoff, up to 15 minutes, whatever is asked of it. A pause
+/// ends that sleep and a resume connects at once with the backoff reset, so
+/// that is what a waiting client gets.
+async fn connect_now(client: Arc<Client>) {
+    if client.is_socket_connected() {
+        client.reconnect_immediately().await;
+    } else if !client.is_paused() {
+        client.pause().await;
+        client.resume();
+    }
+}
+
 /// Runs the protocol worker, receiving commands and waking the interface for emitted events.
 pub async fn run(
     dirs: AccountDirs,
@@ -1187,6 +1204,7 @@ pub async fn run(
         receipts_pruned: Instant::now(),
         early: Default::default(),
         link_watch: Default::default(),
+        link_nudge: Default::default(),
         forward_queue: None,
     };
     worker.load_state();
@@ -1293,6 +1311,7 @@ pub async fn run(
                     online,
                     succeeded,
                 } => worker.presence_sent(generation, online, succeeded),
+                RuntimeEvent::NetworkProbed { reachable } => worker.network_probed(reachable),
             },
             Some(event) = async {
                 match call_events.as_mut() {
@@ -1318,6 +1337,7 @@ pub async fn run(
             }
             _ = tick.tick() => {
                 worker.watch_link();
+                worker.nudge_link();
                 worker.reveal_unconfirmed_after_grace();
                 worker.settle_presence();
                 worker.refresh_legacy_preferences();
@@ -1367,6 +1387,8 @@ enum RuntimeEvent {
     FavoriteChatsRead { generation: u64, complete: bool },
     /// The one-time read of the phone's link preview setting finished.
     LinkPreviewsRead { generation: u64, complete: bool },
+    /// A probe of the network, for a link waiting to reconnect, finished.
+    NetworkProbed { reachable: bool },
 }
 
 /// Renames an archive whose key is gone, with its SQLite side files, and
@@ -1591,6 +1613,9 @@ struct Worker {
     early: early_events::EarlyEvents,
     /// Notices a link that stays open after a sleep but carries nothing.
     link_watch: link_watch::LinkWatch,
+    /// Connects a waiting link as soon as the network answers. See
+    /// `link_nudge`.
+    link_nudge: link_nudge::LinkNudge,
     /// Serial background phone-history prefetch.
     prefetch: prefetch::State,
     chat_export: chat_export::State,
@@ -2545,16 +2570,70 @@ impl Worker {
     /// reports it (fastframe-power's `Resumed`, on Linux and Windows). See
     /// `link_watch`.
     fn resumed(&mut self) {
-        let Some(client) = self
-            .client
-            .clone()
-            .filter(|_| matches!(self.status, LinkStatus::Connected))
-        else {
+        let Some(client) = self.client.clone() else {
             return;
         };
-        log::info!("link: the machine woke up, reconnecting");
-        self.set_status(LinkStatus::Connecting);
-        tokio::spawn(async move { client.reconnect_immediately().await });
+        match self.status {
+            LinkStatus::Connected => {
+                log::info!("link: the machine woke up, reconnecting");
+                self.set_status(LinkStatus::Connecting);
+                tokio::spawn(async move { client.reconnect_immediately().await });
+            }
+            // A link that was already waiting may be deep in its backoff;
+            // the wake is as good a moment as any to try again.
+            LinkStatus::Connecting | LinkStatus::Disconnected { .. } => {
+                log::info!("link: the machine woke up, connecting now");
+                tokio::spawn(connect_now(client));
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the link is down and the library is trying to bring it back.
+    fn link_waiting(&self) -> bool {
+        matches!(
+            self.status,
+            LinkStatus::Connecting | LinkStatus::Disconnected { .. }
+        ) && self
+            .client
+            .as_ref()
+            .is_some_and(|client| !client.is_socket_connected() && !client.is_paused())
+    }
+
+    /// Probes the network for a link that has failed a few times in a row,
+    /// so it can connect as soon as the network is back instead of waiting
+    /// out WhatsApp's backoff. See `link_nudge`.
+    fn nudge_link(&mut self) {
+        let waiting = self.link_waiting();
+        let failures = self
+            .client
+            .as_ref()
+            .map_or(0, |client| client.stats().reconnect_errors);
+        if !self
+            .link_nudge
+            .should_probe(Instant::now(), waiting, failures)
+        {
+            return;
+        }
+        let sender = self.wa_sender.clone();
+        let proxy = crate::proxy::for_whatsapp();
+        tokio::spawn(async move {
+            let reachable =
+                crate::transport::whatsapp_reachable(proxy, link_nudge::PROBE_TIMEOUT).await;
+            let _ = sender.send(RuntimeEvent::NetworkProbed { reachable });
+        });
+    }
+
+    fn network_probed(&mut self, reachable: bool) {
+        let waiting = self.link_waiting();
+        if !self.link_nudge.probed(Instant::now(), reachable, waiting) {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        log::info!("link: the network answers, connecting now");
+        tokio::spawn(connect_now(client));
     }
 
     /// Reconnects a link that the machine slept under (macOS, where the
@@ -9093,7 +9172,7 @@ impl Worker {
             }
             Command::Reconnect => {
                 if let Some(client) = self.client.clone() {
-                    tokio::spawn(async move { client.reconnect_immediately().await });
+                    tokio::spawn(connect_now(client));
                 } else {
                     self.start_bot().await;
                 }
@@ -20397,6 +20476,7 @@ mod receipt_tests {
             receipts_pruned: Instant::now(),
             early: Default::default(),
             link_watch: Default::default(),
+            link_nudge: Default::default(),
             forward_queue: None,
         };
         worker.archive.set_meta("me_pn", ME).unwrap();
