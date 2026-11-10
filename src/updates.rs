@@ -22,8 +22,22 @@ pub const PLUS_REPOSITORY: Option<&str> = option_env!("ZAPFAST_PLUS_REPO");
 /// never ZapFast's, so an official release can never replace this build and
 /// lose its Enhancements: updates come from the Plus repository, which
 /// rebuilds every official release with the Enhancements on top.
+///
+/// ZFPlus Nightly reads the same repository under its own name and slug:
+/// its downloads are `zfplus-nightly-v…`, and as a pre-release it is offered
+/// the highest version listed, which is always the newest nightly (see
+/// `channel`). Stable reads only GitHub's latest release, never a nightly.
 pub const CONFIG: UpdateConfig = UpdateConfig {
-    legacy_names: &["fastsapp"],
+    legacy_names: if crate::channel::NIGHTLY {
+        &[]
+    } else {
+        &["fastsapp"]
+    },
+    prereleases: if crate::channel::NIGHTLY {
+        fastframe_update::Prereleases::WhenRunningPrerelease
+    } else {
+        fastframe_update::Prereleases::Never
+    },
     macos: MacConfig {
         bundle_ids: &["me.paolino.fastsapp"],
         executable_names: &[],
@@ -35,8 +49,8 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
             Some(repository) => repository,
             None => "crmne/zapfast",
         },
-        "ZFPlus",
-        "zapfast",
+        crate::channel::NAME,
+        crate::channel::SLUG,
         env!("CARGO_PKG_VERSION"),
     )
 };
@@ -61,7 +75,7 @@ mod tests {
     fn update_config_is_valid() {
         CONFIG.validate().unwrap();
         assert_eq!(CONFIG.current_version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(CONFIG.slug, "zapfast");
+        assert_eq!(CONFIG.slug, crate::channel::SLUG);
     }
 
     #[test]

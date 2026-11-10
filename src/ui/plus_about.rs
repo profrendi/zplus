@@ -20,13 +20,13 @@ pub fn about(app: &mut App, ui: &mut egui::Ui) {
         let (logo, _) = ui.allocate_exact_size(egui::Vec2::splat(48.0), egui::Sense::hover());
         theme::mark(ui, logo.center(), 48.0);
         ui.vertical(|ui| {
-            theme::text(ui, "ZFPlus", theme::bold(18.0), palette.text);
+            theme::text(ui, crate::channel::NAME, theme::bold(18.0), palette.text);
             theme::text(
                 ui,
                 format!(
-                    "Version {} · based on ZapFast {}",
-                    env!("CARGO_PKG_VERSION"),
-                    crate::plus::upstream_version()
+                    "Version {} · based on {}",
+                    crate::channel::display_version(env!("CARGO_PKG_VERSION")),
+                    crate::channel::based_on()
                 ),
                 theme::regular(12.5),
                 palette.secondary,
@@ -101,11 +101,15 @@ pub fn about(app: &mut App, ui: &mut egui::Ui) {
 pub fn updates(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let check = crate::plus::update_check();
-    let available = app.update.as_ref().map(|update| update.version.clone());
+    let name = crate::channel::NAME;
+    let available = app
+        .update
+        .as_ref()
+        .map(|update| crate::channel::display_version(&update.version));
     let (line, color) = match (&app.update_download, &available, &check) {
-        (DownloadState::Installing, _, _) => ("Installing, ZFPlus restarts in a moment…".to_owned(), palette.accent),
+        (DownloadState::Installing, _, _) => (format!("Installing, {name} restarts in a moment…"), palette.accent),
         (DownloadState::Ready(_), Some(version), _) => (
-            format!("ZFPlus {version} is downloaded and installs now…"),
+            format!("{name} {version} is downloaded and installs now…"),
             palette.accent,
         ),
         (DownloadState::Downloading { received, total }, Some(version), _) => {
@@ -114,15 +118,19 @@ pub fn updates(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 String::new()
             };
-            (format!("Downloading ZFPlus {version}…{share}"), palette.accent)
+            (format!("Downloading {name} {version}…{share}"), palette.accent)
         }
         (DownloadState::Failed(error), _, _) => (format!("The update failed: {error}"), palette.danger),
-        (_, Some(version), _) => (format!("ZFPlus {version} is available."), palette.accent),
+        (_, Some(version), _) => (format!("{name} {version} is available."), palette.accent),
         (_, None, UpdateCheck::Checking) => ("Checking for updates…".to_owned(), palette.secondary),
-        (_, None, UpdateCheck::UpToDate) => ("ZFPlus is up to date.".to_owned(), palette.secondary),
+        (_, None, UpdateCheck::UpToDate) => (format!("{name} is up to date."), palette.secondary),
         (_, None, UpdateCheck::Failed(error)) => {
             (format!("Could not check for updates: {error}"), palette.danger)
         }
+        _ if crate::channel::NIGHTLY => (
+            "Updates come from the ZFPlus repository: a new nightly on most days ZapFast's main branch changes.".to_owned(),
+            palette.secondary,
+        ),
         _ => (
             "Updates come from the ZFPlus repository, a few hours after each official ZapFast release.".to_owned(),
             palette.secondary,
@@ -159,4 +167,66 @@ pub fn updates(app: &mut App, ui: &mut egui::Ui) {
             crate::plus::request_check();
         }
     });
+    ui.add_space(8.0);
+    both_apps(app, ui);
+}
+
+/// The newest ZFPlus and ZFPlus Nightly side by side, so either app shows
+/// when the other has something new, with a link to get it.
+fn both_apps(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let latest = crate::channel::latest();
+    egui::Frame::new()
+        .fill(palette.surface)
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            theme::text(ui, "Stable and Nightly", theme::medium(13.0), palette.text);
+            ui.add_space(2.0);
+            theme::paragraph(
+                ui,
+                "Two separate apps, each with its own chats and login. Stable follows ZapFast's releases; Nightly brings what ZapFast is working on before it is released, and may have bugs.",
+                theme::regular(12.0),
+                palette.secondary,
+            );
+            ui.add_space(6.0);
+            let rows = [
+                (
+                    "ZFPlus",
+                    !crate::channel::NIGHTLY,
+                    latest.as_ref().and_then(|latest| latest.stable.clone()),
+                ),
+                (
+                    "ZFPlus Nightly",
+                    crate::channel::NIGHTLY,
+                    latest.as_ref().and_then(|latest| latest.nightly.clone()),
+                ),
+            ];
+            for (label, this_app, published) in rows {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    theme::text(ui, label, theme::medium(12.5), palette.text);
+                    let newest = match (&published, &latest) {
+                        (Some(published), _) => format!(
+                            "{} · {}",
+                            crate::channel::display_version(&published.version),
+                            published.date
+                        ),
+                        (None, Some(_)) => "not published yet".to_owned(),
+                        (None, None) => "not checked yet".to_owned(),
+                    };
+                    theme::text(ui, newest, theme::regular(12.5), palette.secondary);
+                    if this_app {
+                        theme::text(ui, "(this app)", theme::regular(12.5), palette.dim);
+                    } else if let Some(published) = &published
+                        && theme::link(ui, "Get it", theme::medium(12.5), palette.link)
+                            .on_hover_text(&published.url)
+                            .clicked()
+                    {
+                        app.actions.push(Action::OpenUrl(published.url.clone()));
+                    }
+                });
+            }
+        });
 }

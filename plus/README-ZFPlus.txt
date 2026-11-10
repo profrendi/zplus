@@ -20,4 +20,8 @@ of ZapFast on this computer, when there is one.
 ZFPlus and ZapFast share one login on this computer, so only one of the
 two runs at a time: quit one (tray icon -> Quit) before starting the other.
 
+ZFPlus Nightly is a separate app, on what ZapFast is working on before it is
+released: its own chats, login and folder, so it runs beside ZFPlus. About
+shows the newest version of both. It may have bugs.
+
 Not affiliated with WhatsApp, Meta, ZapFast or WA Web Plus.

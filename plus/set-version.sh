@@ -10,6 +10,13 @@ upstream=$(tr -d ' \n' < plus/UPSTREAM)
 revision=$(tr -d ' \n' < plus/REVISION)
 IFS=. read -r major minor patch <<< "${upstream#v}"
 version="$major.$minor.$((patch * 100 + revision))"
+# ZFPlus Nightly: <major>.<yyyymmdd>.<hhmm>-nightly, in UTC, from
+# ZFPLUS_NIGHTLY_STAMP (yyyymmddhhmm) or now. Above every stable version of
+# the same major, so the Nightly app's updater never picks a Stable release.
+if [ "${ZFPLUS_CHANNEL:-}" = nightly ]; then
+  stamp=${ZFPLUS_NIGHTLY_STAMP:-$(date -u +%Y%m%d%H%M)}
+  version="$major.${stamp:0:8}.$((10#${stamp:8:4}))-nightly"
+fi
 # The package's own version, in the manifest and the lock file.
 python3 - "$version" <<'PY'
 import re, sys

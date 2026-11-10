@@ -879,9 +879,9 @@ impl Downloadable for PhoneSticker {
 fn device_name() -> String {
     let host = crate::util::hostname();
     if host.is_empty() {
-        "ZFPlus".to_owned()
+        crate::channel::NAME.to_owned()
     } else {
-        format!("ZFPlus ({host})")
+        format!("{} ({host})", crate::channel::NAME)
     }
 }
 
@@ -8726,6 +8726,7 @@ impl Worker {
                 tokio::task::spawn_blocking(move || {
                     match crate::updates::updater().and_then(|updater| updater.check()) {
                         Ok(Some(release)) => {
+                            crate::channel::refresh_latest();
                             let _ = events.send(Event::UpdateAvailable {
                                 version: release.version,
                                 url: release.url,
@@ -8733,11 +8734,13 @@ impl Worker {
                             waker.wake();
                         }
                         Ok(None) => {
+                            crate::channel::refresh_latest();
                             crate::plus::set_update_check(crate::plus::UpdateCheck::UpToDate);
                             waker.wake();
                             log::debug!("this is the newest release")
                         }
                         Err(error) => {
+                            crate::channel::refresh_latest();
                             crate::plus::set_update_check(crate::plus::UpdateCheck::Failed(
                                 format!("{error:#}"),
                             ));

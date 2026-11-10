@@ -394,7 +394,7 @@ impl<T: std::io::Read + std::io::Seek + Send + Sync> ReadSeek for T {}
 /// ("Type a message").
 pub fn locked_lines(locale: crate::i18n::Locale) -> (String, String) {
     (
-        "ZFPlus".to_owned(),
+        crate::channel::NAME.to_owned(),
         // Translators: the body of a notification that hides who wrote and
         // what: a message has arrived.
         crate::i18n::pgettext(locale, "notification", "New message").into_owned(),
@@ -433,7 +433,7 @@ fn notification_app_id() -> &'static str {
     if cfg!(target_os = "macos") {
         MACOS_BUNDLE_ID
     } else {
-        "me.paolino.zapfast"
+        crate::channel::NOTIFICATION_ID
     }
 }
 
@@ -459,8 +459,8 @@ fn deliver(
     };
     let client = match CLIENT.get_or_init(|| {
         Client::new(
-            App::new(notification_app_id(), "ZFPlus")
-                .desktop_entry("zapfast")
+            App::new(notification_app_id(), crate::channel::NAME)
+                .desktop_entry(crate::channel::SLUG)
                 .icon("zapfast")
                 // ZFPlus violet behind the logo on Windows toasts, so
                 // Windows 11's dark theme leaves it as drawn.

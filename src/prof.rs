@@ -558,12 +558,19 @@ fn summary(state: &State) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "ZFPlus {} diagnostics, {} s recorded, {} logical CPUs, {}\n",
+        "{} {} diagnostics, {} s recorded, {} logical CPUs, {}",
+        crate::channel::NAME,
         env!("CARGO_PKG_VERSION"),
         state.started.elapsed().as_secs(),
         cpu::logical_cpus(),
         std::env::consts::OS,
     );
+    // The engine underneath: which ZapFast, whatsapp-rust, fastframe, egui
+    // and compiler made this build.
+    for line in crate::channel::engine_lines().iter().skip(1) {
+        let _ = writeln!(out, "{line}");
+    }
+    let _ = writeln!(out);
     if !cpu::MEASURED {
         let _ = writeln!(out, "CPU time is not measured on this system.\n");
     }

@@ -1317,8 +1317,8 @@ fn tray_action(event: fastframe_tray::Event, window_hidden: bool) -> Option<Acti
 fn tray_config(lockable: bool) -> fastframe_tray::Config {
     use fastframe_tray::MenuItem;
     fastframe_tray::Config {
-        id: "zapfast",
-        title: "ZFPlus".into(),
+        id: crate::channel::SLUG,
+        title: crate::channel::NAME.into(),
         icon: crate::util::app_icon_rgba,
         template_icon: Some(crate::util::tray_template_rgba),
         // The icon changes with the unread count, which a host that has the
@@ -1415,7 +1415,7 @@ impl App {
         app.pauses_media = true;
         app.call_tones = crate::call_tones::Tones::new(true);
         app.badge = Some(crate::notify::Badge::new(fastframe_desktop::desktop_entry(
-            "zapfast",
+            crate::channel::SLUG,
         )));
         app.custom_themes
             .enable_desktop_themes(crate::theme::DESKTOP_THEMES);

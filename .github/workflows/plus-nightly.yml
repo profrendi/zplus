@@ -1,0 +1,159 @@
+# ZFPlus Nightly: once a day, ZFPlus main merged with ZapFast's main branch,
+# tested, built for Windows and published as a pre-release that only the
+# ZFPlus Nightly app installs. The merge exists only in this run: main never
+# gets it, and the release notes name the two commits it was made from. Nothing new on either side means no
+# nightly. A conflict, a failing test or a failed build opens an issue and
+# publishes nothing.
+name: plus-nightly
+on:
+  schedule:
+    - cron: "41 17 * * *" # 00:41 in Jakarta
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if nothing changed since the last nightly
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  issues: write
+concurrency:
+  group: plus-nightly
+  cancel-in-progress: false
+jobs:
+  nightly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Merge ZapFast main
+        id: merge
+        run: |
+          git config user.name "zapfast-plus-bot"
+          git config user.email "zapfast-plus-bot@users.noreply.github.com"
+          git remote add upstream https://github.com/crmne/zapfast
+          git fetch --quiet upstream main
+          own=$(git rev-parse --short=7 HEAD)
+          theirs=$(git rev-parse --short=7 upstream/main)
+          theirs_date=$(git log -1 --format=%cs upstream/main)
+          marker="ZFPlus main $own, ZapFast main $theirs"
+          last=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+            --jq '[.[] | select(.tag_name | endswith("-nightly"))][0].body // ""')
+          if [ "${{ inputs.force }}" != true ] && grep -qF "$marker" <<< "$last"; then
+            echo "The newest nightly is already on $marker."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git merge --no-edit --no-ff -m "ZFPlus Nightly: merge ZapFast main $theirs" upstream/main; then
+            # ZFPlus keeps its own README, and ZapFast's workflows never run here.
+            if git diff --name-only --diff-filter=U | grep -qx README.md; then
+              git checkout --ours -- README.md && git add README.md
+            fi
+            git diff --name-only --diff-filter=U | grep '^\.github/workflows/' | grep -v '/plus-' | xargs -r git rm -q --
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "Conflicts:"; git diff --name-only --diff-filter=U | tee conflicts.txt
+              git merge --abort
+              echo "problem=ZapFast main $theirs does not merge into ZFPlus main $own (conflicts in $(paste -sd, conflicts.txt))." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            git commit --no-edit -q
+          fi
+          for file in .github/workflows/*.yml; do
+            case "$(basename "$file")" in plus-*) ;; *) git rm -q -- "$file" ;; esac
+          done
+          git diff --cached --quiet || git commit -q -m "ZFPlus Nightly: leave out ZapFast's workflows"
+          {
+            echo "build=true"
+            echo "marker=$marker"
+            echo "upstream=$theirs $theirs_date"
+            echo "stamp=$(date -u +%Y%m%d%H%M)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Tools
+        if: steps.merge.outputs.build == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends mingw-w64 wixl msitools zip nasm cmake perl \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libpipewire-0.3-dev clang libclang-dev
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-pc-windows-gnu
+      - uses: actions/cache@v4
+        if: steps.merge.outputs.build == 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: plus-nightly-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: plus-nightly-
+      # The tests run on the merged code as ZFPlus (Stable) is built, since
+      # they check Stable's names; the nightly differs only in its names.
+      - name: Test
+        if: steps.merge.outputs.build == 'true'
+        run: |
+          # ZapFast's main may need lock file entries ZFPlus main does not
+          # have yet; settle them without upgrading anything else.
+          cargo update --workspace --quiet
+          cargo fmt --all --check
+          cargo test --locked --lib -- --test-threads 4
+          # The Windows build needs the room.
+          rm -rf target/debug
+      - name: Version
+        id: version
+        if: steps.merge.outputs.build == 'true'
+        env:
+          ZFPLUS_CHANNEL: nightly
+          ZFPLUS_NIGHTLY_STAMP: ${{ steps.merge.outputs.stamp }}
+        run: echo "version=$(plus/set-version.sh)" >> "$GITHUB_OUTPUT"
+      - name: Build and package
+        id: build
+        if: steps.merge.outputs.build == 'true'
+        env:
+          SIGNING_KEY: ${{ secrets.ZAPFAST_PLUS_SIGNING_KEY }}
+          ZFPLUS_CHANNEL: nightly
+          ZFPLUS_NIGHTLY_UPSTREAM: ${{ steps.merge.outputs.upstream }}
+          ZFPLUS_NIGHTLY_STAMP: ${{ steps.merge.outputs.stamp }}
+        run: |
+          key=$(mktemp)
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          plus/build-windows.sh dist "$key"
+          rm -f "$key"
+      - name: Publish
+        if: steps.merge.outputs.build == 'true'
+        run: |
+          version=${{ steps.version.outputs.version }}
+          {
+            echo "ZFPlus Nightly $version: ${{ steps.merge.outputs.marker }} (${{ steps.merge.outputs.upstream }})."
+            echo
+            echo "A separate app from ZFPlus, with its own chats and login, carrying what ZapFast is working on before it is released. It may have bugs."
+            echo
+            echo "Install: \`zfplus-nightly-v$version-x86_64-pc-windows-msvc.msi\` (no admin rights). Portable: the \`.zip\`."
+            echo
+            echo "ZapFast changes since its last release: https://github.com/crmne/zapfast/compare/$(tr -d ' \n' < plus/UPSTREAM)...$(git rev-parse upstream/main)"
+          } > notes.md
+          # The tag marks the ZFPlus main commit the nightly was made from.
+          gh release create "v$version" dist/* --prerelease --latest=false \
+            --target "$(git rev-parse origin/main)" --title "ZFPlus Nightly $version" --notes-file notes.md
+      - name: Keep the ten newest nightlies
+        if: steps.merge.outputs.build == 'true'
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name | endswith("-nightly"))] | .[10:] | .[].tag_name' |
+            while read -r tag; do
+              gh release delete "$tag" --yes --cleanup-tag || true
+            done
+      - name: Report a failure
+        if: failure()
+        run: |
+          title="ZFPlus Nightly could not be built"
+          body="${{ steps.merge.outputs.problem }} See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. ZFPlus (Stable) is not affected."
+          number=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

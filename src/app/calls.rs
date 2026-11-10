@@ -506,7 +506,7 @@ impl App {
             // Behind the app lock the desktop learns that a call came, and
             // nothing about who is calling.
             (
-                "ZFPlus".to_owned(),
+                crate::channel::NAME.to_owned(),
                 crate::i18n::gettext(self.locale, "Incoming call").into_owned(),
                 None,
             )
@@ -575,7 +575,7 @@ impl App {
         }
         let (title, body, picture) = if self.app_lock.is_locked() {
             (
-                "ZFPlus".to_owned(),
+                crate::channel::NAME.to_owned(),
                 crate::i18n::gettext(self.locale, "Incoming call").into_owned(),
                 None,
             )

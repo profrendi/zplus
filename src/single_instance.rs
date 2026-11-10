@@ -103,6 +103,15 @@ pub fn acquire(dir: &Path, waker: &crate::backend::Waker, verb: &str) -> Outcome
     // A copy from before the lock only knows `show` and `ping`. Anything else
     // asked of one surfaces its window rather than running a second ZapFast
     // beside it.
+    // ZFPlus Nightly has no copies from before the lock, and the fixed port
+    // belongs to Stable: answering it, or asking it, would make Nightly bring
+    // Stable forward instead of starting beside it.
+    if crate::channel::NIGHTLY {
+        return Outcome::Only(Guard {
+            commands,
+            _claim: claim,
+        });
+    }
     let legacy = legacy_verb(verb);
     if legacy_instance_answers(legacy) {
         return if legacy == verb {
@@ -213,6 +222,9 @@ fn sent(result: std::io::Result<()>, legacy: impl FnOnce() -> bool) -> Sent {
 /// Unlike [`legacy_instance_answers`], a port held by something that does
 /// not answer as ZapFast counts as no copy.
 fn legacy_instance_answers_ping() -> bool {
+    if crate::channel::NIGHTLY {
+        return false;
+    }
     if TcpListener::bind((Ipv4Addr::LOCALHOST, LEGACY_PORT)).is_ok() {
         return false;
     }

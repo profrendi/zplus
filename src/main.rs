@@ -8,7 +8,7 @@ use clap::Parser;
 
 /// A fast, native WhatsApp client.
 #[derive(Debug, Parser)]
-#[command(name = "zapfast", version, about)]
+#[command(name = zapfast::channel::SLUG, version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Control>,
@@ -313,7 +313,7 @@ fn run() -> eframe::Result<()> {
     // directories have been created and secured successfully.
     dirs.ensure()
         .map_err(|error| eframe::Error::AppCreation(error.into()))?;
-    let logging = fastframe_log::Logging::new("zapfast", env!("CARGO_PKG_VERSION"))
+    let logging = fastframe_log::Logging::new(zapfast::channel::SLUG, env!("CARGO_PKG_VERSION"))
         .filter(default_filter)
         .panic_log(dirs.panic_log())
         .redact(redact_protocol);
@@ -336,7 +336,7 @@ fn run() -> eframe::Result<()> {
     // The name and icon volume mixers show for every sound ZapFast plays or records; set before
     // anything opens or lists a device.
     let _ = fastframe_audio::set_app_info(fastframe_audio::AppInfo {
-        name: "ZapFast".into(),
+        name: zapfast::channel::SYSTEM_NAME.into(),
         icon: Some("zapfast".into()),
     });
     let settings = settings::Settings::load(&dirs.settings_file());
@@ -474,7 +474,7 @@ fn run() -> eframe::Result<()> {
                 )
             });
             eframe::run_native(
-                "ZapFast",
+                zapfast::channel::SYSTEM_NAME,
                 native_options(demo_persistence.clone(), geometry, transparent),
                 Box::new(move |cc| {
                     let mut app = lease.take(&cc.egui_ctx);
@@ -564,7 +564,7 @@ fn startup_failure_dialog(error: &eframe::Error) {
         &paths::AppDirs::discover().log_file(),
     );
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let (text, caption) = (wide(&text), wide("ZapFast"));
+    let (text, caption) = (wide(&text), wide(zapfast::channel::SYSTEM_NAME));
     // SAFETY: both strings are NUL-terminated and outlive the call.
     unsafe {
         MessageBoxW(
@@ -620,11 +620,15 @@ fn native_options(
     let default_size = demo_size_arg().unwrap_or([1180.0, 780.0]);
     let demo = demo_persistence.is_some();
     let viewport = egui::ViewportBuilder::default()
-        .with_title(if demo { "ZapFast Demo" } else { "ZFPlus" })
+        .with_title(if demo {
+            "ZapFast Demo"
+        } else {
+            zapfast::channel::NAME
+        })
         .with_app_id(if demo {
             "zapfast-demo".to_owned()
         } else {
-            fastframe_desktop::desktop_entry("zapfast")
+            fastframe_desktop::desktop_entry(zapfast::channel::SLUG)
         });
     // The remembered size and position, from the settings, over the default
     // size. Demo runs keep their fixed screenshot size.

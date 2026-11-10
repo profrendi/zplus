@@ -121,6 +121,26 @@ Version numbers: `major.minor.(patch × 100 + Plus revision)`. For example,
 ZapFast 0.21.1 with the first Plus revision is **0.21.101**; ZapFast 0.21.2
 becomes 0.21.201.
 
+### ZFPlus Nightly
+
+A second, separate app for trying what ZapFast is working on before it is
+released. It has its own name, chats, login and install folder
+(`%LOCALAPPDATA%\Programs\ZFPlus Nightly`), so it installs and runs beside
+ZFPlus without touching it, and it shows up as "ZFPlus Nightly" under the
+phone's Linked devices. It may have bugs.
+
+- **Once a day**, the [`plus-nightly`](.github/workflows/plus-nightly.yml)
+  workflow merges ZFPlus main with ZapFast's main branch, runs the tests,
+  builds `zfplus-nightly-v…-x86_64-pc-windows-msvc.msi` and `.zip` and
+  publishes them as a pre-release. Nothing new on either side means no
+  nightly; a conflict or a failing test opens an issue and publishes nothing.
+- ZFPlus never sees these pre-releases, and ZFPlus Nightly only ever installs
+  nightlies. Their versions read `0.<yyyymmdd>.<hhmm>-nightly`, shown in the
+  app as the date, such as "Nightly 10 Nov 2026, 17:41".
+- Both apps' About shows the newest ZFPlus and the newest ZFPlus Nightly,
+  with a link to get the other one. Copy performance report names the engine
+  each was built on (ZapFast, whatsapp-rust, fastframe, egui, Rust).
+
 ### For developers
 
 - Plus features: [`src/plus.rs`](src/plus.rs), [`src/ui/plus_new_chat.rs`](src/ui/plus_new_chat.rs),

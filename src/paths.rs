@@ -20,7 +20,7 @@ pub struct AppDirs {
 
 impl AppDirs {
     pub fn discover() -> Self {
-        match Self::of("zapfast") {
+        match Self::of(crate::channel::SLUG) {
             Some(dirs) => dirs,
             None => {
                 let fallback = std::env::current_dir().unwrap_or_default();
@@ -52,13 +52,19 @@ impl AppDirs {
     /// Adopts earlier names, newest first, without replacing existing data.
     /// Call only after acquiring the instance guard, and never for demo runs.
     pub fn adopt_previous_names(&self) -> std::io::Result<()> {
+        // ZFPlus Nightly starts with nothing of its own: the older names are
+        // Stable's data, and Nightly never takes another app's chats.
+        if crate::channel::NIGHTLY {
+            return Ok(());
+        }
         for name in ["fastsapp", "fastwhatsapp"] {
             if let Some(old) = Self::of(name) {
                 self.adopt(&old)?;
             }
-            if let (Some(from), Some(to)) =
-                (eframe::storage_dir(name), eframe::storage_dir("zapfast"))
-            {
+            if let (Some(from), Some(to)) = (
+                eframe::storage_dir(name),
+                eframe::storage_dir(crate::channel::SLUG),
+            ) {
                 adopt_directory(&from, &to)?;
             }
         }
