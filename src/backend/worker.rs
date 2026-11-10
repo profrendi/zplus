@@ -15021,11 +15021,16 @@ mod tests {
         let handle = bot.spawn();
         let client = handle.client();
         let started = Instant::now();
-        while dials.load(Ordering::SeqCst) < 3 {
-            assert!(started.elapsed() < Duration::from_secs(20), "no retries");
+        // Five failures in, the library waits about five seconds before the
+        // sixth dial (1, 1, 2, 3, 5 seconds). Asked a moment into that wait,
+        // `reconnect_immediately` alone sat it out; asked right after a
+        // failure it could still slip in before the wait began, so the test
+        // asks well inside it.
+        while dials.load(Ordering::SeqCst) < 5 {
+            assert!(started.elapsed() < Duration::from_secs(30), "no retries");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        // The library now waits about two seconds before the fourth dial.
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let before = dials.load(Ordering::SeqCst);
         let asked = Instant::now();
         connect_now(client.clone()).await;
