@@ -26,6 +26,9 @@ jobs:
     timeout-minutes: 300
     env:
       GH_TOKEN: ${{ github.token }}
+      # gh would otherwise pick the "upstream" remote (ZapFast) as its
+      # repository once the merge step adds it.
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -136,7 +139,7 @@ jobs:
             echo "ZapFast changes since its last release: https://github.com/crmne/zapfast/compare/$(tr -d ' \n' < plus/UPSTREAM)...$(git rev-parse upstream/main)"
           } > notes.md
           # The tag marks the ZFPlus main commit the nightly was made from.
-          gh release create "v$version" dist/* --prerelease --latest=false \
+          gh release create "v$version" dist/* --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
             --target "$(git rev-parse origin/main)" --title "ZFPlus Nightly $version" --notes-file notes.md
       - name: Keep the ten newest nightlies
         if: steps.merge.outputs.build == 'true'
@@ -144,16 +147,16 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '[.[] | select(.tag_name | endswith("-nightly"))] | .[10:] | .[].tag_name' |
             while read -r tag; do
-              gh release delete "$tag" --yes --cleanup-tag || true
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
             done
       - name: Report a failure
         if: failure()
         run: |
           title="ZFPlus Nightly could not be built"
           body="${{ steps.merge.outputs.problem }} See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. ZFPlus (Stable) is not affected."
-          number=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number')
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number -q '.[0].number')
           if [ -n "$number" ]; then
-            gh issue comment "$number" --body "$body"
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
           else
-            gh issue create --title "$title" --body "$body"
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           fi
