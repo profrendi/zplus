@@ -87,6 +87,9 @@ struct State {
     /// The last finished second, for the overlay.
     last_line: String,
     started: Instant,
+    /// ZFPlus: memory when recording started, and the most it reached.
+    memory_first: Option<crate::plus_memory::Snapshot>,
+    memory_peak: u64,
     dir: PathBuf,
 }
 
@@ -156,6 +159,8 @@ fn start(dir: &Path) {
             overlay: false,
             last_line: "measuring…".to_owned(),
             started: Instant::now(),
+            memory_first: None,
+            memory_peak: 0,
             dir: dir.to_path_buf(),
         });
     }
@@ -347,7 +352,7 @@ pub fn overlay(ctx: &egui::Context) {
         });
 }
 
-const CSV_HEADER: &str = "time,seconds,window,view,process_cpu_pct_of_machine,ui_thread_pct_of_core,other_threads_pct_of_core,frames,frame_ms_avg,frame_ms_max,app_logic_ms,app_ui_ms,draw_and_driver_ms,input_events,pointer_moves,sections,repaint_causes,backend_events";
+const CSV_HEADER: &str = "time,seconds,window,view,process_cpu_pct_of_machine,ui_thread_pct_of_core,other_threads_pct_of_core,frames,frame_ms_avg,frame_ms_max,app_logic_ms,app_ui_ms,draw_and_driver_ms,input_events,pointer_moves,sections,repaint_causes,backend_events,private_mb,resident_mb,textures_mb,sqlite_mb,messages_loaded";
 
 /// `prof.csv`, appended to, set aside once it passes `limit`.
 struct Csv {
@@ -462,8 +467,35 @@ fn sampler(dir: PathBuf, ui_thread: cpu::Thread, run: u64) {
             let sections = sections.join(" ");
             let causes = top(&second.causes, 4);
             let backend = top(&second.backend, 4);
+            let memory = crate::plus_memory::latest();
+            let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+            let (private, resident) = memory
+                .as_ref()
+                .and_then(|memory| memory.process)
+                .map_or((0.0, 0.0), |process| {
+                    (mb(process.private), mb(process.resident))
+                });
+            if let Some(memory) = &memory {
+                if state.memory_first.is_none() {
+                    state.memory_first = Some(memory.clone());
+                }
+                if let Some(process) = memory.process {
+                    state.memory_peak = state.memory_peak.max(process.private);
+                }
+            }
+            let memory_columns = memory.as_ref().map_or_else(
+                || ",,,,".to_owned(),
+                |memory| {
+                    format!(
+                        "{private:.0},{resident:.0},{:.0},{:.0},{}",
+                        mb(memory.texture_bytes + memory.blur_bytes),
+                        mb(memory.sqlite_bytes),
+                        memory.messages
+                    )
+                },
+            );
             let row = format!(
-                "{},{},\"{}\",{},{:.1},{:.1},{:.1},{},{:.2},{:.2},{:.1},{:.1},{:.1},{},{},\"{}\",\"{}\",\"{}\"",
+                "{},{},\"{}\",{},{:.1},{:.1},{:.1},{},{:.2},{:.2},{:.1},{:.1},{:.1},{},{},\"{}\",\"{}\",\"{}\",{}",
                 jiff::Zoned::now().strftime("%H:%M:%S"),
                 elapsed,
                 window,
@@ -482,6 +514,7 @@ fn sampler(dir: PathBuf, ui_thread: cpu::Thread, run: u64) {
                 sections,
                 causes.replace('"', "'"),
                 backend,
+                memory_columns,
             );
             state.last_line = format!(
                 "ZFPlus diagnostics  {window}\nCPU {process_machine:.1}% of machine  UI thread {ui_core:.0}% of a core  other {other_core:.0}%\n{} frames/s  {avg:.1} ms avg  {:.1} ms max\napp {:.0} ms  draw+driver {:.0} ms\nwhy: {}\nbackend: {}",
@@ -492,6 +525,11 @@ fn sampler(dir: PathBuf, ui_thread: cpu::Thread, run: u64) {
                 top(&second.causes, 2),
                 top(&second.backend, 3),
             );
+            if let Some(memory) = &memory {
+                state
+                    .last_line
+                    .push_str(&format!("\nmemory: {}", memory.line()));
+            }
             // Totals for the summary.
             let totals = state.totals.entry(window).or_default();
             totals.seconds += 1;
@@ -571,6 +609,20 @@ fn summary(state: &State) -> String {
         let _ = writeln!(out, "{line}");
     }
     let _ = writeln!(out);
+    // ZFPlus: what the app holds now, what it held when recording began,
+    // and the most it reached.
+    if let Some(memory) = crate::plus_memory::latest() {
+        let _ = writeln!(out, "Memory now: {}", memory.line());
+        if let Some(first) = &state.memory_first {
+            let _ = writeln!(out, "Memory at start: {}", first.line());
+        }
+        let _ = writeln!(
+            out,
+            "Memory peak: {:.0} MB private",
+            state.memory_peak as f64 / (1024.0 * 1024.0)
+        );
+        let _ = writeln!(out);
+    }
     if !cpu::MEASURED {
         let _ = writeln!(out, "CPU time is not measured on this system.\n");
     }

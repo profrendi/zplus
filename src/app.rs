@@ -959,6 +959,8 @@ pub struct App {
     /// only while that dialog is, and the newest frame drawn from it.
     pub camera: Option<crate::plus_camera::Capture>,
     pub camera_texture: Option<(u64, egui::TextureHandle)>,
+    /// ZFPlus: when the memory was last measured (`plus_memory::tick`).
+    memory_measured: Option<Instant>,
     /// Whether window close should keep the process running.
     pub hide_intent: bool,
     /// Whether a headless app should create a window.
@@ -1844,6 +1846,7 @@ impl App {
             away: false,
             camera: None,
             camera_texture: None,
+            memory_measured: None,
             hide_intent: false,
             wants_show: false,
             tray_wait: None,
@@ -10825,6 +10828,7 @@ impl App {
         }
         self.tick_app_lock(ctx);
         self.plus_lock_when_away(ctx);
+        self.measure_memory(ctx);
         self.sync_diagnostics();
         self.tick_login_item();
         self.tick_load_all();
@@ -10975,6 +10979,28 @@ impl App {
         for chat in waiting {
             self.fetch_older(&chat, true);
         }
+    }
+
+    /// ZFPlus: measures what the app holds once a second, for Feature check,
+    /// Diagnostics and a line in the log every ten minutes.
+    fn measure_memory(&mut self, ctx: &egui::Context) {
+        if self
+            .memory_measured
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.memory_measured = Some(Instant::now());
+        let (mut messages, mut chats) = (0u64, 0u64);
+        for account in &self.accounts {
+            for conversation in account.conversations.values() {
+                if !conversation.messages.is_empty() {
+                    chats += 1;
+                    messages += conversation.messages.len() as u64;
+                }
+            }
+        }
+        crate::plus_memory::tick(ctx, messages, chats);
     }
 
     fn tick_login_item(&mut self) {

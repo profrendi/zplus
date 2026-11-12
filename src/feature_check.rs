@@ -215,6 +215,21 @@ pub fn run(app: &App) -> Vec<Check> {
         }
         _ => check(Status::Note, "Updates", "Not checked yet"),
     });
+    // ZFPlus: what the app holds, from the last second's measurement.
+    checks.push(match crate::plus_memory::latest() {
+        Some(memory) => {
+            let private = memory.process.map_or(0, |process| process.private);
+            let status = if private > 700 << 20 {
+                Status::Problem
+            } else if private > 400 << 20 {
+                Status::Note
+            } else {
+                Status::Good
+            };
+            check(status, "Memory", memory.line())
+        }
+        None => check(Status::Note, "Memory", "Not measured yet"),
+    });
     checks.push(check(
         Status::Good,
         "Features in this build",

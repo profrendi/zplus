@@ -522,8 +522,11 @@ struct BlurGl {
     /// The first, sideways pass, drawn off screen.
     pass: glow::Texture,
     framebuffer: glow::Framebuffer,
-    /// The off-screen texture's size, so it is only remade when that changes.
-    pass_size: (i32, i32),
+    /// Both textures' size. They only ever grow, in steps, and each blurred
+    /// area uses their bottom-left corner: remaking them for every area of a
+    /// new size, many times a frame, left some Windows drivers holding
+    /// hundreds of megabytes of storage they had not freed yet.
+    capacity: (i32, i32),
     u_texture: Option<glow::UniformLocation>,
     u_original: Option<glow::UniformLocation>,
     u_texel: Option<glow::UniformLocation>,
@@ -532,6 +535,21 @@ struct BlurGl {
     u_masked: Option<glow::UniformLocation>,
     u_size: Option<glow::UniformLocation>,
     u_radius: Option<glow::UniformLocation>,
+    u_scale: Option<glow::UniformLocation>,
+    u_region: Option<glow::UniformLocation>,
+}
+
+/// The size the blur's textures grow to for an area of `needed` pixels: in
+/// steps of 256, so a few sizes cover every area a window has.
+fn blur_capacity(current: (i32, i32), needed: (i32, i32)) -> (i32, i32) {
+    let step = |have: i32, need: i32| {
+        if need <= have {
+            have
+        } else {
+            (need + 255) / 256 * 256
+        }
+    };
+    (step(current.0, needed.0), step(current.1, needed.1))
 }
 
 // The GL names are plain numbers, used only on the painting thread.
@@ -652,36 +670,41 @@ unsafe fn paint_blur(
     };
     let (width, height) = (viewport.width_px, viewport.height_px);
     unsafe {
-        // What is on screen under the area.
+        // The textures grow, never shrink, so most frames allocate nothing.
+        let capacity = blur_capacity(made.capacity, (width, height));
+        if capacity != made.capacity {
+            for texture in [made.texture, made.pass] {
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA as i32,
+                    capacity.0,
+                    capacity.1,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+            }
+            made.capacity = capacity;
+            crate::plus_memory::set_blur_bytes(capacity.0 as u64 * capacity.1 as u64 * 4 * 2);
+        }
+        // What is on screen under the area, into the copy's corner.
         gl.active_texture(glow::TEXTURE1);
         gl.bind_texture(glow::TEXTURE_2D, Some(made.texture));
-        gl.copy_tex_image_2d(
+        gl.copy_tex_sub_image_2d(
             glow::TEXTURE_2D,
             0,
-            glow::RGBA,
+            0,
+            0,
             viewport.left_px,
             viewport.from_bottom_px,
             width,
             height,
-            0,
         );
-        // The off-screen texture for the sideways pass, the area's size.
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, Some(made.pass));
-        if made.pass_size != (width, height) {
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA as i32,
-                width,
-                height,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
-            );
-            made.pass_size = (width, height);
-        }
         let screen = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
         let scissor = gl.is_enabled(glow::SCISSOR_TEST);
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(made.framebuffer));
@@ -699,9 +722,15 @@ unsafe fn paint_blur(
         gl.uniform_1_i32(made.u_original.as_ref(), 1);
         gl.uniform_2_f32(
             made.u_texel.as_ref(),
-            1.0 / width as f32,
-            1.0 / height as f32,
+            1.0 / capacity.0 as f32,
+            1.0 / capacity.1 as f32,
         );
+        gl.uniform_2_f32(
+            made.u_scale.as_ref(),
+            width as f32 / capacity.0 as f32,
+            height as f32 / capacity.1 as f32,
+        );
+        gl.uniform_2_f32(made.u_region.as_ref(), width as f32, height as f32);
         gl.uniform_1_f32(made.u_sigma.as_ref(), sigma);
         // The shape in the copied area's pixels: where the full rectangle
         // starts, and its size. GL counts rows from the bottom.
@@ -796,14 +825,19 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
          uniform float u_masked;\n\
          uniform vec4 u_size;\n\
          uniform float u_radius;\n\
+         uniform vec2 u_scale;\n\
+         uniform vec2 u_region;\n\
          void main() {{\n\
+           vec2 lo = u_texel * 0.5;\n\
+           vec2 hi = u_scale - u_texel * 0.5;\n\
+           vec2 uv = v_uv * u_scale;\n\
            float spacing = max(1.0, 3.0 * u_sigma / {taps}.0);\n\
            vec3 sum = vec3(0.0);\n\
            float total = 0.0;\n\
            for (int i = -{taps}; i <= {taps}; i++) {{\n\
              float x = float(i) * spacing;\n\
              float w = exp(-0.5 * x * x / (u_sigma * u_sigma));\n\
-             sum += {sample}(u_texture, v_uv + u_direction * u_texel * x).rgb * w;\n\
+             sum += {sample}(u_texture, clamp(uv + u_direction * u_texel * x, lo, hi)).rgb * w;\n\
              total += w;\n\
            }}\n\
            vec3 blurred = sum / total;\n\
@@ -811,12 +845,12 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
              FRAG = vec4(blurred, 1.0);\n\
              return;\n\
            }}\n\
-           vec2 px = v_uv / u_texel - u_size.xy;\n\
+           vec2 px = v_uv * u_region - u_size.xy;\n\
            vec2 half_size = u_size.zw * 0.5;\n\
            float r = min(u_radius, min(half_size.x, half_size.y));\n\
            vec2 q = abs(px - half_size) - (half_size - vec2(r));\n\
            float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n\
-           vec4 original = {sample}(u_original, v_uv);\n\
+           vec4 original = {sample}(u_original, clamp(uv, lo, hi));\n\
            float inside = clamp(0.5 - d, 0.0, 1.0);\n\
            FRAG = vec4(mix(original.rgb, blurred, inside), 1.0);\n\
          }}\n"
@@ -880,12 +914,14 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
             u_masked: gl.get_uniform_location(program, "u_masked"),
             u_size: gl.get_uniform_location(program, "u_size"),
             u_radius: gl.get_uniform_location(program, "u_radius"),
+            u_scale: gl.get_uniform_location(program, "u_scale"),
+            u_region: gl.get_uniform_location(program, "u_region"),
             program,
             vao,
             texture,
             pass,
             framebuffer,
-            pass_size: (0, 0),
+            capacity: (0, 0),
         })
     }
 }
@@ -1027,6 +1063,17 @@ pub const WAWPLUS_URL: &str = "https://www.wawplus.com";
 #[cfg(test)]
 mod tests {
     use crate::i18n::Locale;
+
+    /// The blur's textures grow in steps and never shrink, so areas of many
+    /// sizes, drawn many times a frame, reuse one allocation.
+    #[test]
+    fn the_blur_textures_only_grow_in_steps() {
+        use super::blur_capacity;
+        assert_eq!(blur_capacity((0, 0), (40, 18)), (256, 256));
+        assert_eq!(blur_capacity((256, 256), (200, 30)), (256, 256));
+        assert_eq!(blur_capacity((256, 256), (300, 30)), (512, 256));
+        assert_eq!(blur_capacity((512, 256), (100, 700)), (512, 768));
+    }
 
     #[test]
     fn every_interface_language_has_a_translation_target() {
