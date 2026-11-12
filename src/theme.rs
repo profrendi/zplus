@@ -875,6 +875,28 @@ pub fn follow_text_rendering(wake: impl Fn() + Send + 'static) {
     }
 }
 
+/// ZFPlus: rebuilds the fonts, so egui sends the whole font texture to the
+/// graphics card on the next frame. egui skips `set_fonts` with the same
+/// definitions and `add_font` with a name it has, so a spare entry, a copy
+/// of a font already there that no family draws with, is added or taken away
+/// in turn: the definitions always differ, and nothing drawn changes.
+pub fn reinstall_fonts(ctx: &egui::Context) {
+    const SPARE: &str = "zfplus-refresh";
+    let mut fonts = ctx.fonts(|fonts| fonts.definitions().clone());
+    if fonts.font_data.remove(SPARE).is_none() {
+        let Some(copy) = fonts
+            .font_data
+            .values()
+            .min_by_key(|data| data.font.len())
+            .cloned()
+        else {
+            return;
+        };
+        fonts.font_data.insert(SPARE.to_owned(), copy);
+    }
+    ctx.set_fonts(fonts);
+}
+
 /// Reinstalls the fonts when the desktop's text rendering changed since the
 /// last call. Returns whether it did, so the caller reapplies its visuals.
 pub fn apply_text_rendering_change(ctx: &egui::Context) -> bool {
@@ -962,6 +984,8 @@ fastframe_icons::icons! {
         Refresh => lucide "refresh-cw",
         RotateLeft => "rotate-ccw",
         RotateRight => "rotate-cw",
+        // ZFPlus: the attach menu's camera.
+        Camera => "camera",
         // ZFPlus: the picture editor's drawing tools.
         Crop => "crop",
         DrawArrow => "move-up-right",

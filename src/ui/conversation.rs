@@ -2433,6 +2433,20 @@ fn composer_tools_menu(app: &mut App, chat: &Chat, plus: &egui::Response) {
                 if widgets::menu_item(ui, &app.palette, Some(Icon::Image), &media) {
                     app.actions.push(Action::Attach { documents: false });
                 }
+                let camera = crate::i18n::gettext(app.locale, "Camera");
+                if widgets::menu_item(ui, &app.palette, Some(Icon::Camera), &camera) {
+                    app.actions
+                        .push(Action::ShowDialog(Dialog::Camera(chat.id.clone())));
+                }
+                let audio = crate::i18n::gettext(app.locale, "Audio");
+                if widgets::menu_item(ui, &app.palette, Some(Icon::Music), &audio) {
+                    app.actions.push(Action::AttachAudio);
+                }
+                let contact = crate::i18n::gettext(app.locale, "Contact");
+                if widgets::menu_item(ui, &app.palette, Some(Icon::Contact), &contact) {
+                    app.actions
+                        .push(Action::ShowDialog(Dialog::ShareContact(chat.id.clone())));
+                }
                 let send_location = crate::i18n::gettext(app.locale, "Send location");
                 if widgets::menu_item(ui, &app.palette, Some(Icon::MapPin), &send_location) {
                     app.actions

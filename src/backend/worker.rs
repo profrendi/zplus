@@ -7592,6 +7592,7 @@ impl Worker {
             | Command::SendSticker { chat, .. }
             | Command::SendGif { chat, .. }
             | Command::SendLocation { chat, .. }
+            | Command::SendContact { chat, .. }
             | Command::CreatePoll { chat, .. } => Some(chat),
             // A batch goes to every recipient or to none of them.
             Command::Forward { to_chats, .. } => to_chats
@@ -7709,6 +7710,9 @@ impl Worker {
                 longitude,
                 quoting,
             } => self.send_location(chat, latitude, longitude, quoting),
+            Command::SendContact { chat, name, number } => {
+                self.send_contact(chat, name, number);
+            }
             Command::ReplyInteractive {
                 chat,
                 message,
@@ -7952,13 +7956,29 @@ impl Worker {
                     )),
                 }
             }
-            Command::PickFiles { chat, documents } => {
+            Command::PickFiles {
+                chat,
+                documents,
+                audio,
+            } => {
                 let commands = self.commands.clone();
                 tokio::task::spawn_blocking(move || {
-                    let paths = rfd::FileDialog::new()
-                        .set_title("Send to WhatsApp")
-                        .pick_files()
-                        .unwrap_or_default();
+                    // ZFPlus: as WhatsApp's attach menu, Photos & videos and
+                    // Audio offer their own kinds of file first, with every
+                    // file a choice away; Document offers everything.
+                    let dialog = rfd::FileDialog::new().set_title("Send to WhatsApp");
+                    let dialog = if audio {
+                        dialog
+                            .add_filter("Audio", super::AUDIO_EXTENSIONS)
+                            .add_filter("All files", &["*"])
+                    } else if documents {
+                        dialog
+                    } else {
+                        dialog
+                            .add_filter("Photos & videos", super::MEDIA_EXTENSIONS)
+                            .add_filter("All files", &["*"])
+                    };
+                    let paths = dialog.pick_files().unwrap_or_default();
                     let _ = commands.send(Command::Picked {
                         chat,
                         paths,
@@ -10107,6 +10127,57 @@ impl Worker {
             delivered_at: None,
             read_at: None,
             quoted: shown,
+            reactions: Vec::new(),
+            history_order: None,
+            edited: false,
+            mentions: Vec::new(),
+            forwarded: false,
+            thumbnail: None,
+        };
+        self.store_message(row, Some(message.encode_to_vec()), None);
+        tokio::spawn(send_outgoing(
+            client,
+            self.commands.clone(),
+            chat,
+            jid,
+            id,
+            message,
+            expiration,
+            None,
+        ));
+    }
+
+    /// ZFPlus: sends a contact card, as WhatsApp's attach menu's Contact does:
+    /// the name and a vCard with the number, marked as a WhatsApp number.
+    fn send_contact(&mut self, chat: ChatId, name: String, number: String) {
+        let unsent = || Unsent::Text(format!("{name} +{number}"));
+        let (Some(client), Some(jid)) = (self.connected_client(), Self::jid_of(&chat)) else {
+            self.refuse(chat, None, unsent(), Refusal::Offline);
+            return;
+        };
+        let vcard = contact_vcard(&name, &number);
+        let mut message = wa::Message::default();
+        let mut card = wa::message::ContactMessage::default();
+        card.display_name = Some(name.clone());
+        card.vcard = Some(vcard.clone());
+        message.contact_message = MessageField::some(card);
+        let expiration = self.apply_ephemeral(&chat, &mut message);
+        let id = client.generate_message_id().into_string();
+        let row = Message {
+            id: id.clone(),
+            chat: chat.clone(),
+            sender: self.me(),
+            sender_name: None,
+            from_me: true,
+            timestamp: crate::util::now(),
+            content: Content::Contact {
+                display_name: name,
+                vcard,
+            },
+            status: Delivery::Pending,
+            delivered_at: None,
+            read_at: None,
+            quoted: None,
             reactions: Vec::new(),
             history_order: None,
             edited: false,
@@ -12953,6 +13024,16 @@ fn silence_everyone(context: &mut wa::ContextInfo) {
 /// A location message: the coordinates and nothing else, because a computer
 /// has no place name to send. A quote rides inside the location, where a
 /// phone puts it.
+/// ZFPlus: a vCard for a WhatsApp number, as the phone writes one: the
+/// `waid` lets WhatsApp offer to message or save it.
+fn contact_vcard(name: &str, number: &str) -> String {
+    let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+    let name = name.replace(['\n', '\r'], " ").replace(';', ",");
+    format!(
+        "BEGIN:VCARD\nVERSION:3.0\nN:;{name};;;\nFN:{name}\nTEL;type=CELL;type=VOICE;waid={digits}:+{digits}\nEND:VCARD"
+    )
+}
+
 fn outgoing_location(
     latitude: f64,
     longitude: f64,
@@ -15093,6 +15174,15 @@ fn clear_boundary(read: crate::archive::Result<Vec<Message>>) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shared_contact_card_carries_one_clean_name_and_the_number() {
+        let card = super::contact_vcard("Budi;\nSantoso", "+62 812-3456");
+        assert!(card.starts_with("BEGIN:VCARD\nVERSION:3.0\n"), "{card}");
+        assert!(card.contains("\nFN:Budi, Santoso\n"), "{card}");
+        assert!(card.contains("waid=628123456:+628123456\n"), "{card}");
+        assert!(card.ends_with("END:VCARD"), "{card}");
+    }
+
     use super::*;
     use std::io::Cursor;
 

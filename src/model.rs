@@ -2718,6 +2718,10 @@ pub enum Dialog {
     CreatePoll(ChatId),
     /// Picks the spot to send, from coordinates or a map link.
     SendLocation(ChatId),
+    /// ZFPlus: picks a contact to send as a contact card.
+    ShareContact(ChatId),
+    /// ZFPlus: a photo from the computer's camera, for the attachments.
+    Camera(ChatId),
     PollResults {
         chat: ChatId,
         message: String,
@@ -3002,6 +3006,12 @@ pub enum Action {
         /// Quoted message, in this chat or, for a private reply, in its group.
         quoting: Option<ReplyTarget>,
     },
+    /// ZFPlus: sends a contact card for a phone number.
+    SendContact {
+        chat: ChatId,
+        name: String,
+        number: String,
+    },
     ReplyInteractive {
         chat: ChatId,
         message: String,
@@ -3265,6 +3275,8 @@ pub enum Action {
     },
     /// Inserts an emoji at the composer cursor.
     InsertEmoji(String),
+    /// ZFPlus: picks sound files to send, as the attach menu's Audio does.
+    AttachAudio,
     /// ZFPlus: puts text in the composer at the cursor, as a quick reply.
     InsertText(String),
     /// Replaces an active `:query` with its selected emoji.

@@ -46,6 +46,7 @@ pub mod opener;
 pub mod paths;
 pub mod picture_loader;
 pub mod plus;
+pub mod plus_camera;
 pub mod privacy;
 pub mod prof;
 pub mod proxy;

@@ -65,7 +65,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         .min((width - 48.0).max(1.0))
                 }
                 Dialog::CreatePoll(_) => 420.0,
-                Dialog::SendLocation(_) => 420.0,
+                Dialog::SendLocation(_) | Dialog::ShareContact(_) => 420.0,
+                Dialog::Camera(_) => {
+                    560.0_f32.min((ui.ctx().content_rect().width() - 48.0).max(240.0))
+                }
                 Dialog::PollResults { .. }
                 | Dialog::InteractiveList { .. }
                 | Dialog::MessageInfo { .. } => {
@@ -79,6 +82,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             match dialog {
                 Dialog::CreatePoll(chat) => super::polls::create(app, ui, &chat),
                 Dialog::SendLocation(chat) => super::locations::send(app, ui, &chat),
+                Dialog::ShareContact(chat) => super::locations::share_contact(app, ui, &chat),
+                Dialog::Camera(chat) => super::locations::camera(app, ui, &chat),
                 Dialog::PollResults { chat, message } => {
                     super::polls::results(app, ui, &chat, &message)
                 }

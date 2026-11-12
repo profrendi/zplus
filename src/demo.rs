@@ -6622,7 +6622,9 @@ mod tests {
             assert!(app.current_chat().is_some(), "the demo opens a chat");
             let drawn = painted_texts(&mut app, &ctx);
             let has = |text: &str| drawn.iter().any(|drawn| drawn == text);
-            assert!(has("Document") && has("Photos & videos"), "{drawn:?}");
+            for entry in ["Document", "Photos & videos", "Camera", "Audio", "Contact"] {
+                assert!(has(entry), "{entry} missing: {drawn:?}");
+            }
             assert_eq!(has("Quick replies"), business == Some(true), "{business:?}");
             assert_eq!(has("WhatsApp Business account"), business == Some(true));
             assert_eq!(has("WhatsApp account"), business == Some(false));
@@ -22797,9 +22799,9 @@ mod tests {
                 .expect("the plus button is a tab stop");
             (id, ctx.read_response(id).unwrap().rect.center())
         };
-        // Row 0 sends files, row 1 documents, row 2 sends a location, row 3
-        // creates a poll.
-        for row in [0.0, 1.0, 2.0, 3.0] {
+        // ZFPlus, in WhatsApp's order: Document, Photos & videos, Camera,
+        // Audio, Contact, Send location, Create poll.
+        for row in [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
             let mut app = app();
             app.settings.show_shortcut_hints = false;
             let chat = app.open_chat.clone().unwrap();
@@ -22819,7 +22821,7 @@ mod tests {
             );
             let item = egui::pos2(
                 menu.center().x,
-                menu.top() + menu.height() * (1.0 + 2.0 * row) / 8.0,
+                menu.top() + menu.height() * (1.0 + 2.0 * row) / 14.0,
             );
             click(&mut app, &ctx, item);
             assert!(
@@ -22831,24 +22833,22 @@ mod tests {
                 crate::backend::Command::PickFiles {
                     chat: id,
                     documents,
-                } if *id == chat => Some(*documents),
+                    audio,
+                } if *id == chat => Some((*documents, *audio)),
                 _ => None,
             });
-            // ZFPlus: in WhatsApp's order, Document comes before Photos &
-            // videos.
-            if row == 0.0 {
-                assert_eq!(picked, Some(true), "Document opens the file picker");
-                assert_eq!(app.dialog, None);
-            } else if row == 1.0 {
-                assert_eq!(picked, Some(false), "Photos & videos open the file picker");
-                assert_eq!(app.dialog, None);
-            } else if row == 2.0 {
-                assert_eq!(picked, None);
-                assert_eq!(app.dialog, Some(crate::model::Dialog::SendLocation(chat)));
-            } else {
-                assert_eq!(picked, None);
-                assert_eq!(app.dialog, Some(crate::model::Dialog::CreatePoll(chat)));
-            }
+            use crate::model::Dialog;
+            let (want_pick, want_dialog) = match row as usize {
+                0 => (Some((true, false)), None),
+                1 => (Some((false, false)), None),
+                2 => (None, Some(Dialog::Camera(chat))),
+                3 => (Some((false, true)), None),
+                4 => (None, Some(Dialog::ShareContact(chat))),
+                5 => (None, Some(Dialog::SendLocation(chat))),
+                _ => (None, Some(Dialog::CreatePoll(chat))),
+            };
+            assert_eq!(picked, want_pick, "row {row}");
+            assert_eq!(app.dialog, want_dialog, "row {row}");
         }
     }
 

@@ -17,6 +17,19 @@ use crate::paths::AccountDirs;
 
 pub(crate) mod picture_edit;
 
+/// ZFPlus: what the attach menu's Photos & videos offers first: every picture
+/// and video kind WhatsApp Web takes.
+pub(crate) const MEDIA_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "jfif", "jpe", "pjpeg", "pjp", "png", "apng", "gif", "webp", "bmp", "tif",
+    "tiff", "heic", "heif", "avif", "jxl", "svg", "svgz", "ico", "xbm", "mp4", "m4v", "mov", "3gp",
+    "3gpp", "mkv", "webm", "avi", "wmv", "mpeg", "mpg",
+];
+
+/// ZFPlus: what the attach menu's Audio offers first.
+pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "ogg", "oga", "opus", "wav", "m4a", "aac", "amr", "flac", "wma", "weba",
+];
+
 // Re-exported so the picker can detect pasted Signal pack links.
 mod read_sync;
 pub(crate) mod sticker_import;
@@ -210,6 +223,12 @@ pub enum Command {
         latitude: f64,
         longitude: f64,
         quoting: Option<crate::model::ReplyTarget>,
+    },
+    /// ZFPlus: sends a contact card for a phone number.
+    SendContact {
+        chat: ChatId,
+        name: String,
+        number: String,
     },
     ReplyInteractive {
         chat: ChatId,
@@ -445,6 +464,8 @@ pub enum Command {
     PickFiles {
         chat: ChatId,
         documents: bool,
+        /// ZFPlus: offers sound files only, sent as audio.
+        audio: bool,
     },
     /// Sends files with the caption on the first.
     SendFiles {

@@ -946,6 +946,14 @@ pub struct App {
     tray_check_asked: bool,
     /// Whether the app is running without a window.
     pub window_hidden: bool,
+    /// ZFPlus: the window was minimized or hidden, so the next frame drawn
+    /// sends the font texture to the graphics card again. See
+    /// [`App::refresh_after_restore`].
+    away: bool,
+    /// ZFPlus: the camera the attach menu's Camera dialog is showing, open
+    /// only while that dialog is, and the newest frame drawn from it.
+    pub camera: Option<crate::plus_camera::Capture>,
+    pub camera_texture: Option<(u64, egui::TextureHandle)>,
     /// Whether window close should keep the process running.
     pub hide_intent: bool,
     /// Whether a headless app should create a window.
@@ -1828,6 +1836,9 @@ impl App {
             tray_updates: None,
             tray_check_asked: false,
             window_hidden: false,
+            away: false,
+            camera: None,
+            camera_texture: None,
             hide_intent: false,
             wants_show: false,
             tray_wait: None,
@@ -3033,6 +3044,8 @@ impl App {
             Some(
                 Dialog::CreatePoll(chat)
                     | Dialog::SendLocation(chat)
+                    | Dialog::ShareContact(chat)
+                    | Dialog::Camera(chat)
                     | Dialog::ConfirmDeleteChat(chat)
                     | Dialog::ConfirmClearChat(chat)
             ) if chat == id
@@ -7386,11 +7399,29 @@ impl App {
         }
     }
 
+    /// ZFPlus: the first frame drawn after the window comes back from being
+    /// minimized or hidden in the tray sends the whole font texture again.
+    /// eframe runs passes for a minimized window without drawing them, and a
+    /// change to the font texture made in such a pass never reached the
+    /// graphics card: the window came back with every picture and icon but
+    /// no text, until it was closed and opened again. Installing the fonts
+    /// anew makes egui send the texture whole on the next frame.
+    fn refresh_after_restore(&mut self, ctx: &egui::Context) {
+        if !std::mem::take(&mut self.away) {
+            return;
+        }
+        crate::theme::reinstall_fonts(ctx);
+        ctx.request_repaint();
+    }
+
     /// What must happen in every pass of an open window, including the
     /// passes eframe runs without `ui` for a minimized or covered one. Call it
     /// from `eframe::App::logic`, after [`Self::background_frame`].
     pub fn window_logic(&mut self, ctx: &egui::Context) {
         self.sync_window_state(ctx);
+        if ctx.input(|input| input.viewport().minimized == Some(true)) || self.window_hidden {
+            self.away = true;
+        }
         // Close the window and continue headless when background mode is
         // enabled. Decided here rather than in `frame_ui`, which eframe skips
         // for a minimized window: closing one from the taskbar quit instead.
@@ -7950,6 +7981,11 @@ impl App {
                 self.send_location(chat, latitude, longitude, quoting);
                 self.reply_to = None;
                 self.location_draft.clear();
+                self.dialog = None;
+            }
+            Action::SendContact { chat, name, number } => {
+                self.backend
+                    .send(Command::SendContact { chat, name, number });
                 self.dialog = None;
             }
             Action::RefreshPoll { chat, message } => {
@@ -8720,7 +8756,20 @@ impl App {
             }
             Action::Attach { documents } => {
                 if let Some(chat) = self.open_chat.clone() {
-                    self.backend.send(Command::PickFiles { chat, documents });
+                    self.backend.send(Command::PickFiles {
+                        chat,
+                        documents,
+                        audio: false,
+                    });
+                }
+            }
+            Action::AttachAudio => {
+                if let Some(chat) = self.open_chat.clone() {
+                    self.backend.send(Command::PickFiles {
+                        chat,
+                        documents: false,
+                        audio: true,
+                    });
                 }
             }
             Action::SetComposerTools(open) => {
@@ -11759,6 +11808,11 @@ impl App {
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
+        self.refresh_after_restore(ctx);
+        if self.camera.is_some() && !matches!(self.dialog, Some(Dialog::Camera(_))) {
+            self.camera = None;
+            self.camera_texture = None;
+        }
         // Some window managers leave a new window behind the last app (#755).
         if std::mem::take(&mut self.wants_focus) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -18452,6 +18506,46 @@ mod tests {
         assert_eq!(app.headless_frame(&ctx), Headless::Show);
     }
 
+    /// ZFPlus: the first frame after the window comes back from minimized
+    /// sends the whole font texture again, which a pass run while minimized
+    /// could have left out of date on the graphics card.
+    #[test]
+    fn coming_back_from_minimized_sends_the_fonts_again() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        app.attach(&ctx);
+        let font_atlas_sent = |app: &mut App, minimized: bool| {
+            let mut input = egui::RawInput::default();
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .minimized = Some(minimized);
+            let mut output = ctx.run_ui(input, |ui| {
+                app.window_logic(ui.ctx());
+                if !minimized {
+                    app.frame_ui(ui);
+                }
+            });
+            let sent = output.textures_delta.set.iter().any(|(id, deltas)| {
+                *id == egui::TextureId::default() && deltas.iter().any(|delta| delta.is_whole())
+            });
+            output.textures_delta.clear();
+            sent
+        };
+        font_atlas_sent(&mut app, false);
+        font_atlas_sent(&mut app, false);
+        assert!(
+            !font_atlas_sent(&mut app, false),
+            "nothing to send while it stays"
+        );
+        font_atlas_sent(&mut app, true);
+        // The fonts are installed in the first pass back and sent with the
+        // pass after it, whichever of the two egui packs them in.
+        let back = font_atlas_sent(&mut app, false) | font_atlas_sent(&mut app, false);
+        assert!(back, "the whole font texture goes out again");
+    }
+
     /// eframe runs only the logic pass for a minimized window, so closing one
     /// (from the taskbar, say) must still hide it to the tray rather than
     /// quit, and quit when nothing could bring it back.
@@ -22873,7 +22967,11 @@ mod tests {
         app.apply(Action::Attach { documents: true }, &ctx);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::PickFiles { chat: id, documents: true }) if id == chat
+            Ok(Command::PickFiles {
+                chat: id,
+                documents: true,
+                ..
+            }) if id == chat
         ));
         app.stage(Pending::File("/fixture/a.png".into()));
         events
