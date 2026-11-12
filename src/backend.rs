@@ -237,6 +237,12 @@ pub enum Command {
     },
     /// ZFPlus: changes this business account's profile, then reads it back.
     UpdateBusiness(crate::model::BusinessEdit),
+    /// ZFPlus: reads this account's own profile again (picture, About,
+    /// username, business profile), so a change made on the phone or on
+    /// WhatsApp Web shows.
+    RefreshProfile,
+    /// ZFPlus: searches WhatsApp's business categories.
+    SearchBusinessCategories(String),
     ReplyInteractive {
         chat: ChatId,
         message: String,
@@ -505,6 +511,12 @@ pub enum Command {
     /// Locks or unlocks a chat (the locked folder).
     SetLocked(ChatId, bool),
     /// Creates a label; the worker owns the clock for its id.
+    /// ZFPlus: a list made here reached WhatsApp under `synced`; file it
+    /// under that id.
+    ListAdopted {
+        local: String,
+        synced: String,
+    },
     CreateLabel {
         name: String,
         color_hex: String,
@@ -1261,6 +1273,14 @@ pub enum Event {
     BusinessInfo(Option<crate::model::BusinessInfo>),
     /// ZFPlus: a change to the business profile was refused.
     BusinessSaveFailed(String),
+    /// ZFPlus: this account's WhatsApp username, without the `@`; `None`
+    /// when it has none.
+    Username(Option<String>),
+    /// ZFPlus: business categories matching a search, as (id, name).
+    BusinessCategories {
+        query: String,
+        results: Result<Vec<(String, String)>, String>,
+    },
     /// Linked account identity.
     Me {
         id: String,

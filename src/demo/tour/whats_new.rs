@@ -223,7 +223,7 @@ pub(super) fn script() -> Vec<Cue> {
     add(51.0, Click(left));
     add(51.6, Move(Label("Katherine Johnson")));
     add(52.0, Click(right));
-    add(52.8, Move(Label("Labels")));
+    add(52.8, Move(Label("Lists")));
     add(55.0, esc("Esc · Close the menu"));
 
     // Record a voice message, then pick a playback speed.

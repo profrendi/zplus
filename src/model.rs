@@ -2313,6 +2313,8 @@ pub struct PictureEdit {
     pub font: MarkFont,
     /// ZFPlus: whether new text gets a box drawn round it.
     pub text_box: bool,
+    /// ZFPlus: the word art style new text takes.
+    pub art: WordArt,
     /// ZFPlus: the mark picked with the Move tool, to move, resize, recolour
     /// or delete, by its place in `marks`.
     pub selected: Option<usize>,
@@ -2475,6 +2477,48 @@ pub struct MarkText {
     pub fill: Option<[u8; 4]>,
     /// A border round the text, in its colour.
     pub boxed: bool,
+    /// ZFPlus: the word art style its letters are drawn in.
+    pub art: WordArt,
+}
+
+/// ZFPlus: word art: how a text's letters are drawn, in its colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum WordArt {
+    /// Plain letters.
+    #[default]
+    Plain,
+    /// A thick contrasting outline and a shadow.
+    Outline,
+    /// Light to dark, top to bottom, outlined.
+    Gradient,
+    /// Letters standing out in depth.
+    Extruded,
+    /// A glow round white letters.
+    Neon,
+    /// The colours of the rainbow across, outlined in white.
+    Rainbow,
+}
+
+impl WordArt {
+    pub const ALL: [WordArt; 6] = [
+        WordArt::Plain,
+        WordArt::Outline,
+        WordArt::Gradient,
+        WordArt::Extruded,
+        WordArt::Neon,
+        WordArt::Rainbow,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WordArt::Plain => "Plain",
+            WordArt::Outline => "Outline",
+            WordArt::Gradient => "Gradient",
+            WordArt::Extruded => "3D",
+            WordArt::Neon => "Neon",
+            WordArt::Rainbow => "Rainbow",
+        }
+    }
 }
 
 /// ZFPlus: a placed picture, and for text, the words it was made from.
@@ -2522,6 +2566,78 @@ pub struct Mark {
     pub angle: f32,
     /// ZFPlus: whether a placed picture is mirrored left to right.
     pub flipped: bool,
+}
+
+/// ZFPlus: an empty grid box's fill and outline, which tell it from a
+/// rectangle someone drew.
+pub const GRID_SLOT_FILL: [u8; 4] = [226, 228, 232, 255];
+pub const GRID_SLOT_LINE: [u8; 4] = [180, 184, 190, 255];
+
+/// ZFPlus: the editor's grids, for collages and comparisons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridLayout {
+    SideBySide,
+    Stacked,
+    ThreeAcross,
+    FourSquare,
+    BigAndTwo,
+    SixSquare,
+    NineSquare,
+}
+
+impl GridLayout {
+    pub const ALL: [GridLayout; 7] = [
+        GridLayout::SideBySide,
+        GridLayout::Stacked,
+        GridLayout::ThreeAcross,
+        GridLayout::FourSquare,
+        GridLayout::BigAndTwo,
+        GridLayout::SixSquare,
+        GridLayout::NineSquare,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GridLayout::SideBySide => "2 side by side",
+            GridLayout::Stacked => "2 stacked",
+            GridLayout::ThreeAcross => "3 across",
+            GridLayout::FourSquare => "2 × 2",
+            GridLayout::BigAndTwo => "1 large and 2",
+            GridLayout::SixSquare => "3 × 2",
+            GridLayout::NineSquare => "3 × 3",
+        }
+    }
+
+    /// Each cell as left, top, right, bottom, from 0 to 1, in reading order.
+    pub fn cells(self) -> Vec<[f32; 4]> {
+        let even = |columns: usize, rows: usize| {
+            let mut cells = Vec::new();
+            for row in 0..rows {
+                for column in 0..columns {
+                    cells.push([
+                        column as f32 / columns as f32,
+                        row as f32 / rows as f32,
+                        (column + 1) as f32 / columns as f32,
+                        (row + 1) as f32 / rows as f32,
+                    ]);
+                }
+            }
+            cells
+        };
+        match self {
+            GridLayout::SideBySide => even(2, 1),
+            GridLayout::Stacked => even(1, 2),
+            GridLayout::ThreeAcross => even(3, 1),
+            GridLayout::FourSquare => even(2, 2),
+            GridLayout::BigAndTwo => vec![
+                [0.0, 0.0, 0.6, 1.0],
+                [0.6, 0.0, 1.0, 0.5],
+                [0.6, 0.5, 1.0, 1.0],
+            ],
+            GridLayout::SixSquare => even(3, 2),
+            GridLayout::NineSquare => even(3, 3),
+        }
+    }
 }
 
 /// ZFPlus: the bit of `PictureEdit::turns` that mirrors the picture left to
@@ -2870,6 +2986,7 @@ impl PictureEdit {
             fill: None,
             font: MarkFont::default(),
             text_box: false,
+            art: WordArt::Plain,
             selected: None,
             writing: None,
         }
@@ -2907,6 +3024,127 @@ impl PictureEdit {
             [center[0] - half[0], center[1] - half[1]],
             [center[0] + half[0], center[1] + half[1]],
         ]
+    }
+
+    /// ZFPlus: lays a grid over what is shown, for a collage or a side by
+    /// side comparison: a white ground, the photo itself (`original`, as
+    /// shown) fitted in the first cell, and grey boxes to fill with
+    /// pictures. Everything in it stays an object to move, resize or turn.
+    pub fn apply_grid(&mut self, layout: GridLayout, original: Option<StampImage>) {
+        let (wide, tall) = self.displayed_size();
+        let (wide_f, tall_f) = (wide.max(1) as f32, tall.max(1) as f32);
+        let crop = self.crop;
+        let area = [
+            crop.x as f32 / wide_f,
+            crop.y as f32 / tall_f,
+            (crop.x + crop.width) as f32 / wide_f,
+            (crop.y + crop.height) as f32 / tall_f,
+        ];
+        // The gap, the same on screen across and down.
+        let gap_px = crop.width.min(crop.height) as f32 * 0.02;
+        let gap = [gap_px / wide_f, gap_px / tall_f];
+        let mut marks = vec![Mark {
+            tool: MarkTool::Rectangle,
+            points: vec![[area[0], area[1]], [area[2], area[3]]],
+            color: [255, 255, 255, 255],
+            width: 0.002,
+            fill: Some([255, 255, 255, 255]),
+            ..Mark::default()
+        }];
+        let original = original.map(std::sync::Arc::new);
+        for (index, cell) in layout.cells().iter().enumerate() {
+            let left = area[0] + (area[2] - area[0]) * cell[0] + gap[0];
+            let top = area[1] + (area[3] - area[1]) * cell[1] + gap[1];
+            let right = area[0] + (area[2] - area[0]) * cell[2] - gap[0];
+            let bottom = area[1] + (area[3] - area[1]) * cell[3] - gap[1];
+            let slot = [left, top, right.max(left + 0.01), bottom.max(top + 0.01)];
+            match (&original, index) {
+                (Some(image), 0) => {
+                    marks.push(self.fitted_picture(std::sync::Arc::clone(image), slot))
+                }
+                _ => marks.push(Mark {
+                    tool: MarkTool::Rectangle,
+                    points: vec![[slot[0], slot[1]], [slot[2], slot[3]]],
+                    color: GRID_SLOT_LINE,
+                    width: 0.003,
+                    fill: Some(GRID_SLOT_FILL),
+                    ..Mark::default()
+                }),
+            }
+        }
+        let first_slot = if original.is_some() { 2 } else { 1 };
+        self.change(|existing| existing.extend(marks));
+        let base = self.marks.len() - layout.cells().len() - 1;
+        self.tool = MarkTool::Select;
+        self.selected = (base + first_slot < self.marks.len()).then_some(base + first_slot);
+    }
+
+    /// ZFPlus: a picture fitted whole inside `slot` (left, top, right,
+    /// bottom in the picture's proportions), centred, as a placed picture.
+    fn fitted_picture(&self, image: std::sync::Arc<StampImage>, slot: [f32; 4]) -> Mark {
+        let (wide, tall) = self.displayed_size();
+        let slot_px = [
+            (slot[2] - slot[0]) * wide.max(1) as f32,
+            (slot[3] - slot[1]) * tall.max(1) as f32,
+        ];
+        let scale =
+            (slot_px[0] / image.width.max(1) as f32).min(slot_px[1] / image.height.max(1) as f32);
+        let center = [(slot[0] + slot[2]) / 2.0, (slot[1] + slot[3]) / 2.0];
+        let points = self.stamp_box(&image, center, scale);
+        Mark {
+            tool: MarkTool::Stamp,
+            points,
+            stamp: Some(Stamp { image, text: None }),
+            ..Mark::default()
+        }
+    }
+
+    /// ZFPlus: whether the mark at `at` is an empty grid box.
+    pub fn is_grid_slot(&self, at: usize) -> bool {
+        self.marks.get(at).is_some_and(|mark| {
+            mark.tool == MarkTool::Rectangle
+                && mark.fill == Some(GRID_SLOT_FILL)
+                && mark.angle == 0.0
+        })
+    }
+
+    /// ZFPlus: an inserted picture: into the picked empty grid box, fitted
+    /// there, or else in the middle to move freely.
+    pub fn insert_picture(&mut self, image: StampImage) {
+        match self.selected.filter(|at| self.is_grid_slot(*at)) {
+            Some(at) => {
+                let [left, top, right, bottom] = self.marks[at].bounds();
+                let mark =
+                    self.fitted_picture(std::sync::Arc::new(image), [left, top, right, bottom]);
+                self.change(|marks| marks[at] = mark);
+                self.selected = Some(at);
+                self.tool = MarkTool::Select;
+            }
+            None => {
+                let (wide, tall) = self.displayed_size();
+                let short = wide.min(tall).max(1) as f32;
+                // Half the shorter side, larger than an emoji or a sticker.
+                let scale = 0.5 * short / image.width.max(image.height).max(1) as f32;
+                let crop = self.crop;
+                let center = [
+                    (crop.x as f32 + crop.width as f32 / 2.0) / wide.max(1) as f32,
+                    (crop.y as f32 + crop.height as f32 / 2.0) / tall.max(1) as f32,
+                ];
+                let points = self.stamp_box(&image, center, scale);
+                let mark = Mark {
+                    tool: MarkTool::Stamp,
+                    points,
+                    stamp: Some(Stamp {
+                        image: std::sync::Arc::new(image),
+                        text: None,
+                    }),
+                    ..Mark::default()
+                };
+                self.change(|marks| marks.push(mark));
+                self.selected = Some(self.marks.len() - 1);
+                self.tool = MarkTool::Select;
+            }
+        }
     }
 
     /// ZFPlus: places an emoji, sticker or GIF picture in the middle of what
@@ -2957,6 +3195,7 @@ impl PictureEdit {
             color: self.color,
             fill: self.fill,
             boxed: self.text_box,
+            art: self.art,
         };
         let mark = self.text_mark(text, writing.center, old.as_ref());
         match writing.replaces {
@@ -3016,6 +3255,7 @@ impl PictureEdit {
                 color: self.color,
                 fill: self.fill,
                 boxed: self.text_box,
+                art: self.art,
                 ..text
             };
             let [left, top, right, bottom] = mark.bounds();
@@ -3055,6 +3295,7 @@ impl PictureEdit {
             self.fill = text.fill;
             self.font = text.font;
             self.text_box = text.boxed;
+            self.art = text.art;
         } else if mark.stamp.is_none() {
             self.color = mark.color;
             if mark.tool.is_shape() {
@@ -3417,6 +3658,8 @@ pub enum Dialog {
     JoinGroup,
     /// Confirms setting aside an archive whose key is gone.
     ConfirmStartOver,
+    /// ZFPlus: asks before removing the app from this computer.
+    ConfirmUninstall,
     /// The stickers of a pack shared in a chat, with a button to add it.
     StickerPack,
     /// Crops a picture into a sticker.
@@ -3575,7 +3818,6 @@ pub fn forward_limit(frequently_forwarded: bool) -> usize {
     }
 }
 
-/// ZFPlus: a WhatsApp Business quick reply, synced from the phone: typed
 /// ZFPlus: a WhatsApp Business account's own profile, as WhatsApp keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BusinessInfo {
@@ -3584,9 +3826,34 @@ pub struct BusinessInfo {
     pub email: Option<String>,
     pub websites: Vec<String>,
     pub categories: Vec<String>,
+    /// The ids WhatsApp knows the categories by, in the same order.
+    pub category_ids: Vec<String>,
     /// Each day from Sunday, and how it opens: "Closed", "Open 24 hours",
     /// "By appointment" or "07:30 - 16:30".
     pub hours: Vec<(String, String)>,
+    /// The same week to edit: seven days from Sunday, or none when no
+    /// hours are set.
+    pub week: Vec<DayHours>,
+    /// The hours' time zone, as WhatsApp keeps it (an IANA name).
+    pub timezone: Option<String>,
+}
+
+/// How a business opens on one day.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpeningMode {
+    #[default]
+    Closed,
+    AllDay,
+    Appointment,
+    Hours,
+}
+
+/// One day of a business's week: how it opens and, for set hours, each
+/// range in minutes past midnight.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DayHours {
+    pub mode: OpeningMode,
+    pub ranges: Vec<(u32, u32)>,
 }
 
 /// ZFPlus: what can be changed of a business profile here.
@@ -3596,8 +3863,14 @@ pub struct BusinessEdit {
     pub address: String,
     pub email: String,
     pub websites: Vec<String>,
+    /// Category ids, up to three; `None` leaves them.
+    pub categories: Option<Vec<String>>,
+    /// Seven days from Sunday; `None` leaves the hours.
+    pub week: Option<Vec<DayHours>>,
+    pub timezone: Option<String>,
 }
 
+/// ZFPlus: a WhatsApp Business quick reply, synced from the phone: typed
 /// as `/shortcut`, it stands for the message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuickReply {
@@ -3719,6 +3992,18 @@ pub enum Action {
     CheckRegistered(Vec<String>),
     /// ZFPlus: saves this business account's profile.
     UpdateBusiness(BusinessEdit),
+    /// ZFPlus: reads this account's own profile again.
+    RefreshProfile,
+    /// ZFPlus: forwards the one message to the one chat picked through its
+    /// composer, to change it (and its picture) first.
+    ForwardEdited,
+    /// ZFPlus: removes the app (and with `remove_data`, what it keeps here)
+    /// and quits.
+    Uninstall {
+        remove_data: bool,
+    },
+    /// ZFPlus: searches WhatsApp's business categories.
+    SearchBusinessCategories(String),
     ReplyInteractive {
         chat: ChatId,
         message: String,
@@ -4469,6 +4754,40 @@ mod tests {
     }
 
     use super::StickerCrop;
+
+    /// ZFPlus: a grid lays a white ground, the photo in the first cell and
+    /// grey boxes; a picture inserted with a box picked fills that box.
+    #[test]
+    fn a_grid_takes_the_photo_and_pictures_in_its_boxes() {
+        use super::{GridLayout, PictureEdit, PictureSource, StampImage};
+        let mut edit = PictureEdit::new(
+            0,
+            PictureSource::File(std::path::PathBuf::from("photo.jpg")),
+            800,
+            600,
+        );
+        let photo = StampImage {
+            width: 80,
+            height: 60,
+            rgba: vec![255; 80 * 60 * 4],
+        };
+        edit.apply_grid(GridLayout::SideBySide, Some(photo.clone()));
+        assert_eq!(edit.marks.len(), 3, "ground, photo, one box");
+        let slot = edit.selected.expect("the empty box is picked");
+        assert!(edit.is_grid_slot(slot));
+        let [left, ..] = edit.marks[slot].bounds();
+        assert!(left > 0.5, "the box is on the right");
+        edit.insert_picture(photo.clone());
+        assert!(!edit.is_grid_slot(slot), "the box holds the picture now");
+        assert!(edit.marks[slot].stamp.is_some());
+        let [left, top, right, bottom] = edit.marks[slot].bounds();
+        assert!(left > 0.5 && right <= 1.0 && top >= 0.0 && bottom <= 1.0);
+        // With nothing picked, a picture goes in the middle, free.
+        edit.select(None);
+        edit.insert_picture(photo);
+        assert_eq!(edit.marks.len(), 4);
+        assert_eq!(GridLayout::NineSquare.cells().len(), 9);
+    }
 
     /// ZFPlus: a stroke drawn almost straight becomes a straight line; a
     /// curve stays a curve.

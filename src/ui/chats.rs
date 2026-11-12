@@ -731,7 +731,7 @@ fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
                     15.0,
                     palette.secondary,
                     palette.text,
-                    &crate::i18n::gettext(app.locale, "New label, to group chats like a folder"),
+                    &crate::i18n::gettext(app.locale, "New list, to group chats like a folder"),
                 )
                 .clicked()
             {
@@ -1758,7 +1758,47 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         let stamp_galley = ui
             .painter()
             .layout_no_wrap(stamp, theme::regular(11.5), stamp_color);
-        let name_top = rect.top() + 14.0;
+        // ZFPlus: a chat on lists names them under its preview, as
+        // WhatsApp does, so its two lines move up to make room.
+        let lists: Vec<(String, egui::Color32)> = chat
+            .labels
+            .iter()
+            .filter_map(|id| app.labels.iter().find(|label| label.id == *id))
+            .map(|label| {
+                (
+                    label.name.clone(),
+                    labels::color_of(&palette, &label.color_hex),
+                )
+            })
+            .collect();
+        let lift = if lists.is_empty() { 0.0 } else { 7.0 };
+        let name_top = rect.top() + 14.0 - lift;
+        if !lists.is_empty() {
+            let mut tag_x = rect.left() + 76.0;
+            let tag_y = rect.bottom() - 15.0;
+            for (name, color) in lists.iter().take(3) {
+                // A leading space keeps the tag's text apart from the chip
+                // of the same name for anything reading the painted words.
+                let text = ui.painter().layout_no_wrap(
+                    format!(" {name}"),
+                    theme::semibold(9.5),
+                    color.gamma_multiply(1.4),
+                );
+                let width = (text.size().x + 7.0).min(120.0);
+                if tag_x + width > rect.right() - 14.0 {
+                    break;
+                }
+                let tag = Rect::from_min_size(pos2(tag_x, tag_y), vec2(width, 13.0));
+                ui.painter()
+                    .rect_filled(tag, 3.0, color.gamma_multiply(0.28));
+                ui.painter().with_clip_rect(tag.shrink(1.0)).galley(
+                    pos2(tag.left() + 2.0, tag.center().y - text.size().y / 2.0),
+                    text,
+                    *color,
+                );
+                tag_x += width + 4.0;
+            }
+        }
         ui.painter().galley(
             pos2(right - stamp_galley.size().x, name_top + 1.0),
             stamp_galley.clone(),
@@ -1776,7 +1816,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
 
         // Leave room for badges beside the latest-message preview.
         let mut badge_right = right;
-        let line_y = rect.top() + 38.0;
+        let line_y = rect.top() + 38.0 - lift;
         if unread {
             let width = widgets::unread_indicator(
                 ui,
@@ -1979,7 +2019,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
                 &crate::i18n::gettext(app.locale, "Mute"),
                 "Notification sound",
                 "Voice message speed",
-                &crate::i18n::gettext(app.locale, "Labels"),
+                &crate::i18n::gettext(app.locale, "Lists"),
             ],
             true,
         ) + 24.0,

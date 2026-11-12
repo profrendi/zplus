@@ -7,7 +7,8 @@
 //! Move tool picks it to drag, resize, recolour or delete, and double-clicked
 //! text opens to be changed. Undo and Redo take back any of it. Shift keeps a
 //! line to eighths of a turn and a shape square, and a pen stroke drawn almost
-//! straight becomes a straight line.
+//! straight becomes a straight line. ZFPlus also has word art, pictures
+//! inserted from a file, and grids for collages and comparisons.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,8 +18,8 @@ use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, 
 use super::widgets;
 use crate::app::{App, Pending};
 use crate::model::{
-    Action, CropEdge, MARK_COLORS, Mark, MarkFont, MarkStroke, MarkTool, PictureCrop, PictureEdit,
-    PictureSource, StampImage, Writing,
+    Action, CropEdge, GridLayout, MARK_COLORS, Mark, MarkFont, MarkStroke, MarkTool, PictureCrop,
+    PictureEdit, PictureSource, StampImage, WordArt, Writing,
 };
 use crate::theme::{self, Icon};
 
@@ -64,6 +65,14 @@ enum Change {
     Mirror(bool),
     /// ZFPlus: mirrors the whole picture, top to bottom when `true`.
     MirrorPicture(bool),
+    /// ZFPlus: the word art style of new or picked text.
+    Art(WordArt),
+    /// ZFPlus: a picture inserted from a file.
+    Insert(StampImage),
+    /// ZFPlus: lays a grid over the picture.
+    Grid(GridLayout),
+    /// ZFPlus: opens the picked text to change its words.
+    EditText,
 }
 
 /// ZFPlus: the editor's tools in WhatsApp's order, with their names.
@@ -525,6 +534,36 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         {
                             change = Some(Change::TextBox(!edit.text_box));
                         }
+                        // ZFPlus: word art, for new text and the picked one.
+                        ui.add_space(6.0);
+                        egui::ComboBox::from_id_salt("word-art")
+                            .selected_text(format!("Word art: {}", edit.art.name()))
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for art in WordArt::ALL {
+                                    if ui.selectable_label(edit.art == art, art.name()).clicked() {
+                                        change = Some(Change::Art(art));
+                                    }
+                                }
+                            });
+                        if picked.is_some_and(|mark| {
+                            mark.stamp
+                                .as_ref()
+                                .is_some_and(|stamp| stamp.text.is_some())
+                        }) && theme::pill_button(ui, &palette, "Edit text", false).clicked()
+                        {
+                            change = Some(Change::EditText);
+                        }
+                    }
+                    // ZFPlus: an empty grid box takes a picture.
+                    if edit.tool == MarkTool::Select
+                        && edit.selected.is_some_and(|at| edit.is_grid_slot(at))
+                    {
+                        ui.add_space(8.0);
+                        if theme::pill_button(ui, &palette, "Insert a picture here", true).clicked()
+                        {
+                            crate::plus_stamp::pick_picture(waker(ui.ctx()));
+                        }
                     }
                     // ZFPlus: the picked object turns and mirrors; its round
                     // handle turns it freely.
@@ -581,6 +620,51 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             change = Some(Change::Tool(tool));
                         }
                     }
+                    // ZFPlus: word art, a picture from a file, and grids.
+                    ui.add_space(8.0);
+                    if theme::icon_button(
+                        ui,
+                        Icon::Sparkles,
+                        20.0,
+                        palette.secondary,
+                        palette.text,
+                        "Word art: click the picture to write",
+                    )
+                    .clicked()
+                    {
+                        change = Some(Change::Tool(MarkTool::Text));
+                        if edit.art == WordArt::Plain {
+                            edit.art = WordArt::Outline;
+                        }
+                    }
+                    if theme::icon_button(
+                        ui,
+                        Icon::ImagePlus,
+                        20.0,
+                        palette.secondary,
+                        palette.text,
+                        "Insert a picture from a file",
+                    )
+                    .clicked()
+                    {
+                        crate::plus_stamp::pick_picture(waker(ui.ctx()));
+                    }
+                    let grid = theme::icon_button(
+                        ui,
+                        Icon::LayoutGrid,
+                        20.0,
+                        palette.secondary,
+                        palette.text,
+                        "Grid: put pictures side by side",
+                    );
+                    egui::Popup::menu(&grid).show(|ui| {
+                        ui.set_min_width(170.0);
+                        for layout in GridLayout::ALL {
+                            if ui.button(layout.name()).clicked() {
+                                change = Some(Change::Grid(layout));
+                            }
+                        }
+                    });
                 },
             );
             ui.scope_builder(
@@ -698,6 +782,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     } else if delete_keys {
         change = Some(Change::Delete);
     }
+    if change.is_none()
+        && let Some(image) = crate::plus_stamp::take_picked()
+    {
+        change = Some(Change::Insert(image));
+    }
     let restyle = edit.tool == MarkTool::Select && edit.selected.is_some();
     match change {
         Some(Change::Reset) => edit = edit.reset(),
@@ -751,6 +840,37 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Some(Change::Rotate(degrees)) => edit.rotate_selected(degrees),
         Some(Change::Mirror(vertical)) => edit.mirror_selected(vertical),
         Some(Change::MirrorPicture(vertical)) => edit = edit.mirrored(vertical),
+        Some(Change::Art(art)) => {
+            edit.art = art;
+            if restyle {
+                edit.restyle_selected();
+            }
+        }
+        Some(Change::Insert(image)) => {
+            edit.commit_writing();
+            edit.insert_picture(image);
+        }
+        Some(Change::Grid(layout)) => {
+            edit.commit_writing();
+            let original =
+                crate::plus_stamp::shown_picture(&edit.source, edit.width, edit.height, edit.turns);
+            edit.apply_grid(layout, original);
+        }
+        Some(Change::EditText) => {
+            if let Some(at) = edit.selected
+                && let Some(mark) = edit.marks.get(at)
+                && let Some(text) = mark.stamp.as_ref().and_then(|stamp| stamp.text.clone())
+            {
+                let [left, top, right, bottom] = mark.bounds();
+                edit.writing = Some(Writing {
+                    text: text.text,
+                    center: [(left + right) / 2.0, (top + bottom) / 2.0],
+                    replaces: Some(at),
+                });
+                edit.tool = MarkTool::Text;
+                ctx.data_mut(|data| data.insert_temp(writing_id().with("new"), true));
+            }
+        }
         None => {}
     }
     prune_stamp_textures(ctx, &edit);
@@ -760,6 +880,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
     app.picture_edit = Some(edit);
     app.actions.extend(actions);
+}
+
+/// ZFPlus: wakes the window from another thread.
+fn waker(ctx: &egui::Context) -> impl Fn() + Send + 'static {
+    let ctx = ctx.clone();
+    move || ctx.request_repaint()
 }
 
 /// ZFPlus: the mark as it shows while it is dragged or resized.

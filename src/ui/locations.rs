@@ -106,7 +106,7 @@ pub fn send(app: &mut App, ui: &mut egui::Ui, chat: &str) {
     match here {
         Some(here) => {
             theme::text(ui, here.text(), theme::regular(13.0), palette.text);
-            let open = crate::i18n::gettext(app.locale, "Open in a map");
+            let open = crate::i18n::gettext(app.locale, "Open in Google Maps");
             if theme::link(ui, open.as_ref(), theme::regular(12.5), palette.link).clicked() {
                 app.actions.push(Action::OpenUrl(geo::map_url(here)));
             }
@@ -244,20 +244,82 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
     if !unknown.is_empty() && app.link.is_connected() {
         app.actions.push(Action::CheckRegistered(unknown));
     }
+    // WhatsApp's own answer first; a name WhatsApp itself sent (a push name)
+    // says so too while the answer is on its way.
     let on_whatsapp = |app: &App, number: &str| -> Option<bool> {
-        let jid = format!("{number}@s.whatsapp.net");
-        if app.contacts.get(&jid).is_some_and(|contact| {
-            contact
-                .push_name
-                .as_deref()
-                .is_some_and(|name| !name.is_empty())
-        }) {
-            return Some(true);
+        if let Some(answer) = app.registered.get(number) {
+            return Some(*answer);
         }
-        app.registered.get(number).copied()
+        let jid = format!("{number}@s.whatsapp.net");
+        app.contacts
+            .get(&jid)
+            .is_some_and(|contact| {
+                contact
+                    .push_name
+                    .as_deref()
+                    .is_some_and(|name| !name.is_empty())
+            })
+            .then_some(true)
     };
+    // All, only WhatsApp, or only numbers without WhatsApp.
+    let filter_id = egui::Id::new("share-contact-filter");
+    let mut filter: u8 = ui.ctx().data(|data| data.get_temp(filter_id)).unwrap_or(0);
+    let answers: Vec<Option<bool>> = people
+        .iter()
+        .map(|(_, number)| on_whatsapp(app, number))
+        .collect();
+    let with = answers
+        .iter()
+        .filter(|answer| **answer == Some(true))
+        .count();
+    let without = answers
+        .iter()
+        .filter(|answer| **answer == Some(false))
+        .count();
+    let waiting = people.len() - with - without;
+    ui.horizontal_wrapped(|ui| {
+        for (index, label, count) in [
+            (0u8, "All", people.len()),
+            (1, "WA", with),
+            (2, "NON WA", without),
+        ] {
+            if widgets::filter_chip(ui, &palette, label, count, filter == index).clicked() {
+                filter = index;
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(filter_id, filter));
+            }
+        }
+        if waiting > 0 {
+            theme::text(
+                ui,
+                format!("Asking WhatsApp… {waiting} left"),
+                theme::regular(12.0),
+                palette.dim,
+            );
+        }
+    });
+    if filter == 2 && without == 0 && waiting == 0 {
+        theme::paragraph(
+            ui,
+            "WhatsApp says every contact here has WhatsApp. This computer knows only the contacts your phone shares with it.",
+            theme::regular(12.0),
+            palette.dim,
+        );
+    }
+    ui.add_space(4.0);
+    let people: Vec<(String, String)> = people
+        .into_iter()
+        .zip(answers)
+        .filter(|(_, answer)| match filter {
+            1 => *answer == Some(true),
+            2 => *answer == Some(false),
+            _ => true,
+        })
+        .map(|(person, _)| person)
+        .collect();
     let rows: Vec<(Option<&'static str>, String, String)> = me
         .into_iter()
+        .filter(|_| filter != 2)
         .map(|(name, number)| (Some("You"), name, number))
         .chain(
             people

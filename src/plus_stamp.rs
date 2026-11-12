@@ -18,7 +18,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{FontRef, MetadataProvider};
 
-use crate::model::{MarkFont, MarkText, StampImage};
+use crate::model::{MarkFont, MarkText, StampImage, WordArt};
 
 /// The size letters are drawn at, in pixels. The picture is scaled to the
 /// size it is given on the photo, so this only sets how sharp it stays.
@@ -444,8 +444,14 @@ pub fn render_text(text: &MarkText) -> StampImage {
             );
         }
     }
-    let ink = paint_of(text.color);
     let outlines = font.as_ref().map(|font| font.outline_glyphs());
+    // Every letter's outline in one path, so word art draws them together:
+    // one shadow, one gradient across the words.
+    let mut pen = Pen {
+        path: PathBuilder::new(),
+        origin: (0.0, 0.0),
+    };
+    let mut emojis = Vec::new();
     for (row, (line, line_width)) in lines.iter().zip(&widths).enumerate() {
         let mut x = (width as f32 - line_width) / 2.0;
         let baseline = padding + line_height * row as f32 + ascent;
@@ -455,43 +461,153 @@ pub fn render_text(text: &MarkText) -> StampImage {
                     if let Some(outline) =
                         outlines.as_ref().and_then(|outlines| outlines.get(*glyph))
                     {
-                        let mut pen = Pen {
-                            path: PathBuilder::new(),
-                            origin: (x, baseline),
-                        };
-                        if outline
-                            .draw(DrawSettings::unhinted(size, location), &mut pen)
-                            .is_ok()
-                            && let Some(path) = pen.path.finish()
-                        {
-                            pixmap.fill_path(
-                                &path,
-                                &ink,
-                                FillRule::Winding,
-                                Transform::identity(),
-                                None,
-                            );
-                        }
+                        pen.origin = (x, baseline);
+                        let _ = outline.draw(DrawSettings::unhinted(size, location), &mut pen);
                     }
                 }
                 Piece::Emoji(picture) => {
-                    if let Some(source) = pixmap_of(picture) {
-                        pixmap.draw_pixmap(
-                            x as i32,
-                            (baseline - picture.height() as f32 * 0.85) as i32,
-                            source.as_ref(),
-                            &tiny_skia::PixmapPaint::default(),
-                            Transform::identity(),
-                            None,
-                        );
-                    }
+                    emojis.push((x, baseline - picture.height() as f32 * 0.85, picture));
                 }
                 Piece::Space => {}
             }
             x += advance;
         }
     }
+    if let Some(path) = pen.path.finish() {
+        draw_letters(&mut pixmap, &path, text.color, text.art);
+    }
+    for (x, y, picture) in emojis {
+        if let Some(source) = pixmap_of(picture) {
+            pixmap.draw_pixmap(
+                x as i32,
+                y as i32,
+                source.as_ref(),
+                &tiny_skia::PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+        }
+    }
     straight(&pixmap)
+}
+
+/// ZFPlus: the letters in `color`, in a word art style.
+fn draw_letters(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: [u8; 4], art: WordArt) {
+    use tiny_skia::{Color, GradientStop, LinearGradient, Point, SpreadMode, Stroke};
+    let solid = |rgba: [u8; 4]| {
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
+        paint.anti_alias = true;
+        paint
+    };
+    let mix = |toward: u8, share: f32| -> [u8; 4] {
+        let blend = |channel: u8| {
+            (f32::from(channel) + (f32::from(toward) - f32::from(channel)) * share).round() as u8
+        };
+        [blend(color[0]), blend(color[1]), blend(color[2]), color[3]]
+    };
+    let light = mix(255, 0.55);
+    let dark = mix(0, 0.55);
+    let bright =
+        (0.299 * f32::from(color[0]) + 0.587 * f32::from(color[1]) + 0.114 * f32::from(color[2]))
+            > 150.0;
+    let contrast = if bright {
+        [20, 20, 20, 255]
+    } else {
+        [255, 255, 255, 255]
+    };
+    let bounds = path.bounds();
+    let fill = |pixmap: &mut Pixmap, paint: &Paint, shift: (f32, f32)| {
+        pixmap.fill_path(
+            path,
+            paint,
+            FillRule::Winding,
+            Transform::from_translate(shift.0, shift.1),
+            None,
+        );
+    };
+    let outline = |pixmap: &mut Pixmap, paint: &Paint, width: f32| {
+        let stroke = Stroke {
+            width,
+            line_join: tiny_skia::LineJoin::Round,
+            ..Default::default()
+        };
+        pixmap.stroke_path(path, paint, &stroke, Transform::identity(), None);
+    };
+    let color_of = |rgba: [u8; 4]| Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
+    match art {
+        WordArt::Plain => fill(pixmap, &solid(color), (0.0, 0.0)),
+        WordArt::Outline => {
+            fill(pixmap, &solid([0, 0, 0, 110]), (5.0, 6.0));
+            outline(pixmap, &solid(contrast), TEXT_PX * 0.12);
+            fill(pixmap, &solid(color), (0.0, 0.0));
+        }
+        WordArt::Gradient => {
+            let mut paint = solid(color);
+            if let Some(shader) = LinearGradient::new(
+                Point::from_xy(0.0, bounds.top()),
+                Point::from_xy(0.0, bounds.bottom()),
+                vec![
+                    GradientStop::new(0.0, color_of(light)),
+                    GradientStop::new(1.0, color_of(dark)),
+                ],
+                SpreadMode::Pad,
+                Transform::identity(),
+            ) {
+                paint.shader = shader;
+            }
+            outline(pixmap, &solid(mix(0, 0.75)), TEXT_PX * 0.06);
+            fill(pixmap, &paint, (0.0, 0.0));
+        }
+        WordArt::Extruded => {
+            let depth = solid(dark);
+            for step in (1..=12).rev() {
+                let shift = step as f32 * TEXT_PX * 0.0075;
+                fill(pixmap, &depth, (shift, shift));
+            }
+            outline(pixmap, &solid(mix(0, 0.7)), TEXT_PX * 0.025);
+            fill(pixmap, &solid(color), (0.0, 0.0));
+        }
+        WordArt::Neon => {
+            for (width, alpha) in [(0.24, 35u8), (0.16, 60), (0.09, 120)] {
+                outline(
+                    pixmap,
+                    &solid([color[0], color[1], color[2], alpha]),
+                    TEXT_PX * width,
+                );
+            }
+            outline(pixmap, &solid(color), TEXT_PX * 0.035);
+            fill(pixmap, &solid([255, 255, 255, 255]), (0.0, 0.0));
+        }
+        WordArt::Rainbow => {
+            let mut paint = solid(color);
+            let colors: [[u8; 4]; 6] = [
+                [235, 64, 52, 255],
+                [255, 149, 0, 255],
+                [255, 214, 10, 255],
+                [52, 199, 89, 255],
+                [10, 132, 255, 255],
+                [175, 82, 222, 255],
+            ];
+            let stops = colors
+                .iter()
+                .enumerate()
+                .map(|(at, rgba)| GradientStop::new(at as f32 / 5.0, color_of(*rgba)))
+                .collect();
+            if let Some(shader) = LinearGradient::new(
+                Point::from_xy(bounds.left(), 0.0),
+                Point::from_xy(bounds.right().max(bounds.left() + 1.0), 0.0),
+                stops,
+                SpreadMode::Pad,
+                Transform::identity(),
+            ) {
+                paint.shader = shader;
+            }
+            fill(pixmap, &solid([0, 0, 0, 90]), (4.0, 5.0));
+            outline(pixmap, &solid([255, 255, 255, 255]), TEXT_PX * 0.08);
+            fill(pixmap, &paint, (0.0, 0.0));
+        }
+    }
 }
 
 /// Whether a character is drawn as a colour emoji rather than a letter.
@@ -556,6 +672,94 @@ pub fn picture(path: &std::path::Path) -> Option<StampImage> {
         height: picture.height(),
         rgba: picture.into_raw(),
     })
+}
+
+/// ZFPlus: the longest side a picture inserted from a file keeps: sharp on
+/// a sent photo, light in memory.
+const INSERTED_SIDE: u32 = 1600;
+
+/// `picture` no longer than `side` on its longer side.
+fn fit(picture: image::RgbaImage, side: u32) -> image::RgbaImage {
+    let longest = picture.width().max(picture.height()).max(1);
+    if longest <= side {
+        return picture;
+    }
+    let scale = side as f32 / longest as f32;
+    image::imageops::resize(
+        &picture,
+        ((picture.width() as f32 * scale) as u32).max(1),
+        ((picture.height() as f32 * scale) as u32).max(1),
+        image::imageops::FilterType::Triangle,
+    )
+}
+
+fn stamp_of(picture: image::RgbaImage) -> StampImage {
+    StampImage {
+        width: picture.width(),
+        height: picture.height(),
+        rgba: picture.into_raw(),
+    }
+}
+
+/// ZFPlus: the photo being edited as the editor shows it (turned and
+/// mirrored), as a picture to place: what a grid's first cell holds.
+pub fn shown_picture(
+    source: &crate::model::PictureSource,
+    width: u32,
+    height: u32,
+    turns: u8,
+) -> Option<StampImage> {
+    let picture = match source {
+        crate::model::PictureSource::File(path) => image::open(path).ok()?.to_rgba8(),
+        crate::model::PictureSource::Pasted(rgba) => {
+            image::RgbaImage::from_raw(width.max(1), height.max(1), rgba.to_vec())?
+        }
+    };
+    let picture = fit(picture, INSERTED_SIDE);
+    let mut picture = match turns % 4 {
+        1 => image::imageops::rotate90(&picture),
+        2 => image::imageops::rotate180(&picture),
+        3 => image::imageops::rotate270(&picture),
+        _ => picture,
+    };
+    if turns & crate::model::PICTURE_MIRRORED != 0 {
+        image::imageops::flip_horizontal_in_place(&mut picture);
+    }
+    Some(stamp_of(picture))
+}
+
+/// ZFPlus: a picture chosen to insert, waiting for the editor.
+static PICKED: std::sync::Mutex<Option<StampImage>> = std::sync::Mutex::new(None);
+static PICKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ZFPlus: asks for a picture file to insert, on a thread of its own, and
+/// wakes the window with `wake` once it is read.
+pub fn pick_picture(wake: impl Fn() + Send + 'static) {
+    use std::sync::atomic::Ordering;
+    if PICKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("zfplus-insert-picture".into())
+        .spawn(move || {
+            let chosen = rfd::FileDialog::new()
+                .set_title("Insert a picture")
+                .add_filter("Pictures", &["jpg", "jpeg", "png", "webp", "gif", "bmp"])
+                .pick_file();
+            if let Some(path) = chosen
+                && let Ok(picture) = image::open(&path)
+            {
+                let picture = fit(picture.to_rgba8(), INSERTED_SIDE);
+                *PICKED.lock().unwrap_or_else(|p| p.into_inner()) = Some(stamp_of(picture));
+            }
+            PICKING.store(false, Ordering::SeqCst);
+            wake();
+        });
+}
+
+/// ZFPlus: the picture chosen to insert, once.
+pub fn take_picked() -> Option<StampImage> {
+    PICKED.lock().unwrap_or_else(|p| p.into_inner()).take()
 }
 
 /// The longest side of a panel thumbnail.
@@ -734,6 +938,7 @@ mod tests {
             color: [255, 0, 0, 255],
             fill,
             boxed,
+            art: WordArt::Plain,
         }
     }
 
@@ -743,6 +948,22 @@ mod tests {
             .chunks_exact(4)
             .filter(|pixel| pixel[3] > 200 && pixel[..3] == color)
             .count()
+    }
+
+    /// ZFPlus: every word art style draws its letters.
+    #[test]
+    fn every_word_art_style_draws_letters() {
+        for art in WordArt::ALL {
+            let mut words = text("Art", None, false);
+            words.art = art;
+            let image = render_text(&words);
+            let inked = image
+                .rgba
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] > 200)
+                .count();
+            assert!(inked > 200, "{art:?} draws letters");
+        }
     }
 
     #[test]

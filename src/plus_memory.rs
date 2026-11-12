@@ -26,6 +26,20 @@ pub struct Process {
     /// Everything resident, shared code included: what Task Manager's
     /// working set says.
     pub resident: u64,
+    /// What Task Manager's Memory column shows: the private working set on
+    /// Windows; 0 where the system does not say.
+    pub task_manager: u64,
+}
+
+impl Process {
+    /// The figure to show beside Task Manager's: its own when known.
+    pub fn shown(&self) -> u64 {
+        if self.task_manager > 0 {
+            self.task_manager
+        } else {
+            self.private
+        }
+    }
 }
 
 /// What the app holds, in bytes unless named otherwise.
@@ -51,6 +65,12 @@ impl Snapshot {
     pub fn line(&self) -> String {
         let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
         let mut line = match self.process {
+            Some(process) if process.task_manager > 0 => format!(
+                "process {:.0} MB private, {:.0} MB resident, {:.0} MB in Task Manager",
+                mb(process.private),
+                mb(process.resident),
+                mb(process.task_manager)
+            ),
             Some(process) => format!(
                 "process {:.0} MB private, {:.0} MB resident",
                 mb(process.private),
@@ -222,15 +242,53 @@ pub fn tick(ctx: &egui::Context, messages: u64, chats: u64) {
     *LATEST.lock().unwrap_or_else(|p| p.into_inner()) = Some(snapshot);
 }
 
-/// When the rail's meter was last drawn: the sampler wakes the window for
-/// it only while it is on screen.
-static METER_DRAWN: Mutex<Option<Instant>> = Mutex::new(None);
+/// Whether the rail's meter is on screen: drawn, in a window that is not
+/// minimized or in the tray. The sampler wakes the window for it only then.
+static METER_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether there is a tray icon whose tooltip shows the usage.
+static TRAY_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The tray tooltip's newest text, waiting for the app to set it.
+static TRAY_TEXT: Mutex<Option<String>> = Mutex::new(None);
 /// The memory warning's limit in MB, which the sampler wakes the app for
 /// even when no window is drawn; 0 for none.
 static LIMIT_MB: AtomicU64 = AtomicU64::new(0);
 
 pub fn meter_drawn() {
-    *METER_DRAWN.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+    METER_SHOWN.store(true, Ordering::Relaxed);
+}
+
+/// Called each pass with whether the window shows (not minimized, not in
+/// the tray) and the meter is on.
+pub fn set_meter_shown(shown: bool) {
+    METER_SHOWN.store(shown, Ordering::Relaxed);
+}
+
+/// Whether the tray icon is there to carry the usage in its tooltip.
+pub fn set_tray_shown(shown: bool) {
+    TRAY_SHOWN.store(shown, Ordering::Relaxed);
+}
+
+/// The tray tooltip's new text, once, when it changed.
+pub fn take_tray_text() -> Option<String> {
+    TRAY_TEXT.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+/// The tooltip: the app's name, then its memory and CPU, and how many of
+/// its processes and threads run, as Task Manager would count them.
+fn tray_text(memory_mb: f32, cpu: f32, counts: Option<(u32, u32)>) -> String {
+    let mut text = format!(
+        "{}\nRAM {memory_mb:.0} MB · CPU {cpu:.1}%",
+        crate::channel::NAME
+    );
+    if let Some((processes, threads)) = counts {
+        let noun = if processes == 1 {
+            "process"
+        } else {
+            "processes"
+        };
+        text.push_str(&format!("\n{processes} {noun} · {threads} threads"));
+    }
+    text
 }
 
 pub fn set_limit(limit_mb: u32) {
@@ -252,13 +310,30 @@ pub fn start_sampler(wake: impl Fn() + Send + 'static) {
         .spawn(move || {
             let mut shown = (0.0f32, 0.0f32);
             let mut was_over = false;
+            let mut tick = 0u64;
+            let mut counts = None;
+            let mut tray_sent = String::new();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
+                tick += 1;
                 let Some(process) = process() else {
                     continue;
                 };
-                let memory = process.private as f32 / (1024.0 * 1024.0);
+                let memory = process.shown() as f32 / (1024.0 * 1024.0);
                 let cpu = cpu_percent();
+                // The tooltip, every two seconds; the processes counted
+                // every ten, as walking the list costs a little.
+                if TRAY_SHOWN.load(Ordering::Relaxed) && tick.is_multiple_of(2) {
+                    if counts.is_none() || tick.is_multiple_of(10) {
+                        counts = sys::counts();
+                    }
+                    let text = tray_text(memory, cpu, counts);
+                    if text != tray_sent {
+                        tray_sent.clone_from(&text);
+                        *TRAY_TEXT.lock().unwrap_or_else(|p| p.into_inner()) = Some(text);
+                        wake();
+                    }
+                }
                 {
                     let mut recent = RECENT.lock().unwrap_or_else(|p| p.into_inner());
                     if recent.len() == HISTORY {
@@ -266,11 +341,8 @@ pub fn start_sampler(wake: impl Fn() + Send + 'static) {
                     }
                     recent.push_back((memory, cpu));
                 }
-                let on_screen = METER_DRAWN
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .is_some_and(|at| at.elapsed() < Duration::from_secs(3));
-                let moved = (memory - shown.0).abs() >= 1.0 || (cpu - shown.1).abs() >= 0.5;
+                let on_screen = METER_SHOWN.load(Ordering::Relaxed);
+                let moved = (memory - shown.0).abs() >= 0.5 || (cpu - shown.1).abs() >= 0.1;
                 let limit = LIMIT_MB.load(Ordering::Relaxed) as f32;
                 let over = limit > 0.0 && memory > limit;
                 // Only the crossing wakes the app for the warning.
@@ -319,6 +391,23 @@ mod sys {
         pagefile: usize,
         peak_pagefile: usize,
         private: usize,
+        // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later).
+        private_working_set: usize,
+        shared_commit: u64,
+    }
+
+    #[repr(C)]
+    struct Entry {
+        size: u32,
+        usage: u32,
+        process_id: u32,
+        default_heap_id: usize,
+        module_id: u32,
+        threads: u32,
+        parent_id: u32,
+        priority: i32,
+        flags: u32,
+        exe: [u16; 260],
     }
 
     #[link(name = "kernel32")]
@@ -329,6 +418,43 @@ mod sys {
             counters: *mut Counters,
             size: u32,
         ) -> i32;
+        fn GetCurrentProcessId() -> u32;
+        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> *mut core::ffi::c_void;
+        fn Process32FirstW(snapshot: *mut core::ffi::c_void, entry: *mut Entry) -> i32;
+        fn Process32NextW(snapshot: *mut core::ffi::c_void, entry: *mut Entry) -> i32;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+    }
+
+    /// How many processes run this app's program, and this one's threads.
+    pub fn counts() -> Option<(u32, u32)> {
+        let exe = std::env::current_exe().ok()?;
+        let name = exe.file_name()?.to_string_lossy().to_lowercase();
+        // SAFETY: a snapshot of the process list, walked with an entry of
+        // the size it is told, and closed after.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(0x2, 0);
+            if snapshot.is_null() || snapshot as isize == -1 {
+                return None;
+            }
+            let me = GetCurrentProcessId();
+            let mut entry: Entry = std::mem::zeroed();
+            entry.size = std::mem::size_of::<Entry>() as u32;
+            let (mut processes, mut threads) = (0u32, 0u32);
+            let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+            while more {
+                let end = entry.exe.iter().position(|unit| *unit == 0).unwrap_or(260);
+                let exe = String::from_utf16_lossy(&entry.exe[..end]).to_lowercase();
+                if exe == name {
+                    processes += 1;
+                }
+                if entry.process_id == me {
+                    threads = entry.threads;
+                }
+                more = Process32NextW(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+            Some((processes.max(1), threads))
+        }
     }
 
     pub fn process() -> Option<super::Process> {
@@ -336,13 +462,25 @@ mod sys {
             cb: std::mem::size_of::<Counters>() as u32,
             ..Default::default()
         };
-        // SAFETY: fills the PROCESS_MEMORY_COUNTERS_EX it is handed, of the
-        // size it is told.
-        let ok =
+        // SAFETY: fills the PROCESS_MEMORY_COUNTERS_EX2 it is handed, of the
+        // size it is told; an older Windows refuses that size, and is asked
+        // again for the shorter PROCESS_MEMORY_COUNTERS_EX.
+        let mut ok =
             unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+        if ok == 0 {
+            counters = Counters {
+                cb: (std::mem::size_of::<Counters>()
+                    - std::mem::size_of::<usize>()
+                    - std::mem::size_of::<u64>()) as u32,
+                ..Default::default()
+            };
+            ok =
+                unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+        }
         (ok != 0).then(|| super::Process {
             private: counters.private as u64,
             resident: counters.working_set as u64,
+            task_manager: counters.private_working_set as u64,
         })
     }
 }
@@ -361,13 +499,29 @@ mod sys {
         Some(super::Process {
             private: field("RssAnon:")?,
             resident: field("VmRSS:")?,
+            task_manager: 0,
         })
+    }
+
+    pub fn counts() -> Option<(u32, u32)> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let threads = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Threads:"))?
+            .trim()
+            .parse()
+            .ok()?;
+        Some((1, threads))
     }
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
 mod sys {
     pub fn process() -> Option<super::Process> {
+        None
+    }
+
+    pub fn counts() -> Option<(u32, u32)> {
         None
     }
 }
@@ -414,6 +568,7 @@ mod tests {
             process: Some(Process {
                 private: 300 << 20,
                 resident: 400 << 20,
+                task_manager: 0,
             }),
             textures: vec![
                 ("pictures".into(), 40, 120 << 20),

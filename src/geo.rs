@@ -42,11 +42,10 @@ pub fn spot(text: &str) -> Option<Spot> {
 
 /// The link to open for a spot, the one the location card offers too. The
 /// browser fetches it, never ZapFast, so no map is ever loaded in the app.
+/// ZFPlus: Google Maps, as WhatsApp itself opens a location.
 pub fn map_url(spot: Spot) -> String {
     let (latitude, longitude) = (spot.latitude, spot.longitude);
-    format!(
-        "https://www.openstreetmap.org/?mlat={latitude}&mlon={longitude}#map=16/{latitude}/{longitude}"
-    )
+    format!("https://www.google.com/maps/search/?api=1&query={latitude},{longitude}")
 }
 
 /// Whether `text` is a shortened map link, which names its spot only on the

@@ -1,8 +1,8 @@
-//! Label chips, the label menu, and the label manager.
+//! List chips, the list menu, and the list manager (labels in the code).
 //!
-//! Labels are local to this computer: a name, a colour, and the chats that
-//! wear them. They are not WhatsApp Business labels or WhatsApp lists, and
-//! nothing here reaches the phone or the protocol.
+//! ZFPlus: these are WhatsApp's own lists (Business labels), kept in step
+//! with the phone and WhatsApp Web by the worker: a name, a colour, and the
+//! chats on it.
 
 use std::borrow::Cow;
 
@@ -144,7 +144,7 @@ fn label_chips(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         15.0,
         palette.secondary,
         palette.text,
-        &gettext(locale, "Manage labels"),
+        &gettext(locale, "Manage lists"),
     )
     .tab_stop(Stop::ManageLabels)
     .clicked()
@@ -159,7 +159,7 @@ fn label_chips(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
 /// The labels a chat wears, as a submenu of the chat's context menu.
 pub fn chat_menu(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palette) {
     let locale = app.locale;
-    let manage = gettext(locale, "Manage labels…");
+    let manage = gettext(locale, "Manage lists…");
     // Owned, since the rows below change `app`.
     let names: Vec<String> = app.labels.iter().map(|label| label.name.clone()).collect();
     let items: Vec<&str> = names
@@ -171,7 +171,7 @@ pub fn chat_menu(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palett
         ui,
         palette,
         Icon::Tag,
-        &gettext(locale, "Labels"),
+        &gettext(locale, "Lists"),
         &items,
         |ui| {
             let labels: Vec<(String, String, bool)> = app
@@ -216,7 +216,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     ui.horizontal(|ui| {
         theme::text(
             ui,
-            gettext(locale, "Labels"),
+            gettext(locale, "Lists"),
             theme::bold(18.0),
             palette.text,
         );
@@ -239,7 +239,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         ui,
         gettext(
             locale,
-            "Labels stay on this computer. They do not reach your phone or anyone you chat with.",
+            "Lists are WhatsApp's own: they show on your phone and WhatsApp Web too, and theirs show here. Nobody you chat with sees them.",
         ),
         theme::regular(12.5),
         palette.dim,
@@ -250,7 +250,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     if full {
         theme::paragraph(
             ui,
-            gettext(locale, "You have {limit} labels, the most ZapFast keeps.")
+            gettext(locale, "You have {limit} lists, the most ZFPlus keeps.")
                 .replace("{limit}", &crate::archive::LABEL_LIMIT.to_string()),
             theme::regular(12.5),
             palette.warning,
@@ -260,7 +260,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut app.label_name)
                     .id(name_field_id())
-                    .hint_text(gettext(locale, "New label"))
+                    .hint_text(gettext(locale, "New list"))
                     .char_limit(crate::archive::NAME_LIMIT)
                     .desired_width(160.0)
                     .font(theme::regular(14.0)),
@@ -304,7 +304,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
             ui,
             gettext(
                 locale,
-                "No labels yet. Create one above, then add chats to it from their right-click menu.",
+                "No lists yet. Create one above, then add chats to it from their right-click menu.",
             ),
             theme::regular(13.0),
             palette.dim,
@@ -434,7 +434,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
             egui::Id::new(("label-delete", &label.id)),
             Sense::click(),
         );
-        let remove = gettext(locale, "Delete this label. Its chats keep their messages.");
+        let remove = gettext(locale, "Delete this list. Its chats keep their messages.");
         trash.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, remove.as_ref())
         });

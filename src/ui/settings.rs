@@ -578,16 +578,16 @@ fn sections(app: &App) -> Vec<Section> {
     } else {
         translated(locale, "Let people see when you read their messages.")
     };
-    privacy.account_toggle(
-        translated(locale, "Send read receipts"),
-        receipts_note,
-        |settings| &mut settings.send_read_receipts,
-    );
-    privacy.account_toggle(
-        translated(locale, "Show when you are typing"),
-        "",
-        |settings| &mut settings.send_typing,
-    );
+    let receipts_title = translated(locale, "Send read receipts");
+    let label = receipts_title.shown.clone();
+    privacy.row(receipts_title, receipts_note, move |ui, app| {
+        linked_privacy_switch(ui, app, true, &label);
+    });
+    let typing_title = translated(locale, "Show when you are typing");
+    let label = typing_title.shown.clone();
+    privacy.row(typing_title, "", move |ui, app| {
+        linked_privacy_switch(ui, app, false, &label);
+    });
     app_lock_rows(app, &mut privacy);
     privacy.row(
         translated(locale, "Blocked contacts"),
@@ -995,12 +995,16 @@ fn diagnostics_section(app: &App) -> Section {
             }
         },
     );
-    section.row(
-        "Feature check",
-        "Checks on this computer: the WhatsApp link, the Private Mode blur, the tray icon, notifications, starting with the computer and updates. Copy the result to paste in a message.",
-        move |ui, app| {
-            let id = egui::Id::new("zfplus-feature-check");
-            ui.horizontal(|ui| {
+    // A block, not a row: a row's control sits in a narrow column at the
+    // right, where the results would wrap a letter per line.
+    section.block(vec![Text::from("Feature check")], move |ui, app| {
+        let id = egui::Id::new("zfplus-feature-check");
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Feature check",
+            "Checks on this computer: the WhatsApp link, the Private Mode blur, the tray icon, notifications, starting with the computer and updates. Copy the result to paste in a message.",
+            |ui| {
                 if theme::soft_button(ui, &palette, Some(Icon::Refresh), "Run check", false)
                     .clicked()
                 {
@@ -1015,10 +1019,14 @@ fn diagnostics_section(app: &App) -> Section {
                     ui.ctx().copy_text(crate::feature_check::report(checks));
                     app.toast("Feature check copied");
                 }
-            });
-            let shown: Option<Vec<crate::feature_check::Check>> =
-                ui.ctx().data(|data| data.get_temp(id));
-            for check in shown.unwrap_or_default() {
+            },
+        );
+        let shown: Option<Vec<crate::feature_check::Check>> =
+            ui.ctx().data(|data| data.get_temp(id));
+        if shown.is_some() {
+            ui.add_space(4.0);
+        }
+        for check in shown.unwrap_or_default() {
                 use crate::feature_check::Status;
                 let color = match check.status {
                     Status::Good => palette.accent,
@@ -1031,6 +1039,30 @@ fn diagnostics_section(app: &App) -> Section {
                     theme::regular(12.5),
                     color,
                 );
+            }
+        ui.add_space(6.0);
+    });
+    section.row(
+        "App folder",
+        crate::plus_uninstall::app_folder()
+            .map(|folder| folder.display().to_string())
+            .unwrap_or_default(),
+        move |ui, app| {
+            if theme::soft_button(ui, &palette, Some(Icon::ExternalLink), "Open folder", false)
+                .clicked()
+                && let Some(folder) = crate::plus_uninstall::app_folder()
+            {
+                app.actions.push(Action::OpenFolder(folder));
+            }
+        },
+    );
+    section.row(
+        "Remove ZFPlus",
+        "Uninstalls the app from this computer, and if you choose, everything it keeps here.",
+        move |ui, app| {
+            if theme::pill_button(ui, &palette, "Uninstall…", false).clicked() {
+                app.actions
+                    .push(Action::ShowDialog(Dialog::ConfirmUninstall));
             }
         },
     );
@@ -1114,6 +1146,8 @@ fn plus_sections() -> Vec<Section> {
             "What you are typing. Hover the box to see it.",
             |p| &mut p.blur_composer,
         ),
+    ];
+    let privacy: Vec<PlusOption> = vec![
         Tick(
             "Hide typing status",
             "Nobody sees \"typing…\" from you.",
@@ -1215,6 +1249,14 @@ fn plus_sections() -> Vec<Section> {
             (|settings: &mut Settings| &mut settings.plus.private_mode)
                 as fn(&mut Settings) -> &mut bool,
             private,
+        ),
+        (
+            "Enhancements · Hidden activity",
+            "Hidden activity",
+            "Works whenever ticked, with or without Private Mode. Disable read receipts and Hide typing status are the same switches as Send read receipts and Show when you are typing.",
+            (|settings: &mut Settings| &mut settings.plus.privacy_tricks)
+                as fn(&mut Settings) -> &mut bool,
+            privacy,
         ),
         (
             "Enhancements · Customizations",
@@ -2340,6 +2382,49 @@ fn account_toggle(
     if changed {
         *field(&mut app.account_mut().settings) = value;
         app.account_mut().mark_settings_dirty();
+    }
+}
+
+/// "Send read receipts" and "Show when you are typing" are one choice with
+/// Enhancements' "Disable read receipts" and "Hide typing status": the switch
+/// shows what is really sent, and turning it on clears the box too.
+fn linked_privacy_switch(ui: &mut egui::Ui, app: &mut App, receipts: bool, label: &str) {
+    let palette = app.palette;
+    let plus = app.settings.plus;
+    let (sent, hidden) = if receipts {
+        (
+            app.account().settings.send_read_receipts,
+            plus.privacy_tricks && plus.disable_read_receipts,
+        )
+    } else {
+        (
+            app.account().settings.send_typing,
+            plus.privacy_tricks && plus.hide_typing,
+        )
+    };
+    let mut value = sent && !hidden;
+    let response = widgets::switch(ui, &palette, &mut value);
+    theme::reveal_focus(&response);
+    let enabled = ui.is_enabled();
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, value, label)
+    });
+    if response.changed() {
+        let account = app.account_mut();
+        if receipts {
+            account.settings.send_read_receipts = value;
+        } else {
+            account.settings.send_typing = value;
+        }
+        account.mark_settings_dirty();
+        if value {
+            if receipts {
+                app.settings.plus.disable_read_receipts = false;
+            } else {
+                app.settings.plus.hide_typing = false;
+            }
+            app.actions.push(Action::SettingsChanged);
+        }
     }
 }
 

@@ -10493,7 +10493,7 @@ fn location_card(
         }
         if theme::link(
             ui,
-            crate::i18n::gettext(view.locale, "Open in a map").as_ref(),
+            crate::i18n::gettext(view.locale, "Open in Google Maps").as_ref(),
             theme::regular(12.5),
             palette.link,
         )

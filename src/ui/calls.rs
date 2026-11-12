@@ -571,9 +571,11 @@ fn new_call_list(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 section(ui, &palette, &gettext(app.locale, "All contacts"));
             }
-            for contact in &contacts {
-                ui.push_id(&contact.id, |ui| {
-                    person(app, ui, &contact.id, &mut actions);
+            for contact in contacts.iter() {
+                super::dialogs::lazy_row(ui, |ui| {
+                    ui.push_id(&contact.id, |ui| {
+                        person(app, ui, &contact.id, &mut actions);
+                    });
                 });
             }
             ui.add_space(12.0);

@@ -1,9 +1,9 @@
-//! Local chat labels: a name, a colour, and the chats that wear them.
+//! Chat lists (labels): a name, a colour, and the chats that wear them.
 //!
-//! Labels never leave this computer. They are not WhatsApp Business labels or
-//! WhatsApp lists: nothing here syncs to the phone and nothing here talks to
-//! the protocol. The tables say `local_` so that a synced kind can live beside
-//! them one day without a clash.
+//! ZFPlus: a list whose id starts with `wa:` is one of WhatsApp's own lists
+//! (Business labels), kept in step with the phone and WhatsApp Web; the
+//! others were made here before that and are sent to WhatsApp once
+//! connected.
 
 use rusqlite::params;
 
@@ -150,6 +150,103 @@ impl Archive {
         rows.collect()
     }
 
+    /// ZFPlus: files a list as WhatsApp keeps it, under its `wa:` id. A
+    /// list of the same name made here before is merged into it, its chats
+    /// moved over, so the two never show twice.
+    pub fn sync_label(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        color_hex: &str,
+        created_at: i64,
+    ) -> Result<()> {
+        let transaction = crate::archive::Write::begin(&self.connection)?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT name FROM local_labels WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
+        let name = name
+            .map(clean_name)
+            .filter(|name| !name.is_empty())
+            .or(existing)
+            .unwrap_or_else(|| "List".to_owned());
+        let twins: Vec<String> = {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM local_labels
+                 WHERE lower(name) = lower(?1) AND id <> ?2 AND id NOT LIKE 'wa:%'",
+            )?;
+            let rows = statement.query_map(params![name, id], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<_>>()?
+        };
+        transaction.execute(
+            "INSERT INTO local_labels (id, name, color, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color",
+            params![id, name, clean_color(color_hex), created_at],
+        )?;
+        for twin in twins {
+            transaction.execute(
+                "INSERT OR IGNORE INTO local_chat_labels (chat, label)
+                 SELECT chat, ?2 FROM local_chat_labels WHERE label = ?1",
+                params![twin, id],
+            )?;
+            transaction.execute(
+                "DELETE FROM local_chat_labels WHERE label = ?1",
+                params![twin],
+            )?;
+            transaction.execute("DELETE FROM local_labels WHERE id = ?1", params![twin])?;
+        }
+        transaction.commit()
+    }
+
+    /// ZFPlus: puts one chat on a list or takes it off, as WhatsApp said.
+    /// A list not filed yet is skipped.
+    pub fn set_chat_label(&self, chat: &str, label: &str, on: bool) -> Result<bool> {
+        let changed = if on {
+            self.connection.execute(
+                "INSERT OR IGNORE INTO local_chat_labels (chat, label)
+                 SELECT ?1, id FROM local_labels WHERE id = ?2",
+                params![chat, label],
+            )?
+        } else {
+            self.connection.execute(
+                "DELETE FROM local_chat_labels WHERE chat = ?1 AND label = ?2",
+                params![chat, label],
+            )?
+        };
+        Ok(changed > 0)
+    }
+
+    /// ZFPlus: the chats on one list.
+    pub fn label_chats(&self, label: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT chat FROM local_chat_labels WHERE label = ?1")?;
+        let rows = statement.query_map(params![label], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    /// ZFPlus: renames a list made here to the `wa:` id WhatsApp took it
+    /// under, keeping its chats.
+    pub fn adopt_label(&self, local: &str, synced: &str) -> Result<()> {
+        let transaction = crate::archive::Write::begin(&self.connection)?;
+        transaction.execute(
+            "UPDATE local_labels SET id = ?2 WHERE id = ?1",
+            params![local, synced],
+        )?;
+        transaction.execute(
+            "UPDATE OR IGNORE local_chat_labels SET label = ?2 WHERE label = ?1",
+            params![local, synced],
+        )?;
+        transaction.execute(
+            "DELETE FROM local_chat_labels WHERE label = ?1",
+            params![local],
+        )?;
+        transaction.commit()
+    }
+
     /// An id that is free, derived from the creation time.
     fn label_id(&self, created_at: i64) -> Result<String> {
         for suffix in 0..1000 {
@@ -199,6 +296,51 @@ mod tests {
 
     fn archive() -> Archive {
         Archive::in_memory().expect("opens")
+    }
+
+    /// ZFPlus: a list from WhatsApp takes in the one of the same name made
+    /// here, its chats with it; one made here takes its WhatsApp id.
+    #[test]
+    fn synced_lists_merge_and_adopt() {
+        let archive = archive();
+        let local = archive
+            .create_label("Office", "#3b82f6", 10)
+            .expect("create")
+            .expect("created");
+        archive
+            .set_chat_labels("a@s.whatsapp.net", std::slice::from_ref(&local.id))
+            .unwrap();
+        archive
+            .sync_label("wa:3", Some("office"), "#22c55e", 3)
+            .unwrap();
+        let labels = archive.labels().unwrap();
+        assert_eq!(labels.len(), 1, "the twin is merged");
+        assert_eq!(labels[0].id, "wa:3");
+        assert_eq!(archive.chat_labels("a@s.whatsapp.net").unwrap(), ["wa:3"]);
+        assert!(
+            archive
+                .set_chat_label("b@s.whatsapp.net", "wa:3", true)
+                .unwrap()
+        );
+        assert!(
+            !archive
+                .set_chat_label("b@s.whatsapp.net", "wa:9", true)
+                .unwrap(),
+            "an unknown list is skipped"
+        );
+        let made = archive
+            .create_label("Friends", "#ef4444", 20)
+            .expect("create")
+            .expect("created");
+        archive
+            .set_chat_labels("c@s.whatsapp.net", std::slice::from_ref(&made.id))
+            .unwrap();
+        archive.adopt_label(&made.id, "wa:1700000000").unwrap();
+        assert_eq!(
+            archive.label_chats("wa:1700000000").unwrap(),
+            ["c@s.whatsapp.net"]
+        );
+        assert!(archive.label_chats(&made.id).unwrap().is_empty());
     }
 
     #[test]

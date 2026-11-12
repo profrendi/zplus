@@ -915,6 +915,12 @@ fastframe_icons::icons! {
         directory: "../assets/icons/",
         Archive => "archive",
         ArrowDown => "arrow-down",
+        // ZFPlus: the profile's username.
+        AtSign => "at-sign",
+        // ZFPlus: the picture editor's word art, inserted pictures and grids.
+        Sparkles => "sparkles",
+        ImagePlus => "image-plus",
+        LayoutGrid => "layout-grid",
         ArrowLeft => lucide "arrow-left",
         Ban => "ban",
         Bell => "bell",

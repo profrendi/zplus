@@ -41,9 +41,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::NewContact => 380.0,
                 Dialog::NewChat => 420.0,
                 Dialog::UnlockLockedChats | Dialog::ConfirmLockChat(_) => 380.0,
-                Dialog::ConfirmDeleteChat(_) | Dialog::JoinGroup | Dialog::ConfirmStartOver => {
-                    380.0
-                }
+                Dialog::ConfirmDeleteChat(_)
+                | Dialog::JoinGroup
+                | Dialog::ConfirmStartOver
+                | Dialog::ConfirmUninstall => 380.0,
                 Dialog::ConfirmClearChat(_) => 380.0,
                 Dialog::ExportChat { .. } => {
                     380.0_f32.min((ui.ctx().content_rect().width() - 48.0).max(180.0))
@@ -67,7 +68,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::CreatePoll(_) => 420.0,
                 Dialog::SendLocation(_) | Dialog::ShareContact(_) => 420.0,
                 Dialog::Profile => {
-                    640.0_f32.min((ui.ctx().content_rect().width() - 48.0).max(280.0))
+                    720.0_f32.min((ui.ctx().content_rect().width() - 48.0).max(280.0))
                 }
                 Dialog::Camera(_) => {
                     560.0_f32.min((ui.ctx().content_rect().width() - 48.0).max(240.0))
@@ -136,6 +137,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::Forward { messages, .. } => forward(app, ui, &messages),
                 Dialog::JoinGroup => join_group(app, ui),
                 Dialog::ConfirmStartOver => confirm_start_over(app, ui),
+                Dialog::ConfirmUninstall => confirm_uninstall(app, ui),
                 Dialog::StickerPack => sticker_pack(app, ui),
                 Dialog::StickerMaker => sticker_maker(app, ui),
                 Dialog::MessageInfo { chat, message } => {
@@ -538,47 +540,119 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
                     palette.secondary,
                 );
             }
-            for contact in contacts {
-                ui.push_id(&contact.id, |ui| {
-                    super::chats::contact_row(app, ui, &contact)
+            for contact in contacts.iter() {
+                lazy_row(ui, |ui| {
+                    ui.push_id(&contact.id, |ui| {
+                        super::chats::contact_row(app, ui, contact)
+                    });
                 });
             }
         });
+    ask_registered(app, &contacts);
 }
 
 /// The people New chat and New call offer, by name: the contacts and the
-/// one-to-one chats, without ourselves or a locked chat, matching `needle`
-/// (a `search_key`) by name or number.
-pub(super) fn contact_choices(app: &App, needle: &str) -> Vec<crate::model::Contact> {
-    let mut contacts = app.contacts.clone();
-    for chat in &app.chats {
-        if chat.kind == crate::model::ChatKind::Direct {
-            contacts
-                .entry(chat.id.clone())
-                .or_insert_with(|| crate::model::Contact {
-                    id: chat.id.clone(),
-                    full_name: Some(app.chat_title(chat)),
-                    ..Default::default()
-                });
+/// one-to-one chats, without ourselves, a locked chat, or a number WhatsApp
+/// said has no WhatsApp, matching `needle` (a `search_key`) by name or
+/// number.
+///
+/// Thousands of contacts made building this every frame hang the dialog, so
+/// it is kept until the contacts, the chats or the search change, and at
+/// most two seconds (a renamed contact shows then).
+pub(super) fn contact_choices(app: &App, needle: &str) -> std::rc::Rc<Vec<crate::model::Contact>> {
+    type Key = (String, usize, usize, usize, Option<String>);
+    type Choices = std::rc::Rc<Vec<crate::model::Contact>>;
+    type Cached = Option<(Key, std::time::Instant, Choices)>;
+    thread_local! {
+        static CACHE: std::cell::RefCell<Cached> = const { std::cell::RefCell::new(None) };
+    }
+    let key: Key = (
+        needle.to_owned(),
+        app.contacts.len(),
+        app.chats.len(),
+        app.registered.len(),
+        app.me.clone(),
+    );
+    let cached = CACHE.with(|cache| {
+        cache.borrow().as_ref().and_then(|(cached_key, at, list)| {
+            (*cached_key == key && at.elapsed() < std::time::Duration::from_secs(2))
+                .then(|| std::rc::Rc::clone(list))
+        })
+    });
+    if let Some(list) = cached {
+        return list;
+    }
+    let list = std::rc::Rc::new(build_contact_choices(app, needle));
+    CACHE.with(|cache| {
+        *cache.borrow_mut() = Some((key, std::time::Instant::now(), std::rc::Rc::clone(&list)));
+    });
+    list
+}
+
+fn build_contact_choices(app: &App, needle: &str) -> Vec<crate::model::Contact> {
+    let mut seen = std::collections::HashSet::new();
+    let mut contacts: Vec<(String, crate::model::Contact)> = Vec::new();
+    let direct = app
+        .chats
+        .iter()
+        .filter(|chat| chat.kind == crate::model::ChatKind::Direct)
+        .map(|chat| crate::model::Contact {
+            id: chat.id.clone(),
+            full_name: Some(app.chat_title(chat)),
+            ..Default::default()
+        });
+    for contact in app.contacts.values().cloned().chain(direct) {
+        let Some(phone) = crate::model::phone_of(&contact.id) else {
+            continue;
+        };
+        if app.me.as_deref() == Some(contact.id.as_str())
+            || app.registered.get(phone) == Some(&false)
+            || app.chat(&contact.id).is_some_and(|chat| chat.locked)
+            || !seen.insert(contact.id.clone())
+        {
+            continue;
+        }
+        let key = crate::util::search_key(&app.display_name(&contact.id));
+        if needle.is_empty() || crate::util::search_matches(&key, needle) || phone.contains(needle)
+        {
+            contacts.push((key, contact));
         }
     }
-    let mut contacts: Vec<_> = contacts
-        .into_values()
-        .filter(|contact| {
-            crate::model::phone_of(&contact.id).is_some()
-                && app.me.as_deref() != Some(contact.id.as_str())
-                && !app.chat(&contact.id).is_some_and(|chat| chat.locked)
-                && (needle.is_empty()
-                    || crate::util::search_matches(
-                        &crate::util::search_key(&app.display_name(&contact.id)),
-                        needle,
-                    )
-                    || crate::model::phone_of(&contact.id)
-                        .is_some_and(|phone| phone.contains(needle)))
+    contacts.sort_by(|a, b| a.0.cmp(&b.0));
+    contacts.into_iter().map(|(_, contact)| contact).collect()
+}
+
+/// The numbers of `contacts` WhatsApp has not been asked about yet, asked
+/// now, so a contact without WhatsApp drops out of New chat.
+pub(super) fn ask_registered(app: &mut App, contacts: &[crate::model::Contact]) {
+    if !app.link.is_connected() {
+        return;
+    }
+    let unknown: Vec<String> = contacts
+        .iter()
+        .filter_map(|contact| crate::model::phone_of(&contact.id))
+        .filter(|number| {
+            !app.registered.contains_key(*number) && !app.registered_asked.contains(*number)
         })
+        .map(str::to_owned)
         .collect();
-    contacts.sort_by_key(|contact| crate::util::search_key(&app.display_name(&contact.id)));
-    contacts
+    if !unknown.is_empty() {
+        app.actions.push(Action::CheckRegistered(unknown));
+    }
+}
+
+/// Draws `draw` for a person row where it shows and only reserves its
+/// height elsewhere: a list of thousands then costs a frame next to nothing.
+pub(super) fn lazy_row(ui: &mut egui::Ui, draw: impl FnOnce(&mut egui::Ui)) {
+    let rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), theme::ROW_HEIGHT),
+    );
+    if ui.is_rect_visible(rect) {
+        draw(ui);
+    } else {
+        ui.allocate_space(rect.size());
+    }
 }
 
 /// Draws recipient selection or, for two or more recipients, their
@@ -852,6 +926,33 @@ fn forward_footer(app: &mut App, ui: &mut egui::Ui) {
             app.actions.push(action);
         }
     });
+    // ZFPlus, bottom-up so above the action row: our own message under
+    // what is forwarded, and, for one message to one chat, a way to change
+    // it first in the chat's composer and the picture editor.
+    // A short window keeps its room for the list.
+    if ui.ctx().content_rect().height() >= 420.0 {
+        ui.add(
+            egui::TextEdit::multiline(&mut app.forward_comment)
+                .hint_text("Add a message (sent under the forwarded one)")
+                .desired_rows(1)
+                .desired_width(f32::INFINITY),
+        );
+        let single =
+            matches!(&app.dialog, Some(Dialog::Forward { messages, .. }) if messages.len() == 1);
+        ui.horizontal_wrapped(|ui| {
+            let enabled = single && count == 1;
+            let edit = ui
+                .add_enabled_ui(enabled, |ui| {
+                    theme::soft_button(ui, &palette, Some(Icon::Pencil), "Edit, then send", false)
+                })
+                .inner
+                .on_hover_text("Change the words or the picture before sending, with your message under it. It goes as your own message.")
+                .on_disabled_hover_text("Pick one chat to forward one message with changes.");
+            if edit.clicked() {
+                app.actions.push(Action::ForwardEdited);
+            }
+        });
+    }
     // This UI lays out bottom-up: the note sits above the action row.
     let full = app.forward_limit > 1 && app.forward_recipients.len() >= app.forward_limit;
     let limit = if app.forward_limit == 1 {
@@ -1408,6 +1509,45 @@ fn confirm_start_over(app: &mut App, ui: &mut egui::Ui) {
         &crate::i18n::gettext(locale, "Start over"),
         [Action::StartOverArchive],
     );
+}
+
+/// ZFPlus: asks before removing the app, and whether its data goes too.
+fn confirm_uninstall(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    title(ui, app, &format!("Remove {}?", crate::channel::NAME));
+    theme::paragraph(
+        ui,
+        "ZFPlus quits and Windows removes it, as Apps in Windows' Settings would. Your chats stay on your phone; this computer stays among Linked devices there until you remove it.",
+        theme::regular(13.5),
+        palette.text,
+    );
+    theme::paragraph(
+        ui,
+        "Remove everything also deletes the chats, settings and pictures this computer keeps, so nothing of ZFPlus is left.",
+        theme::regular(13.0),
+        palette.secondary,
+    );
+    ui.add_space(10.0);
+    ui.horizontal_wrapped(|ui| {
+        if danger_button(ui, app, "Remove everything").clicked() {
+            app.actions.push(Action::Uninstall { remove_data: true });
+            app.actions.push(Action::CloseDialog);
+        }
+        if danger_button(ui, app, "Remove the app").clicked() {
+            app.actions.push(Action::Uninstall { remove_data: false });
+            app.actions.push(Action::CloseDialog);
+        }
+        if theme::pill_button(
+            ui,
+            &palette,
+            &crate::i18n::gettext(app.locale, "Cancel"),
+            false,
+        )
+        .clicked()
+        {
+            app.actions.push(Action::CloseDialog);
+        }
+    });
 }
 
 /// Formats localized deletion guidance for direct or selected messages and the chosen scope.

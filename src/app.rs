@@ -764,6 +764,8 @@ pub struct App {
     pub forward_recipients: Vec<ChatId>,
     /// Whether the forwarding dialog shows its recipients for confirmation.
     pub forward_reviewing: bool,
+    /// ZFPlus: a message of our own sent after what is forwarded.
+    pub forward_comment: String,
     /// How many recipients the forwarding dialog's messages may have.
     pub forward_limit: usize,
     /// The group name being typed in the group info dialog.
@@ -1761,6 +1763,7 @@ impl App {
             forward_search: String::new(),
             forward_recipients: Vec::new(),
             forward_reviewing: false,
+            forward_comment: String::new(),
             forward_limit: crate::model::FORWARD_LIMIT,
             group_name_edit: None,
             group_description_edit: None,
@@ -2239,6 +2242,7 @@ impl App {
 
     /// Updates the linked app while no window exists.
     pub fn window_gone(&mut self) {
+        crate::plus_memory::set_meter_shown(false);
         crate::plus::forget_blur_gl();
         self.flush_open_draft();
         self.clear_chat_lock_entry();
@@ -2574,6 +2578,14 @@ impl App {
     /// ZFPlus: keeps the tray's update entries in step with the update, and
     /// reports a check asked for from the tray once its result is known.
     fn sync_tray_updates(&mut self) {
+        // ZFPlus: the tray icon's tooltip carries the memory, CPU and
+        // process count, refreshed by the usage sampler.
+        crate::plus_memory::set_tray_shown(self.tray.is_some());
+        if let Some(text) = crate::plus_memory::take_tray_text()
+            && let Some(tray) = &mut self.tray
+        {
+            tray.set_tooltip(text);
+        }
         let check = crate::plus::update_check();
         let entries = tray_update_entries(
             &check,
@@ -2622,6 +2634,74 @@ impl App {
             };
             self.update_notice(title, body);
         }
+    }
+
+    /// ZFPlus: forwards one message to one chat by way of its composer, to
+    /// change it first: its words come quoted (`> `), so they stay apart
+    /// from ours under them, and a photo opens in the picture editor. What
+    /// goes is a new message of ours, not marked as forwarded.
+    fn forward_edited(&mut self, ctx: &egui::Context) {
+        let Some(Dialog::Forward { chat, messages }) = self.dialog.clone() else {
+            return;
+        };
+        let ([message], [target]) = (messages.as_slice(), self.forward_recipients.as_slice())
+        else {
+            return;
+        };
+        let target = target.clone();
+        let Some(found) = self
+            .conversations
+            .get(&chat)
+            .and_then(|conversation| conversation.messages.iter().find(|row| row.id == *message))
+            .cloned()
+        else {
+            return;
+        };
+        let (words, file, picture) = match &found.content {
+            crate::model::Content::Text { text, .. } => (text.clone(), None, false),
+            crate::model::Content::Image { caption, media, .. } => (
+                caption.clone().unwrap_or_default(),
+                media.path.clone(),
+                true,
+            ),
+            crate::model::Content::Video { caption, media, .. } => (
+                caption.clone().unwrap_or_default(),
+                media.path.clone(),
+                false,
+            ),
+            other => (
+                String::new(),
+                other.media().and_then(|media| media.path.clone()),
+                false,
+            ),
+        };
+        let comment = std::mem::take(&mut self.forward_comment);
+        self.dialog = None;
+        self.forward_recipients.clear();
+        self.forward_search.clear();
+        self.forward_reviewing = false;
+        self.selection = None;
+        self.apply(Action::OpenChat(target), ctx);
+        let quoted: Vec<String> = words.lines().map(|line| format!("> {line}")).collect();
+        let mut text = quoted.join("\n");
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(comment.trim());
+        self.composer = text;
+        match file.filter(|path| path.exists()) {
+            Some(path) => {
+                let id = self.stage(Pending::File(path));
+                if picture {
+                    self.apply(Action::EditPicture(id), ctx);
+                }
+            }
+            None if found.content.media().is_some() => {
+                self.toast_error("Download the file first, then forward it to change it.");
+            }
+            None => {}
+        }
+        self.focus_composer = true;
     }
 
     /// ZFPlus: a notification that a newer release is out, whose click
@@ -2812,6 +2892,10 @@ impl App {
         let Some(chat) = self.chat(chat_id) else {
             return;
         };
+        // A muted chat stays quiet, as its messages do.
+        if chat.muted(crate::util::now()) {
+            return;
+        }
         let is_group = chat.is_group();
         let title = self.chat_title(chat);
         let who = self.display_name_or(sender, None);
@@ -3259,7 +3343,7 @@ impl App {
             Some(label.id.as_str()) != except && label.name.to_lowercase() == name.to_lowercase()
         });
         taken.then(|| {
-            crate::i18n::gettext(self.locale, "A label named “{name}” already exists.")
+            crate::i18n::gettext(self.locale, "A list named “{name}” already exists.")
                 .replace("{name}", name)
         })
     }
@@ -4876,6 +4960,10 @@ impl App {
             Event::QuickReplies(replies) => self.quick_replies = replies,
             Event::Registered(answers) => self.registered.extend(answers),
             Event::BusinessInfo(info) => self.business_info = info,
+            Event::Username(username) => self.username = username,
+            Event::BusinessCategories { query, results } => {
+                self.category_search = Some((query, results));
+            }
             Event::BusinessSaveFailed(error) => {
                 self.toast_error(format!("The business profile was not saved: {error}"));
             }
@@ -7483,9 +7571,14 @@ impl App {
     /// from `eframe::App::logic`, after [`Self::background_frame`].
     pub fn window_logic(&mut self, ctx: &egui::Context) {
         self.sync_window_state(ctx);
-        if ctx.input(|input| input.viewport().minimized == Some(true)) || self.window_hidden {
+        let minimized = ctx.input(|input| input.viewport().minimized == Some(true));
+        if minimized || self.window_hidden {
             self.away = true;
         }
+        // ZFPlus: the rail's meter updates while it can be seen.
+        crate::plus_memory::set_meter_shown(
+            self.settings.plus.usage_meter && !minimized && !self.window_hidden,
+        );
         // Close the window and continue headless when background mode is
         // enabled. Decided here rather than in `frame_ui`, which eframe skips
         // for a minimized window: closing one from the taskbar quit instead.
@@ -8054,6 +8147,34 @@ impl App {
                 self.dialog = None;
             }
             Action::UpdateBusiness(edit) => self.backend.send(Command::UpdateBusiness(edit)),
+            Action::RefreshProfile => self.backend.send(Command::RefreshProfile),
+            Action::ForwardEdited => self.forward_edited(ctx),
+            Action::Uninstall { remove_data } => {
+                let folders = [
+                    self.dirs.config.clone(),
+                    self.dirs.state.clone(),
+                    self.dirs.cache.clone(),
+                ];
+                match crate::plus_uninstall::start(remove_data, &folders) {
+                    Ok(()) => {
+                        // Off the login items too, so nothing starts a
+                        // removed app.
+                        if self.start_with_system == Some(true) {
+                            self.apply(Action::SetStartWithSystem(false), ctx);
+                        }
+                        self.apply(Action::Quit, ctx);
+                    }
+                    Err(error) => {
+                        self.toast_error(error);
+                        if let Some(folder) = crate::plus_uninstall::app_folder() {
+                            self.apply(Action::OpenFolder(folder), ctx);
+                        }
+                    }
+                }
+            }
+            Action::SearchBusinessCategories(query) => {
+                self.backend.send(Command::SearchBusinessCategories(query));
+            }
             Action::CheckRegistered(numbers) => {
                 let asked: Vec<String> = numbers
                     .into_iter()
@@ -8637,11 +8758,29 @@ impl App {
                     return;
                 }
                 let to_chats = std::mem::take(&mut self.forward_recipients);
+                // ZFPlus: our own words go after what is forwarded, as a
+                // message of their own, so they never pass for the sender's.
+                let comment = std::mem::take(&mut self.forward_comment);
+                let comment = comment.trim().to_owned();
+                let comment_to = if comment.is_empty() {
+                    Vec::new()
+                } else {
+                    to_chats.clone()
+                };
                 self.backend.send(Command::Forward {
                     from_chat: chat,
                     messages,
                     to_chats,
                 });
+                for to in comment_to {
+                    self.backend.send(Command::SendText {
+                        chat: to,
+                        text: comment.clone(),
+                        quoting: None,
+                        mentions: Vec::new(),
+                        preview: None,
+                    });
+                }
                 self.follow_sent_chat();
                 self.dialog = None;
                 self.forward_search.clear();
@@ -9536,6 +9675,7 @@ impl App {
                 }
                 if let Dialog::Forward { chat, messages } = &dialog {
                     self.forward_search.clear();
+                    self.forward_comment.clear();
                     self.forward_recipients.clear();
                     self.forward_reviewing = false;
                     // Until the worker has read the messages' forwarding
@@ -9582,6 +9722,7 @@ impl App {
                 };
                 self.invite = None;
                 self.forward_search.clear();
+                self.forward_comment.clear();
                 self.forward_recipients.clear();
                 self.forward_reviewing = false;
                 self.contact_edit = None;
@@ -9738,7 +9879,7 @@ impl App {
                     self.toast_error(
                         crate::i18n::gettext(
                             self.locale,
-                            "You have {limit} labels, the most ZapFast keeps.",
+                            "You have {limit} lists, the most ZFPlus keeps.",
                         )
                         .replace("{limit}", &crate::archive::LABEL_LIMIT.to_string()),
                     );
@@ -11091,7 +11232,7 @@ impl App {
         crate::plus_memory::tick(ctx, messages, chats);
         let private = crate::plus_memory::latest()
             .and_then(|memory| memory.process)
-            .map_or(0, |process| process.private >> 20);
+            .map_or(0, |process| process.shown() >> 20);
         // Tests run hundreds of apps in one process, which passes any limit.
         let limit = if cfg!(test) {
             0
@@ -12983,6 +13124,13 @@ fn allowed_while_locked(action: &Action) -> bool {
             | Action::SetChatSound { .. }
             | Action::SetNotificationSound { .. }
             | Action::SetDownloadFolder(_)
+            // ZFPlus: an update shows nothing the lock hides, so the tray
+            // and its notification update a locked app too; it asks for
+            // the password again once restarted.
+            | Action::CheckForUpdates
+            | Action::DownloadUpdate
+            | Action::InstallUpdate
+            | Action::UpdateAndRestart
     )
 }
 

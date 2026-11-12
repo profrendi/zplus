@@ -4018,6 +4018,20 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                     email: Some("hello@example.com".into()),
                     websites: vec!["https://example.com".into()],
                     categories: vec!["Bakery".into()],
+                    category_ids: vec!["2250".into()],
+                    week: (0..7)
+                        .map(|day| {
+                            if day == 0 || day == 6 {
+                                crate::model::DayHours::default()
+                            } else {
+                                crate::model::DayHours {
+                                    mode: crate::model::OpeningMode::Hours,
+                                    ranges: vec![(450, 990)],
+                                }
+                            }
+                        })
+                        .collect(),
+                    timezone: Some("Asia/Jakarta".into()),
                     hours: [
                         "Sunday",
                         "Monday",

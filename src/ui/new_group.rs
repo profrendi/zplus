@@ -102,7 +102,7 @@ fn choosing(app: &mut App, ui: &mut egui::Ui) {
     }
     ui.add_space(4.0);
     let needle = crate::util::search_key(app.new_chat_search.trim());
-    let mut contacts = super::dialogs::contact_choices(app, &needle);
+    let mut contacts = (*super::dialogs::contact_choices(app, &needle)).clone();
     if let Some(draft) = app.new_group.as_ref() {
         // Adding offers only people outside the group.
         contacts.retain(|contact| draft.offers(&contact.id));

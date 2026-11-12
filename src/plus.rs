@@ -27,6 +27,9 @@ pub struct PlusSettings {
     pub blur_recent: bool,
     pub blur_messages: bool,
     pub blur_composer: bool,
+    /// The Privacy group's master switch: the boxes under it act while it
+    /// is on, with or without Private Mode.
+    pub privacy_tricks: bool,
     pub hide_typing: bool,
     pub play_privately: bool,
     pub disable_read_receipts: bool,
@@ -78,6 +81,7 @@ impl Default for PlusSettings {
             blur_recent: true,
             blur_messages: true,
             blur_composer: false,
+            privacy_tricks: true,
             hide_typing: false,
             play_privately: false,
             disable_read_receipts: false,
@@ -125,20 +129,23 @@ impl PlusSettings {
     pub fn blur_composer(&self) -> bool {
         self.private() && self.blur_composer
     }
+    // The privacy boxes act whenever they are ticked: Private Mode and its
+    // eye only blur, so turning the eye off never sends read receipts or
+    // typing by surprise.
     pub fn hide_typing(&self) -> bool {
-        self.private() && self.hide_typing
+        self.privacy_tricks && self.hide_typing
     }
     pub fn play_privately(&self) -> bool {
-        self.private() && self.play_privately
+        self.privacy_tricks && self.play_privately
     }
     pub fn no_read_receipts(&self) -> bool {
-        self.private() && self.disable_read_receipts
+        self.privacy_tricks && self.disable_read_receipts
     }
     pub fn invisible(&self) -> bool {
-        self.private() && self.hide_online
+        self.privacy_tricks && self.hide_online
     }
     pub fn restore_deleted(&self) -> bool {
-        self.private() && self.restore_deleted
+        self.privacy_tricks && self.restore_deleted
     }
     pub fn notify_online(&self) -> bool {
         self.customizations && self.notify_online
@@ -1156,6 +1163,21 @@ pub const WAWPLUS_URL: &str = "https://www.wawplus.com";
 #[cfg(test)]
 mod tests {
     use crate::i18n::Locale;
+
+    /// ZFPlus: the hidden-activity boxes act without Private Mode, and
+    /// their own master switch turns them off together.
+    #[test]
+    fn hidden_activity_works_without_private_mode() {
+        let mut settings = super::PlusSettings {
+            private_mode: false,
+            hide_typing: true,
+            disable_read_receipts: true,
+            ..Default::default()
+        };
+        assert!(settings.hide_typing() && settings.no_read_receipts());
+        settings.privacy_tricks = false;
+        assert!(!settings.hide_typing() && !settings.no_read_receipts());
+    }
 
     /// The blur's textures grow in steps and never shrink, so areas of many
     /// sizes, drawn many times a frame, reuse one allocation.

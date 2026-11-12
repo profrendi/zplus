@@ -771,7 +771,93 @@ fn spawn_account_kind_check(
                 log::debug!("could not tell whether this is a business account: {error}");
             }
         }
+        match client.mex().get_username().await {
+            Ok(own) => {
+                let username = own
+                    .and_then(|own| own.username)
+                    .filter(|name| !name.is_empty());
+                let _ = events.send(Event::Username(username));
+                waker.wake();
+            }
+            Err(error) => log::debug!("own username not read: {error}"),
+        }
     });
+}
+
+/// ZFPlus: the colour a WhatsApp list colour number shows as here, and back.
+fn list_color(index: Option<i32>) -> &'static str {
+    let colors = crate::ui::labels::PRESET_COLORS;
+    let index = usize::try_from(index.unwrap_or(0)).unwrap_or(0);
+    colors[index % colors.len()]
+}
+
+fn list_color_index(hex: &str) -> i32 {
+    crate::ui::labels::PRESET_COLORS
+        .iter()
+        .position(|color| color.eq_ignore_ascii_case(hex))
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(0)
+}
+
+/// ZFPlus: names (and colours) one of WhatsApp's lists, as a list people
+/// make, so the phone shows it among its lists.
+async fn send_list_edit(
+    client: &Client,
+    list: &str,
+    name: &str,
+    color_hex: &str,
+) -> Result<(), whatsapp_rust::AppStateError> {
+    use whatsapp_rust::waproto::whatsapp as wa;
+    let mut action = wa::sync_action_value::LabelEditAction::default();
+    action.name = Some(name.to_owned());
+    action.color = Some(list_color_index(color_hex));
+    action.deleted = Some(false);
+    action.r#type = Some(wa::sync_action_value::label_edit_action::ListType::CUSTOM);
+    let mut value = wa::SyncActionValue::default();
+    value.label_edit_action = Some(action).into();
+    value.timestamp = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0),
+    );
+    client
+        .send_app_state_action(&whatsapp_rust::schemas::LABEL_EDIT, &[list], &value)
+        .await
+}
+
+/// ZFPlus: WhatsApp's business categories matching `query`, as (id, name),
+/// from the same search WhatsApp Web's category picker asks.
+async fn search_business_categories(
+    client: &Client,
+    query: &str,
+) -> Result<Vec<(String, String)>, String> {
+    use whatsapp_rust::wacore::iq::mex_operations::biz_get_categories;
+    let mut params = biz_get_categories::QueryParams::default();
+    params.locale = Some("en_US".to_owned());
+    params.query = Some(query.to_owned());
+    let mut variables = biz_get_categories::Variables::default();
+    variables.query_params = Some(params);
+    let response = client
+        .mex()
+        .execute(whatsapp_rust::mex_operation!(biz_get_categories).request(variables))
+        .await
+        .map_err(|error| error.to_string())?;
+    let data = response.data.unwrap_or_default();
+    let found = data["whatsapp_catkit_typeahead_proxy"]["categories"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| {
+                    Some((
+                        item["id"].as_str()?.to_owned(),
+                        item["display_name"].as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(found)
 }
 
 /// ZFPlus: a business profile as the interface shows it.
@@ -837,7 +923,105 @@ fn business_info(
             .iter()
             .map(|category| category.name.clone())
             .collect(),
+        category_ids: profile
+            .categories
+            .iter()
+            .map(|category| category.id.clone())
+            .collect(),
         hours,
+        week: if config.is_empty() {
+            Vec::new()
+        } else {
+            days.iter()
+                .map(|(day, _)| {
+                    use crate::model::{DayHours, OpeningMode};
+                    let entries: Vec<_> = config
+                        .iter()
+                        .filter(|entry| entry.day_of_week == *day)
+                        .collect();
+                    if entries
+                        .iter()
+                        .any(|entry| entry.mode == BusinessHourMode::Open24H)
+                    {
+                        DayHours {
+                            mode: OpeningMode::AllDay,
+                            ranges: Vec::new(),
+                        }
+                    } else if entries
+                        .iter()
+                        .any(|entry| entry.mode == BusinessHourMode::AppointmentOnly)
+                    {
+                        DayHours {
+                            mode: OpeningMode::Appointment,
+                            ranges: Vec::new(),
+                        }
+                    } else {
+                        let ranges: Vec<(u32, u32)> = entries
+                            .iter()
+                            .filter_map(|entry| Some((entry.open_time?, entry.close_time?)))
+                            .collect();
+                        DayHours {
+                            mode: if ranges.is_empty() {
+                                OpeningMode::Closed
+                            } else {
+                                OpeningMode::Hours
+                            },
+                            ranges,
+                        }
+                    }
+                })
+                .collect()
+        },
+        timezone: profile.business_hours.timezone.clone(),
+    }
+}
+
+/// ZFPlus: a week as the profile mutation takes it: one entry per range,
+/// none for a closed day.
+fn business_hours_update(
+    week: &[crate::model::DayHours],
+    timezone: Option<String>,
+) -> whatsapp_rust::wacore::iq::business::BusinessHoursUpdate {
+    use crate::model::OpeningMode;
+    use whatsapp_rust::wacore::iq::business::{
+        BusinessHourMode, BusinessHoursConfig, BusinessHoursUpdate, DayOfWeek,
+    };
+    let days = [
+        DayOfWeek::Sunday,
+        DayOfWeek::Monday,
+        DayOfWeek::Tuesday,
+        DayOfWeek::Wednesday,
+        DayOfWeek::Thursday,
+        DayOfWeek::Friday,
+        DayOfWeek::Saturday,
+    ];
+    let mut config = Vec::new();
+    for (day, hours) in days.into_iter().zip(week) {
+        match hours.mode {
+            OpeningMode::Closed => {}
+            OpeningMode::AllDay => {
+                config.push(BusinessHoursConfig::new(day, BusinessHourMode::Open24H));
+            }
+            OpeningMode::Appointment => config.push(BusinessHoursConfig::new(
+                day,
+                BusinessHourMode::AppointmentOnly,
+            )),
+            OpeningMode::Hours => {
+                for (open, close) in &hours.ranges {
+                    config.push(BusinessHoursConfig::with_hours(
+                        day.clone(),
+                        BusinessHourMode::SpecificHours,
+                        (*open).min(24 * 60 - 1),
+                        (*close).min(24 * 60 - 1),
+                    ));
+                }
+            }
+        }
+    }
+    BusinessHoursUpdate {
+        timezone,
+        config,
+        ..Default::default()
     }
 }
 
@@ -1312,6 +1496,7 @@ pub async fn run(
         online_wanted: false,
         online_changed: Instant::now(),
         online_sent: None,
+        lists_pushed: false,
         presence_in_flight: false,
         presence_refresh_pending: false,
         presence_generation: 0,
@@ -1877,6 +2062,8 @@ struct Worker {
     online_changed: Instant,
     /// The presence last confirmed on this connection.
     online_sent: Option<bool>,
+    /// ZFPlus: whether the lists made here were sent to WhatsApp this run.
+    lists_pushed: bool,
     /// A presence request currently awaiting its result.
     presence_in_flight: bool,
     /// Push-name sync can trigger a library-owned availability announcement.
@@ -2573,14 +2760,145 @@ impl Worker {
 
     /// Creates a label. The app refuses a full set or a taken name first,
     /// in the user's language; the archive checks again and says nothing.
+    /// ZFPlus: while connected it becomes one of WhatsApp's lists at once,
+    /// so the phone and WhatsApp Web show it too.
     fn create_label(&mut self, name: String, color_hex: String) {
         match self
             .archive
             .create_label(&name, &color_hex, crate::util::now())
         {
-            Ok(Some(_)) => self.emit_labels(),
+            Ok(Some(label)) => {
+                if self.client.is_some() {
+                    let synced = self.free_list_id(label.created_at);
+                    if self.archive.adopt_label(&label.id, &synced).is_ok() {
+                        self.send_list(&synced, Some((label.name, label.color_hex)));
+                    }
+                }
+                self.emit_labels();
+            }
             Ok(None) => log::info!("label not created: full, empty, or taken"),
             Err(error) => log::warn!("could not create label: {error}"),
+        }
+    }
+
+    /// ZFPlus: a `wa:` id no list has, from a time: WhatsApp's own lists
+    /// count up from 1, so a time never meets one of them.
+    fn free_list_id(&self, at: i64) -> String {
+        let taken: std::collections::HashSet<String> = self
+            .archive
+            .labels()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|label| label.id)
+            .collect();
+        let mut number = at.clamp(1_000_000, i64::from(i32::MAX));
+        while taken.contains(&format!("wa:{number}")) {
+            number += 1;
+        }
+        format!("wa:{number}")
+    }
+
+    /// ZFPlus: sends a list to WhatsApp: its name and colour, or, with
+    /// `None`, that it is deleted.
+    fn send_list(&self, id: &str, edit: Option<(String, String)>) {
+        let (Some(client), Some(list)) = (self.client.clone(), id.strip_prefix("wa:")) else {
+            return;
+        };
+        let list = list.to_owned();
+        tokio::spawn(async move {
+            let result = match edit {
+                Some((name, color)) => send_list_edit(&client, &list, &name, &color).await,
+                None => client.labels().delete_label(&list).await,
+            };
+            if let Err(error) = result {
+                log::info!("a list did not reach WhatsApp: {error}");
+            }
+        });
+    }
+
+    /// ZFPlus: a list changed on the phone or on WhatsApp Web. Only lists
+    /// people make (and Business labels) are kept; WhatsApp's own filters,
+    /// such as Unread or Groups, are chips here already.
+    fn list_edited(&mut self, update: &wa_events::LabelEditUpdate) {
+        use whatsapp_rust::waproto::whatsapp::sync_action_value::label_edit_action::ListType;
+        let action = &update.action;
+        let id = format!("wa:{}", update.label_id);
+        let kept = matches!(
+            action.r#type,
+            None | Some(ListType::NONE | ListType::PREDEFINED | ListType::CUSTOM | ListType::LEAD)
+        );
+        if action.deleted == Some(true) || !kept || action.is_active == Some(false) {
+            match self.archive.delete_label(&id) {
+                Ok(true) => {
+                    self.emit_labels();
+                    self.emit_chats();
+                }
+                Ok(false) => {}
+                Err(error) => log::warn!("could not drop a list: {error}"),
+            }
+            return;
+        }
+        let order = action
+            .order_index
+            .map(i64::from)
+            .or_else(|| update.label_id.parse().ok())
+            .unwrap_or(0);
+        if let Err(error) =
+            self.archive
+                .sync_label(&id, action.name.as_deref(), list_color(action.color), order)
+        {
+            log::warn!("could not file a list: {error}");
+            return;
+        }
+        self.emit_labels();
+    }
+
+    /// ZFPlus: sends the lists made here before they were synced, with
+    /// their chats, so the phone and WhatsApp Web have them too. Once each
+    /// is in, it is filed under its WhatsApp id.
+    fn push_local_lists(&mut self) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let local: Vec<_> = self
+            .archive
+            .labels()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|label| !label.id.starts_with("wa:"))
+            .collect();
+        let mut claimed = std::collections::HashSet::new();
+        for label in local {
+            let mut synced = self.free_list_id(label.created_at);
+            while !claimed.insert(synced.clone()) {
+                let number: i64 = synced[3..].parse().unwrap_or(1_000_000);
+                synced = format!("wa:{}", number + 1);
+            }
+            let chats: Vec<Jid> = self
+                .archive
+                .label_chats(&label.id)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|chat| Self::jid_of(chat))
+                .collect();
+            let client = client.clone();
+            let commands = self.commands.clone();
+            tokio::spawn(async move {
+                let list = &synced[3..];
+                if let Err(error) =
+                    send_list_edit(&client, list, &label.name, &label.color_hex).await
+                {
+                    log::info!("a list made here did not reach WhatsApp yet: {error}");
+                    return;
+                }
+                for chat in &chats {
+                    let _ = client.labels().add_chat_label(list, chat).await;
+                }
+                let _ = commands.send(Command::ListAdopted {
+                    local: label.id,
+                    synced,
+                });
+            });
         }
     }
 
@@ -5033,8 +5351,27 @@ impl Worker {
                 self.emit(self.me_event());
                 self.push_name_synced();
             }
-            E::OfflineSyncCompleted(_) => self.emit_chats(),
+            E::OfflineSyncCompleted(_) => {
+                self.emit_chats();
+                // ZFPlus: lists made here go to WhatsApp once its own
+                // lists have arrived, so a name is merged, not doubled.
+                if !self.lists_pushed {
+                    self.lists_pushed = true;
+                    self.push_local_lists();
+                }
+            }
             E::ServerAck(ack) => self.server_ack(ack),
+            E::LabelEditUpdate(update) => self.list_edited(update),
+            E::LabelAssociationUpdate(update) => {
+                let chat = self.canonical(&update.chat_jid);
+                let id = format!("wa:{}", update.label_id);
+                let on = update.action.labeled.unwrap_or(false);
+                match self.archive.set_chat_label(&chat, &id, on) {
+                    Ok(true) => self.emit_chat(&chat),
+                    Ok(false) => {}
+                    Err(error) => log::warn!("could not file a chat's list: {error}"),
+                }
+            }
             _ => {}
         }
     }
@@ -7787,11 +8124,20 @@ impl Worker {
                 let events = self.events.clone();
                 let waker = self.waker.clone();
                 tokio::spawn(async move {
+                    let timezone = edit
+                        .timezone
+                        .clone()
+                        .or_else(|| jiff::tz::TimeZone::system().iana_name().map(str::to_owned));
                     let update = whatsapp_rust::wacore::iq::business::BusinessProfileUpdate {
                         description: Some(edit.description),
                         address: Some(edit.address),
                         email: Some(edit.email),
                         websites: Some(edit.websites),
+                        categories: edit.categories,
+                        business_hours: edit
+                            .week
+                            .as_deref()
+                            .map(|week| business_hours_update(week, timezone)),
                         ..Default::default()
                     };
                     match client.business().update_profile(&update).await {
@@ -7806,6 +8152,57 @@ impl Worker {
                             let _ = events.send(Event::BusinessSaveFailed(error.to_string()));
                         }
                     }
+                    waker.wake();
+                });
+            }
+            Command::RefreshProfile => {
+                let me = self.me_pn.clone().and_then(|pn| Self::jid_of(&pn));
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                if me.is_some() {
+                    self.refresh_avatar(self.me(), false);
+                }
+                spawn_account_kind_check(
+                    client.clone(),
+                    me.clone(),
+                    self.events.clone(),
+                    self.waker.clone(),
+                );
+                let commands = self.commands.clone();
+                tokio::spawn(async move {
+                    let Some(me) = me else {
+                        return;
+                    };
+                    if let Ok(info) = client
+                        .contacts()
+                        .get_user_info(std::slice::from_ref(&me))
+                        .await
+                    {
+                        let about = info
+                            .get(&me)
+                            .and_then(|info| info.status.clone())
+                            .filter(|about| !about.is_empty());
+                        let _ = commands.send(Command::MeInfo { about });
+                    }
+                });
+            }
+            Command::SearchBusinessCategories(query) => {
+                let Some(client) = self.client.clone() else {
+                    self.emit(Event::BusinessCategories {
+                        query,
+                        results: Err("Not connected to WhatsApp".to_owned()),
+                    });
+                    return;
+                };
+                let events = self.events.clone();
+                let waker = self.waker.clone();
+                tokio::spawn(async move {
+                    let results = search_business_categories(&client, &query).await;
+                    if let Err(error) = &results {
+                        log::info!("business categories not found: {error}");
+                    }
+                    let _ = events.send(Event::BusinessCategories { query, results });
                     waker.wake();
                 });
             }
@@ -9366,23 +9763,74 @@ impl Worker {
                 });
             }
             Command::CreateLabel { name, color_hex } => self.create_label(name, color_hex),
+            Command::ListAdopted { local, synced } => {
+                match self.archive.adopt_label(&local, &synced) {
+                    Ok(()) => {
+                        self.emit_labels();
+                        self.emit_chats();
+                    }
+                    Err(error) => log::warn!("could not file a synced list: {error}"),
+                }
+            }
             Command::UpdateLabel {
                 id,
                 name,
                 color_hex,
             } => match self.archive.update_label(&id, &name, &color_hex) {
-                Ok(true) => self.emit_labels(),
+                Ok(true) => {
+                    self.send_list(&id, Some((name, color_hex)));
+                    self.emit_labels();
+                }
                 Ok(false) => log::info!("label not updated: gone, empty, or taken"),
                 Err(error) => log::warn!("could not update label: {error}"),
             },
             Command::DeleteLabel(id) => match self.archive.delete_label(&id) {
-                Ok(true) => self.emit_labels(),
+                Ok(true) => {
+                    self.send_list(&id, None);
+                    self.emit_labels();
+                }
                 Ok(false) => {}
                 Err(error) => log::warn!("could not delete label: {error}"),
             },
             Command::SetChatLabels { chat, labels } => {
+                let before = self.archive.chat_labels(&chat).unwrap_or_default();
                 if let Err(error) = self.archive.set_chat_labels(&chat, &labels) {
                     log::warn!("could not assign labels: {error}");
+                }
+                // ZFPlus: WhatsApp's lists change on the phone too.
+                if let (Some(client), Some(jid)) = (self.client.clone(), Self::jid_of(&chat)) {
+                    let added: Vec<String> = labels
+                        .iter()
+                        .filter(|id| !before.contains(id))
+                        .filter_map(|id| id.strip_prefix("wa:").map(str::to_owned))
+                        .collect();
+                    let removed: Vec<String> = before
+                        .iter()
+                        .filter(|id| !labels.contains(id))
+                        .filter_map(|id| id.strip_prefix("wa:").map(str::to_owned))
+                        .collect();
+                    if !added.is_empty() || !removed.is_empty() {
+                        tokio::spawn(async move {
+                            for list in added {
+                                if let Err(error) =
+                                    client.labels().add_chat_label(&list, &jid).await
+                                {
+                                    log::info!(
+                                        "a chat was not added to a list on WhatsApp: {error}"
+                                    );
+                                }
+                            }
+                            for list in removed {
+                                if let Err(error) =
+                                    client.labels().remove_chat_label(&list, &jid).await
+                                {
+                                    log::info!(
+                                        "a chat was not taken off a list on WhatsApp: {error}"
+                                    );
+                                }
+                            }
+                        });
+                    }
                 }
                 self.emit_chat(&chat);
             }
@@ -20985,6 +21433,7 @@ mod receipt_tests {
             online_wanted: false,
             online_changed: Instant::now(),
             online_sent: None,
+            lists_pushed: false,
             presence_in_flight: false,
             presence_refresh_pending: false,
             presence_generation: 0,

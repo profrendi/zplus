@@ -18,6 +18,10 @@ use crate::model::{
 use crate::paths::{AccountDirs, AppDirs};
 use crate::settings::AccountSettings;
 
+/// ZFPlus: a business category search and what WhatsApp found, as
+/// (id, name), or why not.
+pub type CategorySearch = (String, Result<Vec<(String, String)>, String>);
+
 /// One WhatsApp account's runtime state.
 pub struct Account {
     pub id: AccountId,
@@ -150,6 +154,10 @@ pub struct Account {
     pub registered_asked: std::collections::HashSet<String>,
     /// ZFPlus: this account's own business profile, once WhatsApp sent it.
     pub business_info: Option<crate::model::BusinessInfo>,
+    /// ZFPlus: this account's WhatsApp username, without the `@`.
+    pub username: Option<String>,
+    /// ZFPlus: the last business category search and what it found.
+    pub category_search: Option<CategorySearch>,
     /// The call entries the Calls page lists, newest first, once read.
     pub call_log: Vec<Message>,
     pub call_log_loaded: bool,
@@ -272,6 +280,8 @@ impl Account {
             registered: HashMap::new(),
             registered_asked: std::collections::HashSet::new(),
             business_info: None,
+            username: None,
+            category_search: None,
             call_log: Vec::new(),
             call_log_loaded: false,
             picked_call: None,
