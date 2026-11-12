@@ -18188,6 +18188,43 @@ mod tests {
         assert!(said[0].starts_with(&muted), "{said:?}");
     }
 
+    /// ZFPlus: each account in the switcher has a bin that asks before
+    /// removing that account, without switching to it.
+    #[test]
+    fn the_switcher_removes_an_account_after_asking() {
+        let mut app = app();
+        apply_flags(&mut app, Some("accounts-muted"));
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        app.attach(&ctx);
+        app.account_menu = true;
+        for _ in 0..3 {
+            render(&mut app, &ctx);
+        }
+        let nodes = accessible_nodes(&mut app, &ctx, Vec::new());
+        let bins: Vec<_> = nodes
+            .iter()
+            .filter(|(name, role, _)| {
+                name == "Remove this account" && *role == egui::accesskit::Role::Button
+            })
+            .map(|(_, _, pos)| *pos)
+            .collect();
+        assert_eq!(bins.len(), 2, "one bin per account: {nodes:?}");
+        let second = app.accounts[1].id.clone();
+        // The rows go in account order, so the lower bin is the second's.
+        let lower = bins
+            .iter()
+            .copied()
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .unwrap();
+        press_at(&mut app, &ctx, lower);
+        assert_eq!(app.active, 0, "asking does not switch accounts");
+        assert_eq!(
+            app.dialog,
+            Some(crate::model::Dialog::ConfirmRemoveAccount(second))
+        );
+    }
+
     #[test]
     fn account_privacy_fetch_fills_the_rows() {
         let mut app = app();

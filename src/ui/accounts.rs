@@ -152,6 +152,12 @@ fn menu(app: &mut App, button: &egui::Response) {
                         entry.id.clone(),
                         entry.muted,
                     )),
+                    Some(RowClick::Remove) => {
+                        app.actions.push(Action::ShowDialog(
+                            crate::model::Dialog::ConfirmRemoveAccount(entry.id.clone()),
+                        ));
+                        ui.close();
+                    }
                     Some(RowClick::Row) => {
                         if !entry.current {
                             app.actions.push(Action::SwitchAccount(entry.id.clone()));
@@ -180,6 +186,8 @@ enum RowClick {
     Row,
     /// Its bell, which turns the account's notifications off or on.
     Bell,
+    /// ZFPlus: its bin, which asks to remove the account from this computer.
+    Remove,
 }
 
 /// One account in the switcher: its picture, name and number, its unread
@@ -196,6 +204,16 @@ fn account_row(app: &App, ui: &mut egui::Ui, entry: &Entry) -> Option<RowClick> 
         Vec2::splat(BELL),
     );
     let bell = ui.interact(bell_rect, response.id.with("bell"), Sense::click());
+    // ZFPlus: the bin sits left of the bell, and shows the same way it does.
+    let remove_rect = bell_rect.translate(vec2(-BELL - 2.0, 0.0));
+    let remove = ui.interact(remove_rect, response.id.with("remove"), Sense::click());
+    let remove_label = gettext(app.locale, "Remove this account").into_owned();
+    #[cfg(any(test, feature = "demo"))]
+    super::focus::name_button(ui.ctx(), &remove_label, remove.id);
+    theme::reveal_focus(&remove);
+    remove.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &remove_label)
+    });
     #[cfg(any(test, feature = "demo"))]
     super::focus::name_button(ui.ctx(), &bell_label(app, entry), bell.id);
     theme::reveal_focus(&bell);
@@ -241,7 +259,23 @@ fn account_row(app: &App, ui: &mut egui::Ui, entry: &Entry) -> Option<RowClick> 
             },
             entry.picture.as_deref(),
         );
-        if entry.muted || ui.rect_contains_pointer(rect) || bell.has_focus() {
+        let pointed = ui.rect_contains_pointer(rect);
+        if pointed || remove.has_focus() {
+            if remove.hovered() {
+                ui.painter()
+                    .circle_filled(remove_rect.center(), BELL / 2.0, palette.surface_hover);
+            }
+            let color = if remove.hovered() {
+                palette.danger
+            } else {
+                palette.secondary
+            };
+            Icon::Trash.image(color, 15.0).paint_at(
+                ui,
+                Rect::from_center_size(remove_rect.center(), Vec2::splat(15.0)),
+            );
+        }
+        if entry.muted || pointed || bell.has_focus() {
             if bell.hovered() {
                 ui.painter()
                     .circle_filled(bell_rect.center(), BELL / 2.0, palette.surface_hover);
@@ -256,8 +290,9 @@ fn account_row(app: &App, ui: &mut egui::Ui, entry: &Entry) -> Option<RowClick> 
                 Rect::from_center_size(bell_rect.center(), Vec2::splat(16.0)),
             );
         }
-        // Room on the right for the bell, then the check or the unread count.
-        let right = bell_rect.left() - 4.0;
+        // Room on the right for the bin and the bell, then the check or the
+        // unread count.
+        let right = remove_rect.left() - 4.0;
         let mut text_right = right;
         if entry.current {
             let check =
@@ -301,6 +336,10 @@ fn account_row(app: &App, ui: &mut egui::Ui, entry: &Entry) -> Option<RowClick> 
             ui.painter().galley(pos2(x, y), detail, palette.secondary);
         }
     }
+    let remove_clicked = remove.clicked();
+    remove
+        .on_hover_text(remove_label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
     let bell_clicked = bell.clicked();
     bell.on_hover_text(bell_label(app, entry))
         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -308,7 +347,9 @@ fn account_row(app: &App, ui: &mut egui::Ui, entry: &Entry) -> Option<RowClick> 
     if !entry.current {
         response.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
-    if bell_clicked {
+    if remove_clicked {
+        Some(RowClick::Remove)
+    } else if bell_clicked {
         Some(RowClick::Bell)
     } else if clicked {
         Some(RowClick::Row)
