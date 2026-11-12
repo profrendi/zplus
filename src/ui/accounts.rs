@@ -175,7 +175,8 @@ fn menu(app: &mut App, button: &egui::Response) {
                 Some(Icon::User),
                 &gettext(app.locale, "Profile"),
             ) {
-                app.actions.push(Action::Open(crate::model::Page::Settings));
+                app.actions
+                    .push(Action::ShowDialog(crate::model::Dialog::Profile));
                 ui.close();
             }
             if let Some(phone) = app

@@ -66,6 +66,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
                 Dialog::CreatePoll(_) => 420.0,
                 Dialog::SendLocation(_) | Dialog::ShareContact(_) => 420.0,
+                Dialog::Profile => {
+                    640.0_f32.min((ui.ctx().content_rect().width() - 48.0).max(280.0))
+                }
                 Dialog::Camera(_) => {
                     560.0_f32.min((ui.ctx().content_rect().width() - 48.0).max(240.0))
                 }
@@ -84,6 +87,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::SendLocation(chat) => super::locations::send(app, ui, &chat),
                 Dialog::ShareContact(chat) => super::locations::share_contact(app, ui, &chat),
                 Dialog::Camera(chat) => super::locations::camera(app, ui, &chat),
+                Dialog::Profile => super::profile::show(app, ui),
                 Dialog::PollResults { chat, message } => {
                     super::polls::results(app, ui, &chat, &message)
                 }

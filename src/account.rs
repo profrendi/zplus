@@ -148,6 +148,8 @@ pub struct Account {
     /// which have been asked about, so each is asked once.
     pub registered: HashMap<String, bool>,
     pub registered_asked: std::collections::HashSet<String>,
+    /// ZFPlus: this account's own business profile, once WhatsApp sent it.
+    pub business_info: Option<crate::model::BusinessInfo>,
     /// The call entries the Calls page lists, newest first, once read.
     pub call_log: Vec<Message>,
     pub call_log_loaded: bool,
@@ -269,6 +271,7 @@ impl Account {
             quick_replies: Vec::new(),
             registered: HashMap::new(),
             registered_asked: std::collections::HashSet::new(),
+            business_info: None,
             call_log: Vec::new(),
             call_log_loaded: false,
             picked_call: None,

@@ -4875,6 +4875,10 @@ impl App {
             Event::AccountKind { business } => self.business = Some(business),
             Event::QuickReplies(replies) => self.quick_replies = replies,
             Event::Registered(answers) => self.registered.extend(answers),
+            Event::BusinessInfo(info) => self.business_info = info,
+            Event::BusinessSaveFailed(error) => {
+                self.toast_error(format!("The business profile was not saved: {error}"));
+            }
             Event::Receipts(receipts) => {
                 // A late answer for a dialog that has since closed is stale.
                 if live
@@ -8049,6 +8053,7 @@ impl App {
                 }
                 self.dialog = None;
             }
+            Action::UpdateBusiness(edit) => self.backend.send(Command::UpdateBusiness(edit)),
             Action::CheckRegistered(numbers) => {
                 let asked: Vec<String> = numbers
                     .into_iter()

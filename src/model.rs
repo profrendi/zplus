@@ -3402,6 +3402,8 @@ pub enum Dialog {
     ShareContact(ChatId),
     /// ZFPlus: a photo from the computer's camera, for the attachments.
     Camera(ChatId),
+    /// ZFPlus: our own profile, as WhatsApp Web's Profile page shows it.
+    Profile,
     PollResults {
         chat: ChatId,
         message: String,
@@ -3574,6 +3576,28 @@ pub fn forward_limit(frequently_forwarded: bool) -> usize {
 }
 
 /// ZFPlus: a WhatsApp Business quick reply, synced from the phone: typed
+/// ZFPlus: a WhatsApp Business account's own profile, as WhatsApp keeps it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BusinessInfo {
+    pub description: String,
+    pub address: Option<String>,
+    pub email: Option<String>,
+    pub websites: Vec<String>,
+    pub categories: Vec<String>,
+    /// Each day from Sunday, and how it opens: "Closed", "Open 24 hours",
+    /// "By appointment" or "07:30 - 16:30".
+    pub hours: Vec<(String, String)>,
+}
+
+/// ZFPlus: what can be changed of a business profile here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BusinessEdit {
+    pub description: String,
+    pub address: String,
+    pub email: String,
+    pub websites: Vec<String>,
+}
+
 /// as `/shortcut`, it stands for the message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuickReply {
@@ -3693,6 +3717,8 @@ pub enum Action {
     },
     /// ZFPlus: asks which of these phone numbers have WhatsApp.
     CheckRegistered(Vec<String>),
+    /// ZFPlus: saves this business account's profile.
+    UpdateBusiness(BusinessEdit),
     ReplyInteractive {
         chat: ChatId,
         message: String,

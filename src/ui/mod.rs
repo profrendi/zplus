@@ -28,6 +28,7 @@ pub mod picker;
 pub mod plus_about;
 pub mod plus_new_chat;
 pub mod polls;
+pub mod profile;
 pub mod rail;
 pub mod settings;
 pub mod update;

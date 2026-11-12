@@ -2188,6 +2188,18 @@ fn account(app: &mut App, ui: &mut egui::Ui) {
             {
                 app.actions.push(Action::AddAccount);
             }
+            // ZFPlus: the whole profile, as WhatsApp Web shows it.
+            if theme::soft_button(
+                ui,
+                &palette,
+                Some(Icon::User),
+                &crate::i18n::gettext(app.locale, "Profile"),
+                false,
+            )
+            .clicked()
+            {
+                app.actions.push(Action::ShowDialog(Dialog::Profile));
+            }
         });
     });
     if let Some((draft_name, draft_about)) = &draft {

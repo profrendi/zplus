@@ -36,6 +36,7 @@ pub(crate) mod sticker_import;
 mod sticker_maker;
 pub(crate) mod sticker_store;
 mod worker;
+pub(crate) use worker::device_name;
 pub use worker::{PINNED_CHATS, PLUS_PINNED_CHATS, host_owned_presence};
 
 /// Result of a deletion request, without protocol errors crossing the bridge.
@@ -234,6 +235,8 @@ pub enum Command {
     CheckRegistered {
         numbers: Vec<String>,
     },
+    /// ZFPlus: changes this business account's profile, then reads it back.
+    UpdateBusiness(crate::model::BusinessEdit),
     ReplyInteractive {
         chat: ChatId,
         message: String,
@@ -1253,6 +1256,11 @@ pub enum Event {
     QuickReplies(Vec<crate::model::QuickReply>),
     /// ZFPlus: which phone numbers have WhatsApp, as WhatsApp answered.
     Registered(Vec<(String, bool)>),
+    /// ZFPlus: this account's own business profile; `None` for a personal
+    /// account.
+    BusinessInfo(Option<crate::model::BusinessInfo>),
+    /// ZFPlus: a change to the business profile was refused.
+    BusinessSaveFailed(String),
     /// Linked account identity.
     Me {
         id: String,

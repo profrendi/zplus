@@ -764,6 +764,7 @@ fn spawn_account_kind_check(
                 let _ = events.send(Event::AccountKind {
                     business: profile.is_some(),
                 });
+                let _ = events.send(Event::BusinessInfo(profile.as_ref().map(business_info)));
                 waker.wake();
             }
             Err(error) => {
@@ -771,6 +772,73 @@ fn spawn_account_kind_check(
             }
         }
     });
+}
+
+/// ZFPlus: a business profile as the interface shows it.
+fn business_info(
+    profile: &whatsapp_rust::wacore::iq::business::BusinessProfile,
+) -> crate::model::BusinessInfo {
+    use whatsapp_rust::wacore::iq::business::{BusinessHourMode, DayOfWeek};
+    let days = [
+        (DayOfWeek::Sunday, "Sunday"),
+        (DayOfWeek::Monday, "Monday"),
+        (DayOfWeek::Tuesday, "Tuesday"),
+        (DayOfWeek::Wednesday, "Wednesday"),
+        (DayOfWeek::Thursday, "Thursday"),
+        (DayOfWeek::Friday, "Friday"),
+        (DayOfWeek::Saturday, "Saturday"),
+    ];
+    let config = profile
+        .business_hours
+        .business_config
+        .clone()
+        .unwrap_or_default();
+    let clock = |minutes: u32| format!("{:02}:{:02}", minutes / 60 % 24, minutes % 60);
+    let hours = if config.is_empty() {
+        Vec::new()
+    } else {
+        days.iter()
+            .map(|(day, name)| {
+                let ranges: Vec<String> = config
+                    .iter()
+                    .filter(|entry| entry.day_of_week == *day)
+                    .map(
+                        |entry| match (&entry.mode, entry.open_time, entry.close_time) {
+                            (BusinessHourMode::Open24H, _, _) => "Open 24 hours".to_owned(),
+                            (BusinessHourMode::AppointmentOnly, _, _) => {
+                                "By appointment".to_owned()
+                            }
+                            (_, Some(open), Some(close)) => {
+                                format!("{} - {}", clock(open), clock(close))
+                            }
+                            _ => "Open".to_owned(),
+                        },
+                    )
+                    .collect();
+                let shown = if ranges.is_empty() {
+                    "Closed".to_owned()
+                } else {
+                    ranges.join(", ")
+                };
+                ((*name).to_owned(), shown)
+            })
+            .collect()
+    };
+    crate::model::BusinessInfo {
+        description: profile.description.clone(),
+        address: profile
+            .address
+            .clone()
+            .filter(|address| !address.is_empty()),
+        email: profile.email.clone().filter(|email| !email.is_empty()),
+        websites: profile.website.clone(),
+        categories: profile
+            .categories
+            .iter()
+            .map(|category| category.name.clone())
+            .collect(),
+        hours,
+    }
 }
 
 fn account_allows_receipts(
@@ -902,7 +970,7 @@ impl Downloadable for PhoneSticker {
 
 /// The device name shown in WhatsApp's Linked Devices list, with the
 /// hostname appended so multiple machines can be told apart (#210).
-fn device_name() -> String {
+pub(crate) fn device_name() -> String {
     let host = crate::util::hostname();
     if host.is_empty() {
         crate::channel::NAME.to_owned()
@@ -7707,6 +7775,39 @@ impl Worker {
             } => self.send_location(chat, latitude, longitude, quoting),
             Command::SendContacts { chat, people } => {
                 self.send_contacts(chat, people);
+            }
+            Command::UpdateBusiness(edit) => {
+                let me = self.me_pn.clone().and_then(|pn| Self::jid_of(&pn));
+                let (Some(client), Some(me)) = (self.client.clone(), me) else {
+                    self.emit(Event::BusinessSaveFailed(
+                        "Not connected to WhatsApp".to_owned(),
+                    ));
+                    return;
+                };
+                let events = self.events.clone();
+                let waker = self.waker.clone();
+                tokio::spawn(async move {
+                    let update = whatsapp_rust::wacore::iq::business::BusinessProfileUpdate {
+                        description: Some(edit.description),
+                        address: Some(edit.address),
+                        email: Some(edit.email),
+                        websites: Some(edit.websites),
+                        ..Default::default()
+                    };
+                    match client.business().update_profile(&update).await {
+                        Ok(()) => {
+                            if let Ok(profile) = client.get_business_profile(&me).await {
+                                let _ = events
+                                    .send(Event::BusinessInfo(profile.as_ref().map(business_info)));
+                            }
+                        }
+                        Err(error) => {
+                            log::info!("the business profile was not saved: {error}");
+                            let _ = events.send(Event::BusinessSaveFailed(error.to_string()));
+                        }
+                    }
+                    waker.wake();
+                });
             }
             Command::CheckRegistered { numbers } => {
                 let Some(client) = self.client.clone() else {

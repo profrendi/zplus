@@ -4009,6 +4009,38 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                     app.picture_edit = Some(edit);
                 }
             }
+            // ZFPlus: our own profile page, as a business account.
+            "profile" => {
+                app.account_mut().business = Some(true);
+                app.account_mut().business_info = Some(crate::model::BusinessInfo {
+                    description: "Bakery and coffee, fresh every morning".into(),
+                    address: Some("Jl. Braga 12, Bandung".into()),
+                    email: Some("hello@example.com".into()),
+                    websites: vec!["https://example.com".into()],
+                    categories: vec!["Bakery".into()],
+                    hours: [
+                        "Sunday",
+                        "Monday",
+                        "Tuesday",
+                        "Wednesday",
+                        "Thursday",
+                        "Friday",
+                        "Saturday",
+                    ]
+                    .iter()
+                    .enumerate()
+                    .map(|(day, name)| {
+                        let open = if day == 0 || day == 6 {
+                            "Closed"
+                        } else {
+                            "07:30 - 16:30"
+                        };
+                        ((*name).to_owned(), open.to_owned())
+                    })
+                    .collect(),
+                });
+                app.dialog = Some(crate::model::Dialog::Profile);
+            }
             "crop-stamps" => {
                 if let Some(edit) = app.picture_edit.as_mut() {
                     edit.tool = crate::model::MarkTool::Stamp;
