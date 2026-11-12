@@ -500,10 +500,18 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
     title(ui, app, &crate::i18n::gettext(app.locale, "New chat"));
     let width = ui.available_width();
     let search_hint = crate::i18n::gettext(app.locale, "Search contacts");
+    let field = egui::Id::new("new-chat-search");
+    // Enter opens the first match the list highlights. It is taken before
+    // the field reads the key, so the field does not lose focus first. The
+    // matches are worked out after the field, so they include this frame's
+    // typing.
+    let open_first = !app.new_chat_search.trim().is_empty()
+        && ui.memory(|memory| memory.has_focus(field))
+        && ui.input_mut(|input| super::keys::take_plain(input, egui::Key::Enter));
     let search = super::widgets::search_field(
         ui,
         &palette,
-        egui::Id::new("new-chat-search"),
+        field,
         &mut app.new_chat_search,
         &search_hint,
         width,
@@ -512,10 +520,38 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
         search.request_focus();
     }
     let needle = crate::util::search_key(app.new_chat_search.trim());
+    // ZFPlus: numbers WhatsApp has not been asked about are asked now, so a
+    // contact without WhatsApp drops out.
+    ask_registered(app, &contact_choices(app, &needle));
     let contacts = contact_choices(app, &needle);
+    let offer_self = app.offers_self(&needle);
+    if let Some(contact) = contacts
+        .first()
+        .filter(|_| open_first && !needle.is_empty())
+    {
+        let name = app.display_name(&contact.id);
+        app.actions.push(Action::StartChat {
+            id: contact.id.clone(),
+            name,
+            dismiss_dialog: true,
+        });
+    }
+    // The list is as tall as its rows, up to the space the dialog has, so a
+    // search with few matches gives a short list and many give a full one.
+    // Its height comes from this frame's rows, not last frame's size.
+    let listed = if contacts.is_empty() && !offer_self {
+        1
+    } else {
+        contacts.len() + usize::from(offer_self)
+    };
+    let rows = 2 + listed;
+    let spacing = ui.spacing().item_spacing.y;
+    let content_height = rows as f32 * theme::ROW_HEIGHT + (rows - 1) as f32 * spacing;
+    let room = (ui.ctx().content_rect().height() - 280.0).clamp(100.0, 420.0);
+    let list_height = content_height.min(room);
     egui::ScrollArea::vertical()
         .id_salt("new-chat-contacts")
-        .max_height((ui.ctx().content_rect().height() - 280.0).clamp(100.0, 420.0))
+        .max_height(list_height)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             // New group and Add contact head the list, then "Message
@@ -528,11 +564,13 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
             if super::chats::action_row(app, ui, Icon::Plus, &add_contact).clicked() {
                 app.actions.push(Action::ShowDialog(Dialog::NewContact));
             }
-            let offer_self = app.offers_self(&needle);
             if offer_self {
                 super::chats::self_row(app, ui);
             }
             if contacts.is_empty() && !offer_self {
+                // No row is drawn to forget the one scrolled into view last.
+                ui.ctx()
+                    .data_mut(|data| data.remove::<String>(super::chats::revealed_row_id()));
                 theme::text(
                     ui,
                     crate::i18n::gettext(app.locale, "No matching contacts"),
@@ -540,15 +578,13 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
                     palette.secondary,
                 );
             }
-            for contact in contacts.iter() {
-                lazy_row(ui, |ui| {
-                    ui.push_id(&contact.id, |ui| {
-                        super::chats::contact_row(app, ui, contact)
-                    });
+            for (index, contact) in contacts.into_iter().enumerate() {
+                let selected = index == 0 && !needle.is_empty();
+                ui.push_id(&contact.id, |ui| {
+                    super::chats::contact_row(app, ui, &contact, selected)
                 });
             }
         });
-    ask_registered(app, &contacts);
 }
 
 /// The people New chat and New call offer, by name: the contacts and the
@@ -559,10 +595,13 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
 /// Thousands of contacts made building this every frame hang the dialog, so
 /// it is kept until the contacts, the chats or the search change, and at
 /// most two seconds (a renamed contact shows then).
-pub(super) fn contact_choices(app: &App, needle: &str) -> std::rc::Rc<Vec<crate::model::Contact>> {
+pub(super) fn contact_choices(app: &App, needle: &str) -> Choices {
     type Key = (String, usize, usize, usize, Option<String>);
-    type Choices = std::rc::Rc<Vec<crate::model::Contact>>;
-    type Cached = Option<(Key, std::time::Instant, Choices)>;
+    type Cached = Option<(
+        Key,
+        std::time::Instant,
+        std::rc::Rc<Vec<crate::model::Contact>>,
+    )>;
     thread_local! {
         static CACHE: std::cell::RefCell<Cached> = const { std::cell::RefCell::new(None) };
     }
@@ -580,13 +619,32 @@ pub(super) fn contact_choices(app: &App, needle: &str) -> std::rc::Rc<Vec<crate:
         })
     });
     if let Some(list) = cached {
-        return list;
+        return Choices(list);
     }
     let list = std::rc::Rc::new(build_contact_choices(app, needle));
     CACHE.with(|cache| {
         *cache.borrow_mut() = Some((key, std::time::Instant::now(), std::rc::Rc::clone(&list)));
     });
-    list
+    Choices(list)
+}
+
+/// ZFPlus: the cached people New chat and New call offer, read as a slice
+/// and walked by value.
+pub(super) struct Choices(std::rc::Rc<Vec<crate::model::Contact>>);
+
+impl std::ops::Deref for Choices {
+    type Target = [crate::model::Contact];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl IntoIterator for Choices {
+    type Item = crate::model::Contact;
+    type IntoIter = std::vec::IntoIter<crate::model::Contact>;
+    fn into_iter(self) -> Self::IntoIter {
+        std::rc::Rc::unwrap_or_clone(self.0).into_iter()
+    }
 }
 
 fn build_contact_choices(app: &App, needle: &str) -> Vec<crate::model::Contact> {
