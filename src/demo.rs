@@ -3920,6 +3920,52 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                     height,
                 ));
             }
+            // ZFPlus: the picture editor with something drawn in each tool.
+            "crop-marks" => {
+                use crate::model::{Mark, MarkTool};
+                if let Some(edit) = app.picture_edit.as_mut() {
+                    let mark = |tool, points: &[[f32; 2]], color| Mark {
+                        tool,
+                        points: points.to_vec(),
+                        color,
+                        width: 0.01,
+                    };
+                    edit.tool = MarkTool::Arrow;
+                    edit.marks = vec![
+                        mark(
+                            MarkTool::Arrow,
+                            &[[0.15, 0.8], [0.45, 0.45]],
+                            [235, 64, 52, 255],
+                        ),
+                        mark(
+                            MarkTool::Rectangle,
+                            &[[0.5, 0.2], [0.85, 0.55]],
+                            [255, 204, 0, 255],
+                        ),
+                        mark(
+                            MarkTool::Ellipse,
+                            &[[0.1, 0.1], [0.35, 0.35]],
+                            [52, 199, 89, 255],
+                        ),
+                        mark(
+                            MarkTool::Pen,
+                            &[
+                                [0.55, 0.75],
+                                [0.6, 0.7],
+                                [0.66, 0.78],
+                                [0.72, 0.7],
+                                [0.8, 0.8],
+                            ],
+                            [10, 132, 255, 255],
+                        ),
+                        mark(
+                            MarkTool::Pixelate,
+                            &[[0.6, 0.85], [0.95, 0.97]],
+                            [0, 0, 0, 255],
+                        ),
+                    ];
+                }
+            }
             "archived" => app.show_archived = true,
             "labels" | "label-chips" => labels_sample(app),
             "label-filter" => {
@@ -6529,6 +6575,60 @@ mod tests {
             missing.is_empty(),
             "missing from the interface: {missing:?}"
         );
+    }
+
+    /// Every text the frame draws, as painted.
+    fn painted_texts(app: &mut App, ctx: &egui::Context) -> Vec<String> {
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        texts(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        render(app, ctx);
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1180.0, 780.0),
+                )),
+                ..Default::default()
+            },
+            |ui| app.frame_ui(ui),
+        );
+        let mut drawn = Vec::new();
+        for clipped in &output.shapes {
+            texts(&clipped.shape, &mut drawn);
+        }
+        drawn
+    }
+
+    /// ZFPlus: the attach menu has WhatsApp's entries, says which kind of
+    /// account is linked, and offers quick replies to a Business account
+    /// only; the chat list's title carries the same mark.
+    #[test]
+    fn the_attach_menu_follows_the_account_kind() {
+        for business in [None, Some(false), Some(true)] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            app.attach(&ctx);
+            app.business = business;
+            app.composer_tools_open = true;
+            assert!(app.current_chat().is_some(), "the demo opens a chat");
+            let drawn = painted_texts(&mut app, &ctx);
+            let has = |text: &str| drawn.iter().any(|drawn| drawn == text);
+            assert!(has("Document") && has("Photos & videos"), "{drawn:?}");
+            assert_eq!(has("Quick replies"), business == Some(true), "{business:?}");
+            assert_eq!(has("WhatsApp Business account"), business == Some(true));
+            assert_eq!(has("WhatsApp account"), business == Some(false));
+            assert_eq!(has("Business"), business == Some(true));
+            assert_eq!(has("Personal"), business == Some(false));
+        }
     }
 
     fn accessible_labels(app: &mut App, ctx: &egui::Context) -> Vec<String> {
@@ -9497,6 +9597,7 @@ mod tests {
                 height,
                 crop: crate::model::PictureCrop::full(width, height),
                 turns: 0,
+                marks: Vec::new(),
             },
         );
         app.actions.push(crate::model::Action::EditPicture(target));
@@ -22733,11 +22834,13 @@ mod tests {
                 } if *id == chat => Some(*documents),
                 _ => None,
             });
+            // ZFPlus: in WhatsApp's order, Document comes before Photos &
+            // videos.
             if row == 0.0 {
-                assert_eq!(picked, Some(false), "Send files opens the file picker");
+                assert_eq!(picked, Some(true), "Document opens the file picker");
                 assert_eq!(app.dialog, None);
             } else if row == 1.0 {
-                assert_eq!(picked, Some(true), "documents open the file picker");
+                assert_eq!(picked, Some(false), "Photos & videos open the file picker");
                 assert_eq!(app.dialog, None);
             } else if row == 2.0 {
                 assert_eq!(picked, None);

@@ -2389,8 +2389,10 @@ fn composer_pill(palette: &Palette) -> Frame {
         })
 }
 
-/// The plus menu beside the composer: send files, documents or a location,
-/// or create a poll.
+/// The plus menu beside the composer, in WhatsApp's order: a document, photos
+/// and videos, a location, a poll, and for a WhatsApp Business account its
+/// quick replies (ZFPlus). Its first line says which kind of account this is
+/// once WhatsApp has told.
 fn composer_tools_menu(app: &mut App, chat: &Chat, plus: &egui::Response) {
     let id = plus.id.with("composer-tools");
     let mut open = app.composer_tools_open;
@@ -2402,23 +2404,34 @@ fn composer_tools_menu(app: &mut App, chat: &Chat, plus: &egui::Response) {
         }
     }
     let mut draw_open = open;
+    let quick_id = plus.id.with("quick-replies");
     if draw_open && !picker_open {
         egui::Popup::menu(plus)
             .id(id)
             .open_bool(&mut draw_open)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
-            .width(190.0)
+            .width(210.0)
             .frame(widgets::menu_frame(&app.palette))
             .show(|ui| {
-                let send_files = crate::i18n::gettext(app.locale, "Send files");
-                if widgets::menu_item(ui, &app.palette, Some(Icon::Paperclip), &send_files) {
-                    app.actions.push(Action::Attach { documents: false });
+                if let Some(business) = app.business {
+                    let kind = if business {
+                        "WhatsApp Business account"
+                    } else {
+                        "WhatsApp account"
+                    };
+                    ui.add_space(2.0);
+                    theme::text(ui, kind, theme::medium(11.5), app.palette.dim);
+                    ui.add_space(2.0);
                 }
                 // Pictures picked here keep their own bytes instead of
                 // becoming compressed photos.
-                let document = crate::i18n::gettext(app.locale, "Send as document");
+                let document = crate::i18n::gettext(app.locale, "Document");
                 if widgets::menu_item(ui, &app.palette, Some(Icon::FileText), &document) {
                     app.actions.push(Action::Attach { documents: true });
+                }
+                let media = crate::i18n::gettext(app.locale, "Photos & videos");
+                if widgets::menu_item(ui, &app.palette, Some(Icon::Image), &media) {
+                    app.actions.push(Action::Attach { documents: false });
                 }
                 let send_location = crate::i18n::gettext(app.locale, "Send location");
                 if widgets::menu_item(ui, &app.palette, Some(Icon::MapPin), &send_location) {
@@ -2430,10 +2443,81 @@ fn composer_tools_menu(app: &mut App, chat: &Chat, plus: &egui::Response) {
                     app.actions
                         .push(Action::ShowDialog(Dialog::CreatePoll(chat.id.clone())));
                 }
+                if app.business == Some(true) {
+                    ui.separator();
+                    let label = crate::i18n::gettext(app.locale, "Quick replies");
+                    if widgets::menu_item(ui, &app.palette, Some(Icon::MessageCircle), &label) {
+                        ui.ctx().data_mut(|data| data.insert_temp(quick_id, true));
+                    }
+                }
             });
     }
     if draw_open != app.composer_tools_open {
         app.actions.push(Action::SetComposerTools(draw_open));
+    }
+    quick_replies_menu(app, plus, quick_id);
+}
+
+/// ZFPlus: a WhatsApp Business account's quick replies, as the phone keeps
+/// them. Picking one puts its message in the composer, to read before sending.
+fn quick_replies_menu(app: &mut App, plus: &egui::Response, id: egui::Id) {
+    let mut open = plus
+        .ctx
+        .data(|data| data.get_temp::<bool>(id))
+        .unwrap_or(false);
+    if !open {
+        return;
+    }
+    let palette = app.palette;
+    let replies = app.quick_replies.clone();
+    egui::Popup::menu(plus)
+        .id(id.with("popup"))
+        .open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(300.0)
+        .frame(widgets::menu_frame(&palette))
+        .show(|ui| {
+            theme::text(ui, "Quick replies", theme::medium(13.0), palette.text);
+            ui.add_space(4.0);
+            if replies.is_empty() {
+                theme::paragraph(
+                    ui,
+                    "None yet. Add them in WhatsApp Business on your phone: Business tools, Quick replies.",
+                    theme::regular(12.0),
+                    palette.secondary,
+                );
+                return;
+            }
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for reply in &replies {
+                    let response = ui
+                        .vertical(|ui| {
+                            theme::text(
+                                ui,
+                                format!("/{}", reply.shortcut),
+                                theme::medium(12.5),
+                                palette.accent,
+                            );
+                            theme::paragraph(
+                                ui,
+                                reply.message.as_str(),
+                                theme::regular(12.0),
+                                palette.secondary,
+                            );
+                        })
+                        .response
+                        .interact(egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if response.clicked() {
+                        app.actions.push(Action::InsertText(reply.message.clone()));
+                        ui.ctx().data_mut(|data| data.insert_temp(id, false));
+                    }
+                    ui.add_space(6.0);
+                }
+            });
+        });
+    if !open {
+        plus.ctx.data_mut(|data| data.insert_temp(id, false));
     }
 }
 

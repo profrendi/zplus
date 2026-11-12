@@ -74,6 +74,13 @@ WA Web Plus — not just a grey box on top.
 | Tidier left rail | Archived sits under Chats, Starred under Calls, and Chats shows how many chats are unread, the same number as the taskbar. |
 | Lighter on old computers | An open chat draws only the messages on screen, the window repaints only when something changes, search skips one-letter scans, sync runs below the window's priority, and photos are decoded at bubble size on two background threads. |
 | Diagnostics | Settings → Diagnostics → Record performance writes CPU and frame times once a second (`prof.csv`, `prof-summary.txt`; numbers only, no messages, names or phone numbers; the CSV is capped at 50 MB, two files kept). F12 shows the numbers live, Copy performance report puts the summary on the clipboard. Off by default. |
+| Smooth Private Mode blur | The blur is a two-pass Gaussian on the graphics card, as smooth as WA Web Plus's, with a frosted veil where the card refuses it. |
+| Updates from the tray | The tray menu has Check for updates and, while there is one, Update and restart (with the download's progress). A new update is also announced in a notification that opens the update controls. |
+| Feature check | Settings → Diagnostics → Feature check lists the link, the account kind, the blur, the tray, notifications, starting with the computer and updates on this computer, to copy and paste. Every release first checks that each ZFPlus feature is still on screen. |
+| Why a logout happened | When WhatsApp ends the link, the log records its reason (removed from Linked devices, a server-side logout, a locked account) and the window shows WhatsApp's own explanation when it sent one. |
+| WhatsApp Business | A "Business" or "Personal" mark beside Chats says which kind of account is linked. A Business account's quick replies sync from the phone and are one click away in the attach menu. |
+| Attach menu like WhatsApp | Document, Photos & videos, Send location and Create poll, in WhatsApp's order, with the account kind on top. |
+| Draw on a picture | The picture editor draws before sending: pen, straight line, arrow, rectangle, ellipse and pixelate, in six colours and three widths, with Undo and Redo (Ctrl+Z, Ctrl+Y). Shift keeps lines at even angles and shapes square, and a pen stroke drawn almost straight becomes a straight line. |
 
 #### Extra buttons
 | Feature | What it does |
@@ -236,6 +243,13 @@ sama seperti `filter: blur()` di WA Web Plus, bukan sekadar ditutup kotak abu-ab
 | Install update otomatis | Rilis baru diunduh, dipasang, lalu aplikasinya restart sendiri (menunggu dulu kalau kamu sedang telepon, merekam, atau mengetik). |
 | About dan update | Tombol ⓘ di atas Settings menampilkan keterangan ZFPlus, link ke repo ini dan repo aslinya, serta bisa cek, unduh, dan pasang update saat itu juga. Settings → System juga punya "Check for updates now". |
 | Sisi kiri lebih rapi | Archived ada di bawah Chats, Starred di bawah Calls, dan Chats menampilkan jumlah chat belum dibaca, sama dengan angka di taskbar. |
+| Blur Private Mode halus | Blur Gaussian dua tahap di kartu grafis, sehalus WA Web Plus; kalau kartu grafis menolak, diganti lapisan buram. |
+| Update dari tray | Menu tray punya Check for updates dan, saat ada pembaruan, Update and restart (dengan progres unduhan). Pembaruan baru juga diumumkan lewat notifikasi yang membuka panel update. |
+| Feature check | Settings → Diagnostics → Feature check menampilkan status koneksi, jenis akun, blur, tray, notifikasi, start bersama komputer, dan update, untuk disalin. Setiap rilis dicek dulu bahwa semua fitur ZFPlus masih ada di layar. |
+| Alasan logout | Saat WhatsApp memutus tautan, log mencatat alasannya (dihapus dari Perangkat tertaut, logout dari server, akun dikunci) dan jendela menampilkan penjelasan WhatsApp kalau ada. |
+| WhatsApp Business | Tanda "Business" atau "Personal" di samping Chats menunjukkan jenis akun. Quick replies akun Business tersinkron dari HP dan bisa dipakai dari menu lampiran. |
+| Menu lampiran seperti WhatsApp | Document, Photos & videos, Send location, dan Create poll, urut seperti WhatsApp, dengan jenis akun di atasnya. |
+| Menggambar di foto | Editor foto bisa menggambar sebelum kirim: pena, garis lurus, panah, kotak, elips, dan piksel (sensor), 6 warna, 3 ketebalan, Undo dan Redo (Ctrl+Z, Ctrl+Y). Shift membuat garis lurus bersudut rapi dan bentuk jadi persegi/lingkaran; coretan pena yang hampir lurus otomatis jadi garis lurus. |
 
 #### Extra buttons
 | Fitur | Fungsinya |

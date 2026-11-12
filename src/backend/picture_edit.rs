@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use crate::model::{PictureCrop, PictureSource};
+use crate::model::{Mark, MarkTool, PictureCrop, PictureSource};
 
 /// Quality of an opaque picture written back. The send path passes a JPEG
 /// through untouched, so this is the only lossy step for one.
@@ -57,14 +57,26 @@ pub fn inspect(bytes: &[u8]) -> Result<(u32, u32), String> {
 
 /// The picture turned by whole quarter turns clockwise, then cropped. The
 /// crop is measured in the turned picture, which is what the editor showed.
+#[cfg(test)]
 pub fn edit(bytes: &[u8], crop: PictureCrop, turns: u8) -> Result<Edited, String> {
+    edit_marked(bytes, crop, turns, &[])
+}
+
+/// ZFPlus: the same, with what was drawn on it.
+pub fn edit_marked(
+    bytes: &[u8],
+    crop: PictureCrop,
+    turns: u8,
+    marks: &[Mark],
+) -> Result<Edited, String> {
     let picture = image::load_from_memory(bytes)
         .map_err(|error| format!("This picture could not be read: {error}"))?
         .to_rgba8();
-    turned_and_cropped(picture, crop, turns)
+    turned_and_cropped(picture, crop, turns, marks)
 }
 
 /// The same for a pasted picture, which has no file to read back.
+#[cfg(test)]
 pub fn edit_pasted(
     rgba: &[u8],
     width: u32,
@@ -72,9 +84,21 @@ pub fn edit_pasted(
     crop: PictureCrop,
     turns: u8,
 ) -> Result<Edited, String> {
+    edit_pasted_marked(rgba, width, height, crop, turns, &[])
+}
+
+/// ZFPlus: the same, with what was drawn on it.
+pub fn edit_pasted_marked(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    crop: PictureCrop,
+    turns: u8,
+    marks: &[Mark],
+) -> Result<Edited, String> {
     let picture = image::RgbaImage::from_raw(width.max(1), height.max(1), rgba.to_vec())
         .ok_or_else(|| "This picture could not be read".to_owned())?;
-    turned_and_cropped(picture, crop, turns)
+    turned_and_cropped(picture, crop, turns, marks)
 }
 
 /// Turns and crops a staged picture, writes the result in `dir` beside the
@@ -86,13 +110,14 @@ pub fn write(
     height: u32,
     crop: PictureCrop,
     turns: u8,
+    marks: &[Mark],
     dir: &Path,
 ) -> Result<PathBuf, String> {
     let picture = match source {
         PictureSource::File(path) => std::fs::read(path)
             .map_err(|error| error.to_string())
-            .and_then(|bytes| edit(&bytes, crop, turns)),
-        PictureSource::Pasted(rgba) => edit_pasted(rgba, width, height, crop, turns),
+            .and_then(|bytes| edit_marked(&bytes, crop, turns, marks)),
+        PictureSource::Pasted(rgba) => edit_pasted_marked(rgba, width, height, crop, turns, marks),
     }?;
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let name = super::sticker_store::content_hash(&picture.bytes);
@@ -101,23 +126,200 @@ pub fn write(
     Ok(path)
 }
 
-/// Turns the picture, keeps the region, and writes it out.
+/// Turns the picture, draws the marks on it, keeps the region, and writes
+/// it out.
 fn turned_and_cropped(
     picture: image::RgbaImage,
     crop: PictureCrop,
     turns: u8,
+    marks: &[Mark],
 ) -> Result<Edited, String> {
-    let picture = match turns % 4 {
+    let mut picture = match turns % 4 {
         1 => image::imageops::rotate90(&picture),
         2 => image::imageops::rotate180(&picture),
         3 => image::imageops::rotate270(&picture),
         _ => picture,
     };
+    draw_marks(&mut picture, marks);
     let (width, height) = picture.dimensions();
     let crop = crop.clamped(width, height);
     let kept =
         image::imageops::crop_imm(&picture, crop.x, crop.y, crop.width, crop.height).to_image();
     encode(&kept)
+}
+
+/// ZFPlus: draws the marks on the turned picture, oldest first, at its full
+/// size: pen, lines and arrows with round ends, rectangles and ellipses as
+/// outlines, and pixelated areas as squares of their own average colour.
+pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
+    use resvg::tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect, Stroke};
+    if marks.is_empty() {
+        return;
+    }
+    let (width, height) = picture.dimensions();
+    let short = width.min(height).max(1) as f32;
+    let at = |[x, y]: [f32; 2]| (x * width as f32, y * height as f32);
+    // Drawn marks share one premultiplied copy until a pixelated area, which
+    // works on the picture itself, or the end, writes it back.
+    let mut canvas: Option<Pixmap> = None;
+    for mark in marks {
+        let (Some(&first), Some(&last)) = (mark.points.first(), mark.points.last()) else {
+            continue;
+        };
+        if mark.tool == MarkTool::Pixelate {
+            if let Some(pixmap) = canvas.take() {
+                from_pixmap(picture, &pixmap);
+            }
+            pixelate(picture, at(first), at(last));
+            continue;
+        }
+        if canvas.is_none() {
+            canvas = to_pixmap(picture);
+        }
+        let Some(pixmap) = canvas.as_mut() else {
+            return;
+        };
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(mark.color[0], mark.color[1], mark.color[2], mark.color[3]);
+        paint.anti_alias = true;
+        let stroke = Stroke {
+            width: (mark.width * short).max(1.0),
+            line_cap: LineCap::Round,
+            line_join: LineJoin::Round,
+            ..Stroke::default()
+        };
+        let (x0, y0) = at(first);
+        let (x1, y1) = at(last);
+        let mut path = PathBuilder::new();
+        match mark.tool {
+            MarkTool::Pen => {
+                path.move_to(x0, y0);
+                for &point in &mark.points[1..] {
+                    let (x, y) = at(point);
+                    path.line_to(x, y);
+                }
+                if mark.points.len() == 1 {
+                    // A dot: a line too short to see, with round ends.
+                    path.line_to(x0 + 0.01, y0);
+                }
+            }
+            MarkTool::Line => {
+                path.move_to(x0, y0);
+                path.line_to(x1, y1);
+            }
+            MarkTool::Arrow => {
+                path.move_to(x0, y0);
+                path.line_to(x1, y1);
+                let length = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                if length > 0.0 {
+                    let head = (stroke.width * 4.0).max(short * 0.03).min(length * 0.6);
+                    let angle = (y1 - y0).atan2(x1 - x0);
+                    for side in [-1.0f32, 1.0] {
+                        let wing = angle + std::f32::consts::PI - side * 0.5;
+                        path.move_to(x1, y1);
+                        path.line_to(x1 + head * wing.cos(), y1 + head * wing.sin());
+                    }
+                }
+            }
+            MarkTool::Rectangle | MarkTool::Ellipse => {
+                let Some(rect) = Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
+                else {
+                    continue;
+                };
+                if mark.tool == MarkTool::Rectangle {
+                    path.push_rect(rect);
+                } else {
+                    path.push_oval(rect);
+                }
+            }
+            MarkTool::Crop | MarkTool::Pixelate => continue,
+        }
+        if let Some(path) = path.finish() {
+            pixmap.stroke_path(
+                &path,
+                &paint,
+                &stroke,
+                resvg::tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+    }
+    if let Some(pixmap) = canvas {
+        from_pixmap(picture, &pixmap);
+    }
+}
+
+/// The picture as tiny-skia's premultiplied pixels.
+fn to_pixmap(picture: &image::RgbaImage) -> Option<resvg::tiny_skia::Pixmap> {
+    let (width, height) = picture.dimensions();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width.max(1), height.max(1))?;
+    for (to, from) in pixmap
+        .data_mut()
+        .chunks_exact_mut(4)
+        .zip(picture.as_raw().chunks_exact(4))
+    {
+        let alpha = u16::from(from[3]);
+        for channel in 0..3 {
+            to[channel] = (u16::from(from[channel]) * alpha / 255) as u8;
+        }
+        to[3] = from[3];
+    }
+    Some(pixmap)
+}
+
+/// Writes tiny-skia's premultiplied pixels back as straight ones.
+fn from_pixmap(picture: &mut image::RgbaImage, pixmap: &resvg::tiny_skia::Pixmap) {
+    for (to, from) in picture
+        .as_mut()
+        .chunks_exact_mut(4)
+        .zip(pixmap.data().chunks_exact(4))
+    {
+        let alpha = from[3];
+        for channel in 0..3 {
+            to[channel] = if alpha == 0 {
+                0
+            } else {
+                (u16::from(from[channel]) * 255 / u16::from(alpha)).min(255) as u8
+            };
+        }
+        to[3] = alpha;
+    }
+}
+
+/// ZFPlus: covers the box between two corners with squares of their own
+/// average colour, large enough that nothing under them can be read.
+fn pixelate(picture: &mut image::RgbaImage, a: (f32, f32), b: (f32, f32)) {
+    let (width, height) = picture.dimensions();
+    let block = (width.min(height) / 40).max(8);
+    let clamp = |value: f32, most: u32| (value.max(0.0) as u32).min(most);
+    let (left, right) = (clamp(a.0.min(b.0), width), clamp(a.0.max(b.0), width));
+    let (top, bottom) = (clamp(a.1.min(b.1), height), clamp(a.1.max(b.1), height));
+    let mut y = top;
+    while y < bottom {
+        let mut x = left;
+        let tall = block.min(bottom - y);
+        while x < right {
+            let wide = block.min(right - x);
+            let mut sum = [0u64; 4];
+            for row in y..y + tall {
+                for column in x..x + wide {
+                    let pixel = picture.get_pixel(column, row).0;
+                    for (total, value) in sum.iter_mut().zip(pixel) {
+                        *total += u64::from(value);
+                    }
+                }
+            }
+            let count = u64::from(wide * tall).max(1);
+            let average = image::Rgba(sum.map(|total| (total / count) as u8));
+            for row in y..y + tall {
+                for column in x..x + wide {
+                    picture.put_pixel(column, row, average);
+                }
+            }
+            x += wide;
+        }
+        y += tall;
+    }
 }
 
 /// Writes the picture as a PNG when any of it is see-through, so the crop
@@ -158,6 +360,105 @@ fn encode(picture: &image::RgbaImage) -> Result<Edited, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn white(width: u32, height: u32) -> image::RgbaImage {
+        image::RgbaImage::from_pixel(width, height, image::Rgba([255, 255, 255, 255]))
+    }
+
+    fn mark(tool: MarkTool, points: &[[f32; 2]]) -> Mark {
+        Mark {
+            tool,
+            points: points.to_vec(),
+            color: [255, 0, 0, 255],
+            width: 0.05,
+        }
+    }
+
+    /// ZFPlus: a line lands where it was drawn, in its colour, at the full
+    /// picture's size, and leaves the rest alone.
+    #[test]
+    fn a_drawn_line_lands_on_the_full_picture() {
+        let mut picture = white(200, 100);
+        draw_marks(
+            &mut picture,
+            &[mark(MarkTool::Line, &[[0.1, 0.5], [0.9, 0.5]])],
+        );
+        assert_eq!(picture.get_pixel(100, 50).0, [255, 0, 0, 255]);
+        assert_eq!(picture.get_pixel(100, 5).0, [255, 255, 255, 255]);
+        assert_eq!(picture.get_pixel(5, 50).0, [255, 255, 255, 255]);
+    }
+
+    /// ZFPlus: an arrow has its head at the end it was drawn to, and a
+    /// rectangle and an ellipse are outlines, empty inside.
+    #[test]
+    fn arrows_point_and_shapes_are_outlines() {
+        let mut picture = white(200, 200);
+        draw_marks(
+            &mut picture,
+            &[mark(MarkTool::Arrow, &[[0.1, 0.5], [0.9, 0.5]])],
+        );
+        // The head's wings reach above and below the line near its end.
+        let near_end = (150..180).any(|x| picture.get_pixel(x, 88).0 == [255, 0, 0, 255]);
+        let near_start = (20..50).any(|x| picture.get_pixel(x, 88).0 == [255, 0, 0, 255]);
+        assert!(near_end && !near_start);
+        for tool in [MarkTool::Rectangle, MarkTool::Ellipse] {
+            let mut picture = white(200, 200);
+            draw_marks(&mut picture, &[mark(tool, &[[0.2, 0.2], [0.8, 0.8]])]);
+            assert_eq!(
+                picture.get_pixel(100, 100).0,
+                [255, 255, 255, 255],
+                "{tool:?}"
+            );
+            assert_eq!(picture.get_pixel(100, 40).0, [255, 0, 0, 255], "{tool:?}");
+        }
+    }
+
+    /// ZFPlus: a pixelated area turns into squares of one colour each, so a
+    /// line of text under it cannot be read, and nothing outside changes.
+    #[test]
+    fn pixelating_hides_detail_inside_the_area_only() {
+        let mut picture = white(320, 320);
+        for x in 0..320 {
+            picture.put_pixel(x, 100, image::Rgba([0, 0, 0, 255]));
+        }
+        draw_marks(
+            &mut picture,
+            &[mark(MarkTool::Pixelate, &[[0.0, 0.25], [0.5, 0.5]])],
+        );
+        // Inside: the black line is spread over its square.
+        let inside = picture.get_pixel(10, 100).0;
+        assert_ne!(inside, [0, 0, 0, 255]);
+        assert_eq!(picture.get_pixel(10, 100), picture.get_pixel(10, 97));
+        // Outside the area the line is untouched.
+        assert_eq!(picture.get_pixel(300, 100).0, [0, 0, 0, 255]);
+    }
+
+    /// ZFPlus: marks are drawn on the turned picture, before the crop.
+    #[test]
+    fn marks_are_drawn_before_the_crop() {
+        let bytes = edit_marked(
+            &{
+                let mut out = std::io::Cursor::new(Vec::new());
+                white(100, 100)
+                    .write_to(&mut out, image::ImageFormat::Png)
+                    .unwrap();
+                out.into_inner()
+            },
+            PictureCrop {
+                x: 50,
+                y: 0,
+                width: 50,
+                height: 100,
+            },
+            0,
+            &[mark(MarkTool::Line, &[[0.0, 0.5], [1.0, 0.5]])],
+        )
+        .expect("edits");
+        let picture = image::load_from_memory(&bytes.bytes).unwrap().to_rgba8();
+        assert_eq!(picture.dimensions(), (50, 100));
+        let red = picture.get_pixel(25, 50).0;
+        assert!(red[0] > 200 && red[1] < 60 && red[2] < 60, "{red:?}");
+    }
 
     /// Both orientations are bounded, alpha is retained, and malformed buffers are refused.
     #[test]
@@ -356,6 +657,7 @@ mod tests {
             600,
             crop,
             0,
+            &[],
             &dir,
         )
         .expect("writes the crop");
@@ -366,12 +668,12 @@ mod tests {
         assert_eq!(read(&written).dimensions(), (200, 120));
         // The same crop of the same picture lands on the same name, so a
         // second look at it writes nothing new.
-        let again =
-            write(&PictureSource::File(source), 800, 600, crop, 0, &dir).expect("writes it again");
+        let again = write(&PictureSource::File(source), 800, 600, crop, 0, &[], &dir)
+            .expect("writes it again");
         assert_eq!(again, written);
         // A pasted picture goes the same way, from the pixels it was given.
         let pasted = std::sync::Arc::new([0u8, 0, 255, 255].repeat(800 * 600));
-        let pasted = write(&PictureSource::Pasted(pasted), 800, 600, crop, 0, &dir)
+        let pasted = write(&PictureSource::Pasted(pasted), 800, 600, crop, 0, &[], &dir)
             .expect("writes the pasted crop");
         assert_eq!(read(&pasted).dimensions(), (200, 120));
     }
@@ -390,6 +692,7 @@ mod tests {
             4,
             PictureCrop::full(4, 4),
             0,
+            &[],
             &dir,
         )
         .expect_err("refuses");

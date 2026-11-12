@@ -139,6 +139,22 @@ pub fn run(app: &App) -> Vec<Check> {
             "Logged out: WhatsApp ended this device's session",
         ),
     });
+    checks.push(match app.account().business {
+        Some(true) => check(
+            Status::Good,
+            "Account",
+            format!(
+                "WhatsApp Business, {} quick replies",
+                app.account().quick_replies.len()
+            ),
+        ),
+        Some(false) => check(Status::Good, "Account", "Personal WhatsApp"),
+        None => check(
+            Status::Note,
+            "Account",
+            "Not known yet: WhatsApp has not said",
+        ),
+    });
     checks.push(match crate::plus::blur_state() {
         crate::plus::BlurState::Gpu => check(
             Status::Good,

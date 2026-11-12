@@ -231,6 +231,11 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
                             palette.text,
                             buttons_width,
                         );
+                        if app.page == Page::Chats
+                            && let Some(business) = app.business
+                        {
+                            account_kind_pill(ui, &palette, business, buttons_width);
+                        }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(room.right);
@@ -244,6 +249,44 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             search_and_filters(app, ui);
         });
+}
+
+/// ZFPlus: a small mark beside "Chats" saying which kind of WhatsApp account
+/// is linked, once WhatsApp has told: "Business" or "Personal". Left out
+/// when the header has no room for it beside its buttons.
+fn account_kind_pill(ui: &mut egui::Ui, palette: &Palette, business: bool, buttons: f32) {
+    let (label, color, hint) = if business {
+        (
+            "Business",
+            palette.accent,
+            "Linked to a WhatsApp Business account",
+        )
+    } else {
+        (
+            "Personal",
+            palette.secondary,
+            "Linked to a personal WhatsApp account",
+        )
+    };
+    let font = theme::medium(11.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), color);
+    let size = galley.size() + egui::vec2(14.0, 6.0);
+    if ui.available_width() < size.x + buttons + ui.spacing().item_spacing.x {
+        return;
+    }
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same((size.y / 2.0) as u8),
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::new(1.0, color.gamma_multiply(0.6)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
+    response.on_hover_text(hint);
 }
 
 /// The header's title beside our avatar: the tab the list shows.

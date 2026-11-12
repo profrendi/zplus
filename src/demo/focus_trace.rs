@@ -1042,7 +1042,9 @@ fn the_cropper_takes_focus_and_enter_presses_the_focused_button() {
         "{}",
         trace.dump(from)
     );
-    for _ in 0..7 {
+    // ZFPlus: the editor also has Undo, Redo, six colours, three widths and
+    // seven tools, so the walk is longer.
+    for _ in 0..24 {
         trace.press("Tab", egui::Key::Tab, egui::Modifiers::NONE);
         assert_eq!(
             trace.last().layer,
@@ -1059,7 +1061,7 @@ fn the_cropper_takes_focus_and_enter_presses_the_focused_button() {
     }
     // Enter on Cancel cancels: nothing is kept, and the reader is back on
     // the attachment review.
-    for _ in 0..8 {
+    for _ in 0..32 {
         if trace.last().name.contains("Cancel") {
             break;
         }
@@ -1082,7 +1084,7 @@ fn the_cropper_takes_focus_and_enter_presses_the_focused_button() {
     );
     // Enter on Turn left turns the picture and stays.
     open_cropper(&mut trace, target, &photo);
-    for _ in 0..8 {
+    for _ in 0..32 {
         if trace.last().name.contains("Turn left") {
             break;
         }

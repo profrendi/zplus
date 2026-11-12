@@ -834,6 +834,8 @@ pub enum Command {
         height: u32,
         crop: crate::model::PictureCrop,
         turns: u8,
+        /// ZFPlus: what was drawn on it.
+        marks: Vec<crate::model::Mark>,
     },
     /// Internal: the edited picture, ready to replace the staged attachment.
     PictureEdited {
@@ -1218,6 +1220,12 @@ pub enum Event {
         error: Option<String>,
     },
     Link(LinkStatus),
+    /// ZFPlus: whether the linked account is WhatsApp Business, once asked.
+    AccountKind {
+        business: bool,
+    },
+    /// ZFPlus: the account's WhatsApp Business quick replies.
+    QuickReplies(Vec<crate::model::QuickReply>),
     /// Linked account identity.
     Me {
         id: String,

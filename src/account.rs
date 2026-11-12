@@ -140,6 +140,10 @@ pub struct Account {
     pub(crate) reported_online: Option<bool>,
     /// Chats this account may pin; WhatsApp Plus raises it once known.
     pub pin_limit: usize,
+    /// ZFPlus: whether this is a WhatsApp Business account, once asked.
+    pub business: Option<bool>,
+    /// ZFPlus: its WhatsApp Business quick replies, by shortcut.
+    pub quick_replies: Vec<crate::model::QuickReply>,
     /// The call entries the Calls page lists, newest first, once read.
     pub call_log: Vec<Message>,
     pub call_log_loaded: bool,
@@ -257,6 +261,8 @@ impl Account {
             timer_saving: HashSet::new(),
             reported_online: None,
             pin_limit: crate::backend::PINNED_CHATS,
+            business: None,
+            quick_replies: Vec::new(),
             call_log: Vec::new(),
             call_log_loaded: false,
             picked_call: None,

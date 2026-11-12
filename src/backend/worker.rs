@@ -747,6 +747,32 @@ fn spawn_pin_limit_check(
     });
 }
 
+/// ZFPlus: asks once per connection whether our own account is WhatsApp
+/// Business: a business has a business profile, a personal account none.
+fn spawn_account_kind_check(
+    client: Arc<Client>,
+    me: Option<Jid>,
+    events: std::sync::mpsc::Sender<Event>,
+    waker: Waker,
+) {
+    let Some(me) = me else {
+        return;
+    };
+    tokio::spawn(async move {
+        match client.get_business_profile(&me).await {
+            Ok(profile) => {
+                let _ = events.send(Event::AccountKind {
+                    business: profile.is_some(),
+                });
+                waker.wake();
+            }
+            Err(error) => {
+                log::debug!("could not tell whether this is a business account: {error}");
+            }
+        }
+    });
+}
+
 fn account_allows_receipts(
     settings: &whatsapp_rust::wacore::iq::privacy::PrivacySettingsResponse,
 ) -> bool {
@@ -2163,6 +2189,9 @@ impl Worker {
                     | Event::BlocklistMapped { .. }
                     | Event::Chats(_)
                     | Event::Drafts(_)
+                    // ZFPlus: the account's own canned replies, sent again
+                    // with the chat list once the locks are known.
+                    | Event::QuickReplies(_)
                     | Event::ChatHits { .. }
                     | Event::ChatUpdated(_)
                     | Event::Messages { .. }
@@ -2460,6 +2489,7 @@ impl Worker {
                 });
                 self.emit_labels();
                 self.emit(Event::Drafts(self.archive.drafts().unwrap_or_default()));
+                self.emit_quick_replies();
             }
             Err(error) => log::warn!("could not list chats: {error}"),
         }
@@ -2752,6 +2782,30 @@ impl Worker {
             qr: self.qr.clone(),
             pair_code: self.pair_code.clone(),
             pairing_phone: self.pairing_phone.clone(),
+        }
+    }
+
+    /// ZFPlus: files a quick reply the phone synced, and hands the window
+    /// the whole list again.
+    fn quick_reply_update(&mut self, update: &wa_events::QuickReplyUpdate) {
+        let action = &update.action;
+        let shortcut = action.shortcut.clone().unwrap_or_default();
+        let message = action.message.clone().unwrap_or_default();
+        let deleted = action.deleted.unwrap_or(false) || message.is_empty();
+        if let Err(error) = self
+            .archive
+            .plus_set_quick_reply(&update.id, &shortcut, &message, deleted)
+        {
+            log::warn!("could not file a quick reply: {error}");
+            return;
+        }
+        self.emit_quick_replies();
+    }
+
+    fn emit_quick_replies(&self) {
+        match self.archive.plus_quick_replies() {
+            Ok(replies) => self.emit(Event::QuickReplies(replies)),
+            Err(error) => log::warn!("could not read the quick replies: {error}"),
         }
     }
 
@@ -4452,6 +4506,12 @@ impl Worker {
                     self.presence_refresh_pending = false;
                     self.announce_presence(self.online_wanted);
                     spawn_pin_limit_check(client.clone(), self.events.clone(), self.waker.clone());
+                    spawn_account_kind_check(
+                        client.clone(),
+                        me.clone(),
+                        self.events.clone(),
+                        self.waker.clone(),
+                    );
                     spawn_calling_gate_log(client.clone());
                     let channels = self.commands.clone();
                     let followed = client.clone();
@@ -4764,6 +4824,7 @@ impl Worker {
             }
             E::RemoveRecentStickerUpdate(update) => self.recent_sticker_removed(update),
             E::FavoriteStickerUpdate(update) => self.favorite_sticker_update(update),
+            E::QuickReplyUpdate(update) => self.quick_reply_update(update),
             E::FavoritesUpdate(update) => self.favorite_chats_update(update),
             E::StarUpdate(update) => self.star_update(update),
             E::LockChatUpdate(update) => {
@@ -8449,12 +8510,14 @@ impl Worker {
                 height,
                 crop,
                 turns,
+                marks,
             } => {
                 let commands = self.commands.clone();
                 let dir = self.dirs.media_cache_dir().join("edited");
                 tokio::task::spawn_blocking(move || {
-                    let result =
-                        super::picture_edit::write(&source, width, height, crop, turns, &dir);
+                    let result = super::picture_edit::write(
+                        &source, width, height, crop, turns, &marks, &dir,
+                    );
                     let _ = commands.send(Command::PictureEdited { target, result });
                 });
             }

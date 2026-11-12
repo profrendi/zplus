@@ -2298,6 +2298,148 @@ pub struct PictureEdit {
     pub crop: PictureCrop,
     /// Quarter turns clockwise already applied to the source.
     pub turns: u8,
+    /// ZFPlus: what was drawn on it, oldest first.
+    pub marks: Vec<Mark>,
+    /// ZFPlus: marks taken back with Undo, newest last, for Redo.
+    pub undone: Vec<Mark>,
+    /// ZFPlus: the editor's tool, colour and line width.
+    pub tool: MarkTool,
+    pub color: [u8; 4],
+    pub stroke: MarkStroke,
+}
+
+/// ZFPlus: the picture editor's tools: the crop, and what can be drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MarkTool {
+    #[default]
+    Crop,
+    Pen,
+    Line,
+    Arrow,
+    Rectangle,
+    Ellipse,
+    /// Hides what is under it behind large squares of its own colours.
+    Pixelate,
+}
+
+/// ZFPlus: the three line widths the editor offers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MarkStroke {
+    Thin,
+    #[default]
+    Medium,
+    Thick,
+}
+
+impl MarkStroke {
+    /// The width as a share of the picture's shorter side.
+    pub fn share(self) -> f32 {
+        match self {
+            MarkStroke::Thin => 0.005,
+            MarkStroke::Medium => 0.01,
+            MarkStroke::Thick => 0.02,
+        }
+    }
+}
+
+/// ZFPlus: the colours the editor offers, as WhatsApp's: red first.
+pub const MARK_COLORS: [[u8; 4]; 6] = [
+    [235, 64, 52, 255],
+    [255, 204, 0, 255],
+    [52, 199, 89, 255],
+    [10, 132, 255, 255],
+    [255, 255, 255, 255],
+    [0, 0, 0, 255],
+];
+
+/// ZFPlus: something drawn on a picture before it is sent. Points are in the
+/// turned picture's own proportions (0 to 1 across and down), so a mark
+/// lands in the same place on the full picture as on the editor's copy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    pub tool: MarkTool,
+    /// A pen's whole path; the two ends of a line, an arrow, or a shape's
+    /// bounding box.
+    pub points: Vec<[f32; 2]>,
+    pub color: [u8; 4],
+    /// Line width as a share of the picture's shorter side.
+    pub width: f32,
+}
+
+impl Mark {
+    /// The same mark on the picture turned a quarter, the way the picture
+    /// itself turns.
+    pub fn turned(&self, clockwise: bool) -> Self {
+        Self {
+            points: self
+                .points
+                .iter()
+                .map(|&[x, y]| {
+                    if clockwise {
+                        [1.0 - y, x]
+                    } else {
+                        [y, 1.0 - x]
+                    }
+                })
+                .collect(),
+            ..self.clone()
+        }
+    }
+
+    /// A pen stroke that is almost straight, as a straight line: nothing in
+    /// it strays from the line between its ends by more than a twentieth of
+    /// that line's length. Anything else stays as drawn.
+    pub fn straightened(self) -> Self {
+        if self.tool != MarkTool::Pen || self.points.len() < 3 {
+            return self;
+        }
+        let (Some(&first), Some(&last)) = (self.points.first(), self.points.last()) else {
+            return self;
+        };
+        let (dx, dy) = (last[0] - first[0], last[1] - first[1]);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length < 0.03 {
+            return self;
+        }
+        let strays = self.points.iter().any(|&[x, y]| {
+            ((x - first[0]) * dy - (y - first[1]) * dx).abs() / length > length / 20.0
+        });
+        if strays {
+            return self;
+        }
+        Self {
+            tool: MarkTool::Line,
+            points: vec![first, last],
+            ..self
+        }
+    }
+}
+
+/// ZFPlus: where a line or a shape ends with Shift held, in the picture's
+/// own proportions (`aspect` is its width over its height): a line or an
+/// arrow at the nearest eighth of a turn, a rectangle or an ellipse square.
+pub fn snapped(tool: MarkTool, start: [f32; 2], end: [f32; 2], aspect: f32) -> [f32; 2] {
+    // Measured in points of the picture, where a square is square.
+    let (dx, dy) = ((end[0] - start[0]) * aspect, end[1] - start[1]);
+    match tool {
+        MarkTool::Line | MarkTool::Arrow => {
+            let length = (dx * dx + dy * dy).sqrt();
+            let step = std::f32::consts::FRAC_PI_4;
+            let angle = (dy.atan2(dx) / step).round() * step;
+            [
+                start[0] + length * angle.cos() / aspect,
+                start[1] + length * angle.sin(),
+            ]
+        }
+        MarkTool::Rectangle | MarkTool::Ellipse | MarkTool::Pixelate => {
+            let side = dx.abs().max(dy.abs());
+            [
+                start[0] + side.copysign(dx) / aspect,
+                start[1] + side.copysign(dy),
+            ]
+        }
+        _ => end,
+    }
 }
 
 impl PictureEdit {
@@ -2315,7 +2457,35 @@ impl PictureEdit {
             height: height.max(1),
             crop: PictureCrop::full(width, height),
             turns: 0,
+            marks: Vec::new(),
+            undone: Vec::new(),
+            tool: MarkTool::default(),
+            color: MARK_COLORS[0],
+            stroke: MarkStroke::default(),
         }
+    }
+
+    /// ZFPlus: adds a finished mark; it can no longer redo what was undone.
+    pub fn drawn(mut self, mark: Mark) -> Self {
+        self.marks.push(mark);
+        self.undone.clear();
+        self
+    }
+
+    /// ZFPlus: takes the newest mark back.
+    pub fn undo(mut self) -> Self {
+        if let Some(mark) = self.marks.pop() {
+            self.undone.push(mark);
+        }
+        self
+    }
+
+    /// ZFPlus: puts back the mark Undo last took.
+    pub fn redo(mut self) -> Self {
+        if let Some(mark) = self.undone.pop() {
+            self.marks.push(mark);
+        }
+        self
     }
 
     /// The source turned to the side the crop is measured in.
@@ -2342,6 +2512,16 @@ impl PictureEdit {
                 (self.turns + 3) % 4
             },
             crop,
+            marks: self
+                .marks
+                .iter()
+                .map(|mark| mark.turned(clockwise))
+                .collect(),
+            undone: self
+                .undone
+                .iter()
+                .map(|mark| mark.turned(clockwise))
+                .collect(),
             ..self
         }
     }
@@ -2353,6 +2533,8 @@ impl PictureEdit {
         Self {
             crop: PictureCrop::full(self.width, self.height),
             turns: 0,
+            marks: Vec::new(),
+            undone: Vec::new(),
             ..self
         }
     }
@@ -2368,6 +2550,8 @@ pub struct PictureOrigin {
     pub height: u32,
     pub crop: PictureCrop,
     pub turns: u8,
+    /// ZFPlus: what was drawn on it, so editing again can take it back.
+    pub marks: Vec<Mark>,
 }
 
 /// A picture on its way to becoming a sticker.
@@ -2703,6 +2887,15 @@ pub fn forward_limit(frequently_forwarded: bool) -> usize {
     } else {
         FORWARD_LIMIT
     }
+}
+
+/// ZFPlus: a WhatsApp Business quick reply, synced from the phone: typed
+/// as `/shortcut`, it stands for the message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuickReply {
+    pub id: String,
+    pub shortcut: String,
+    pub message: String,
 }
 
 /// Actions queued by views and applied after drawing.
@@ -3072,6 +3265,8 @@ pub enum Action {
     },
     /// Inserts an emoji at the composer cursor.
     InsertEmoji(String),
+    /// ZFPlus: puts text in the composer at the cursor, as a quick reply.
+    InsertText(String),
     /// Replaces an active `:query` with its selected emoji.
     InsertEmojiCompletion {
         emoji: String,
@@ -3546,6 +3741,74 @@ mod tests {
     }
 
     use super::StickerCrop;
+
+    /// ZFPlus: a stroke drawn almost straight becomes a straight line; a
+    /// curve stays a curve.
+    #[test]
+    fn a_nearly_straight_stroke_becomes_a_line() {
+        let stroke = |points: &[[f32; 2]]| crate::model::Mark {
+            tool: crate::model::MarkTool::Pen,
+            points: points.to_vec(),
+            color: [0, 0, 0, 255],
+            width: 0.01,
+        };
+        let wobbly = stroke(&[[0.1, 0.5], [0.3, 0.51], [0.6, 0.495], [0.9, 0.5]]).straightened();
+        assert_eq!(wobbly.tool, crate::model::MarkTool::Line);
+        assert_eq!(wobbly.points, [[0.1, 0.5], [0.9, 0.5]]);
+        let curve = stroke(&[[0.1, 0.5], [0.5, 0.2], [0.9, 0.5]]).straightened();
+        assert_eq!(curve.tool, crate::model::MarkTool::Pen);
+        assert_eq!(curve.points.len(), 3);
+    }
+
+    /// ZFPlus: with Shift, lines keep to eighths of a turn and shapes are
+    /// square, measured on the picture as it looks.
+    #[test]
+    fn shift_straightens_lines_and_squares_shapes() {
+        use crate::model::{MarkTool, snapped};
+        let end = snapped(MarkTool::Line, [0.0, 0.0], [0.5, 0.05], 1.0);
+        assert!(
+            (end[1]).abs() < 1e-5 && (end[0] - 0.5025).abs() < 0.01,
+            "{end:?}"
+        );
+        let diagonal = snapped(MarkTool::Arrow, [0.0, 0.0], [0.4, 0.35], 1.0);
+        assert!((diagonal[0] - diagonal[1]).abs() < 1e-5, "{diagonal:?}");
+        // On a picture twice as wide as tall, a square spans half as much
+        // of the width as of the height.
+        let square = snapped(MarkTool::Rectangle, [0.0, 0.0], [0.2, 0.3], 2.0);
+        assert!(
+            (square[0] - 0.2).abs() < 1e-5 && (square[1] - 0.4).abs() < 1e-5,
+            "{square:?}"
+        );
+    }
+
+    /// ZFPlus: turning the picture carries what was drawn round with it,
+    /// and Undo and Redo take marks back and put them back.
+    #[test]
+    fn marks_turn_with_the_picture_and_undo() {
+        use crate::model::{Mark, MarkTool, PictureEdit, PictureSource};
+        let mark = Mark {
+            tool: MarkTool::Line,
+            points: vec![[0.0, 0.0], [1.0, 0.0]],
+            color: [0, 0, 0, 255],
+            width: 0.01,
+        };
+        let edit = PictureEdit::new(
+            crate::app::AttachmentId::default(),
+            PictureSource::File("/fixture.png".into()),
+            4,
+            2,
+        )
+        .drawn(mark.clone());
+        // The top edge, turned clockwise, is the right edge.
+        let turned = edit.clone().turned(true);
+        assert_eq!(turned.marks[0].points, [[1.0, 0.0], [1.0, 1.0]]);
+        assert_eq!(turned.turned(false).marks, edit.marks);
+        let undone = edit.undo();
+        assert!(undone.marks.is_empty() && undone.undone.len() == 1);
+        let redone = undone.redo();
+        assert_eq!(redone.marks, [mark]);
+        assert!(redone.reset().marks.is_empty());
+    }
 
     #[test]
     fn a_preview_comes_from_the_line_the_query_matched() {

@@ -2752,6 +2752,60 @@ impl Archive {
         Ok(changed > 0)
     }
 
+    /// ZFPlus: files a WhatsApp Business quick reply as the phone synced it,
+    /// or forgets it when it was deleted there.
+    pub fn plus_set_quick_reply(
+        &self,
+        id: &str,
+        shortcut: &str,
+        message: &str,
+        deleted: bool,
+    ) -> Result<()> {
+        self.plus_quick_reply_table()?;
+        if deleted {
+            self.connection
+                .execute("DELETE FROM plus_quick_replies WHERE id = ?1", params![id])?;
+        } else {
+            self.connection.execute(
+                "INSERT INTO plus_quick_replies (id, shortcut, message) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (id) DO UPDATE SET shortcut = excluded.shortcut,
+                     message = excluded.message",
+                params![id, shortcut, message],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// ZFPlus: the quick replies, by shortcut.
+    pub fn plus_quick_replies(&self) -> Result<Vec<crate::model::QuickReply>> {
+        self.plus_quick_reply_table()?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, shortcut, message FROM plus_quick_replies
+             ORDER BY shortcut COLLATE NOCASE, id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(crate::model::QuickReply {
+                    id: row.get(0)?,
+                    shortcut: row.get(1)?,
+                    message: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn plus_quick_reply_table(&self) -> Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plus_quick_replies (
+                id TEXT PRIMARY KEY,
+                shortcut TEXT NOT NULL,
+                message TEXT NOT NULL
+            )",
+        )?;
+        Ok(())
+    }
+
     /// ZFPlus: remembers a message its sender deleted for everyone and
     /// that was kept.
     pub fn plus_keep_deleted(&self, chat: &str, id: &str) -> Result<()> {
@@ -2996,6 +3050,36 @@ impl Archive {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// ZFPlus: quick replies are filed by id, changed in place, listed by
+    /// shortcut, and forgotten when the phone deletes them.
+    #[test]
+    fn quick_replies_follow_the_phone() {
+        let archive = super::Archive::in_memory().unwrap();
+        assert!(archive.plus_quick_replies().unwrap().is_empty());
+        archive
+            .plus_set_quick_reply("2", "thanks", "Thank you!", false)
+            .unwrap();
+        archive
+            .plus_set_quick_reply("1", "Hours", "We open at 8.", false)
+            .unwrap();
+        archive
+            .plus_set_quick_reply("2", "thanks", "Thank you very much!", false)
+            .unwrap();
+        let replies = archive.plus_quick_replies().unwrap();
+        assert_eq!(
+            replies
+                .iter()
+                .map(|reply| (reply.shortcut.as_str(), reply.message.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("Hours", "We open at 8."),
+                ("thanks", "Thank you very much!")
+            ]
+        );
+        archive.plus_set_quick_reply("1", "", "", true).unwrap();
+        assert_eq!(archive.plus_quick_replies().unwrap().len(), 1);
+    }
+
     pub(crate) fn reject_archive_updates(archive: &super::Archive) {
         archive.connection.execute_batch(
             "CREATE TRIGGER reject_archive_update BEFORE UPDATE OF archived ON chats BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;"
