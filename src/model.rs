@@ -3686,12 +3686,13 @@ pub enum Action {
         /// Quoted message, in this chat or, for a private reply, in its group.
         quoting: Option<ReplyTarget>,
     },
-    /// ZFPlus: sends a contact card for a phone number.
-    SendContact {
+    /// ZFPlus: sends contact cards, each a name and a phone number.
+    SendContacts {
         chat: ChatId,
-        name: String,
-        number: String,
+        people: Vec<(String, String)>,
     },
+    /// ZFPlus: asks which of these phone numbers have WhatsApp.
+    CheckRegistered(Vec<String>),
     ReplyInteractive {
         chat: ChatId,
         message: String,
@@ -4577,7 +4578,10 @@ mod tests {
             points: vec![[0.2, 0.5], [0.4, 0.5]],
             ..Default::default()
         };
-        assert_eq!(arrow.mirrored(false).points, [[0.4, 0.5], [0.2, 0.5]]);
+        let mirrored = arrow.mirrored(false).points;
+        for (got, want) in mirrored.iter().zip([[0.4, 0.5], [0.2, 0.5]]) {
+            assert!((got[0] - want[0]).abs() < 1e-5 && (got[1] - want[1]).abs() < 1e-5);
+        }
 
         let mut edit = PictureEdit::new(
             crate::app::AttachmentId::default(),

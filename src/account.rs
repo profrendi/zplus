@@ -144,6 +144,10 @@ pub struct Account {
     pub business: Option<bool>,
     /// ZFPlus: its WhatsApp Business quick replies, by shortcut.
     pub quick_replies: Vec<crate::model::QuickReply>,
+    /// ZFPlus: which phone numbers have WhatsApp, as WhatsApp answered, and
+    /// which have been asked about, so each is asked once.
+    pub registered: HashMap<String, bool>,
+    pub registered_asked: std::collections::HashSet<String>,
     /// The call entries the Calls page lists, newest first, once read.
     pub call_log: Vec<Message>,
     pub call_log_loaded: bool,
@@ -263,6 +267,8 @@ impl Account {
             pin_limit: crate::backend::PINNED_CHATS,
             business: None,
             quick_replies: Vec::new(),
+            registered: HashMap::new(),
+            registered_asked: std::collections::HashSet::new(),
             call_log: Vec::new(),
             call_log_loaded: false,
             picked_call: None,

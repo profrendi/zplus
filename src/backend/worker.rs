@@ -7587,7 +7587,7 @@ impl Worker {
             | Command::SendSticker { chat, .. }
             | Command::SendGif { chat, .. }
             | Command::SendLocation { chat, .. }
-            | Command::SendContact { chat, .. }
+            | Command::SendContacts { chat, .. }
             | Command::CreatePoll { chat, .. } => Some(chat),
             // A batch goes to every recipient or to none of them.
             Command::Forward { to_chats, .. } => to_chats
@@ -7705,8 +7705,42 @@ impl Worker {
                 longitude,
                 quoting,
             } => self.send_location(chat, latitude, longitude, quoting),
-            Command::SendContact { chat, name, number } => {
-                self.send_contact(chat, name, number);
+            Command::SendContacts { chat, people } => {
+                self.send_contacts(chat, people);
+            }
+            Command::CheckRegistered { numbers } => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let events = self.events.clone();
+                let waker = self.waker.clone();
+                tokio::spawn(async move {
+                    // A hundred numbers a question, one question at a time,
+                    // as WhatsApp's own contact sync asks.
+                    for batch in numbers.chunks(100) {
+                        let jids: Vec<Jid> = batch.iter().map(|number| Jid::pn(number)).collect();
+                        let Ok(results) = client.contacts().is_on_whatsapp(&jids).await else {
+                            continue;
+                        };
+                        let answers: Vec<(String, bool)> = batch
+                            .iter()
+                            .map(|number| {
+                                let found = results.iter().any(|result| {
+                                    result.is_registered
+                                        && (result.jid.user == *number
+                                            || result
+                                                .pn_jid
+                                                .as_ref()
+                                                .is_some_and(|pn| pn.user == *number))
+                                });
+                                (number.clone(), found)
+                            })
+                            .collect();
+                        let _ = events.send(Event::Registered(answers));
+                        waker.wake();
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    }
+                });
             }
             Command::ReplyInteractive {
                 chat,
@@ -10144,18 +10178,50 @@ impl Worker {
 
     /// ZFPlus: sends a contact card, as WhatsApp's attach menu's Contact does:
     /// the name and a vCard with the number, marked as a WhatsApp number.
-    fn send_contact(&mut self, chat: ChatId, name: String, number: String) {
-        let unsent = || Unsent::Text(format!("{name} +{number}"));
+    fn send_contacts(&mut self, chat: ChatId, people: Vec<(String, String)>) {
+        let unsent = || {
+            Unsent::Text(
+                people
+                    .iter()
+                    .map(|(name, number)| format!("{name} +{number}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
         let (Some(client), Some(jid)) = (self.connected_client(), Self::jid_of(&chat)) else {
             self.refuse(chat, None, unsent(), Refusal::Offline);
             return;
         };
-        let vcard = contact_vcard(&name, &number);
+        let cards: Vec<wa::message::ContactMessage> = people
+            .iter()
+            .map(|(name, number)| {
+                let mut card = wa::message::ContactMessage::default();
+                card.display_name = Some(name.clone());
+                card.vcard = Some(contact_vcard(name, number));
+                card
+            })
+            .collect();
         let mut message = wa::Message::default();
-        let mut card = wa::message::ContactMessage::default();
-        card.display_name = Some(name.clone());
-        card.vcard = Some(vcard.clone());
-        message.contact_message = MessageField::some(card);
+        // One card alone, or several in one message, as WhatsApp sends them.
+        let (name, vcard) = if let [card] = cards.as_slice() {
+            message.contact_message = MessageField::some(card.clone());
+            (
+                card.display_name.clone().unwrap_or_default(),
+                card.vcard.clone().unwrap_or_default(),
+            )
+        } else {
+            let name = format!("{} contacts", cards.len());
+            let mut array = wa::message::ContactsArrayMessage::default();
+            array.display_name = Some(name.clone());
+            array.contacts = cards.clone();
+            message.contacts_array_message = MessageField::some(array);
+            let vcards = cards
+                .iter()
+                .filter_map(|card| card.vcard.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (name, vcards)
+        };
         let expiration = self.apply_ephemeral(&chat, &mut message);
         let id = client.generate_message_id().into_string();
         let row = Message {

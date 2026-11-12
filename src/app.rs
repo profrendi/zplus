@@ -4874,6 +4874,7 @@ impl App {
             Event::PinLimit(limit) => self.pin_limit = limit,
             Event::AccountKind { business } => self.business = Some(business),
             Event::QuickReplies(replies) => self.quick_replies = replies,
+            Event::Registered(answers) => self.registered.extend(answers),
             Event::Receipts(receipts) => {
                 // A late answer for a dialog that has since closed is stale.
                 if live
@@ -8042,10 +8043,21 @@ impl App {
                 self.location_draft.clear();
                 self.dialog = None;
             }
-            Action::SendContact { chat, name, number } => {
-                self.backend
-                    .send(Command::SendContact { chat, name, number });
+            Action::SendContacts { chat, people } => {
+                if !people.is_empty() {
+                    self.backend.send(Command::SendContacts { chat, people });
+                }
                 self.dialog = None;
+            }
+            Action::CheckRegistered(numbers) => {
+                let asked: Vec<String> = numbers
+                    .into_iter()
+                    .filter(|number| self.registered_asked.insert(number.clone()))
+                    .collect();
+                if !asked.is_empty() {
+                    self.backend
+                        .send(Command::CheckRegistered { numbers: asked });
+                }
             }
             Action::RefreshPoll { chat, message } => {
                 if let Some(row) = self

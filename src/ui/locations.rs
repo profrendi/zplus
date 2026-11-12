@@ -1,6 +1,8 @@
 //! Sending a location: the spot the reader pastes, checked before it goes out.
 
-use egui::{Align, Layout};
+use egui::{Align, Align2, Layout, Vec2, pos2, vec2};
+
+use super::widgets;
 
 use crate::app::App;
 use crate::geo;
@@ -122,28 +124,32 @@ pub fn send(app: &mut App, ui: &mut egui::Ui, chat: &str) {
 /// name or number.
 pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
     let palette = app.palette;
+    let locale = app.locale;
+    let picked_id = egui::Id::new("share-contact-picked");
+    let mut picked: Vec<(String, String)> = ui
+        .ctx()
+        .data(|data| data.get_temp(picked_id))
+        .unwrap_or_default();
+    let mut close = false;
     ui.horizontal(|ui| {
-        theme::icon(ui, Icon::Contact, 20.0, palette.accent);
+        if theme::icon_button(
+            ui,
+            Icon::X,
+            16.0,
+            palette.secondary,
+            palette.text,
+            &crate::i18n::gettext(locale, "Close"),
+        )
+        .clicked()
+        {
+            close = true;
+        }
         theme::text(
             ui,
-            crate::i18n::gettext(app.locale, "Send contact"),
+            crate::i18n::gettext(locale, "Send contacts"),
             theme::bold(18.0),
             palette.text,
         );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if theme::icon_button(
-                ui,
-                Icon::X,
-                16.0,
-                palette.secondary,
-                palette.text,
-                &crate::i18n::gettext(app.locale, "Close"),
-            )
-            .clicked()
-            {
-                app.actions.push(Action::CloseDialog);
-            }
-        });
     });
     ui.add_space(8.0);
     let search_id = egui::Id::new("share-contact-search");
@@ -151,7 +157,7 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
         .ctx()
         .data(|data| data.get_temp(search_id))
         .unwrap_or_default();
-    let hint = crate::i18n::gettext(app.locale, "Search name or number");
+    let hint = crate::i18n::gettext(locale, "Search name or number");
     let field = ui.add(
         egui::TextEdit::singleline(&mut search)
             .id_salt("share-contact")
@@ -164,46 +170,211 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
             .data_mut(|data| data.insert_temp(search_id, search.clone()));
     }
     ui.add_space(6.0);
+    // You first, then everyone else from A to Z.
+    let me = app
+        .me
+        .as_deref()
+        .and_then(crate::model::phone_of)
+        .map(str::to_owned)
+        .map(|number| {
+            let name = app.me_name.clone().unwrap_or_else(|| format!("+{number}"));
+            (name, number)
+        })
+        .filter(|(name, number)| {
+            let search = search.trim().to_lowercase();
+            search.is_empty()
+                || name.to_lowercase().contains(&search)
+                || number.contains(search.trim_start_matches('+'))
+        });
     let people = shareable_contacts(app.contacts.values(), &search);
+    // WhatsApp is asked once which of them have WhatsApp; a name WhatsApp
+    // itself sent (a push name) already says so.
+    let unknown: Vec<String> = people
+        .iter()
+        .map(|(_, number)| number.clone())
+        .filter(|number| {
+            !app.registered.contains_key(number) && !app.registered_asked.contains(number)
+        })
+        .collect();
+    if !unknown.is_empty() && app.link.is_connected() {
+        app.actions.push(Action::CheckRegistered(unknown));
+    }
+    let on_whatsapp = |app: &App, number: &str| -> Option<bool> {
+        let jid = format!("{number}@s.whatsapp.net");
+        if app.contacts.get(&jid).is_some_and(|contact| {
+            contact
+                .push_name
+                .as_deref()
+                .is_some_and(|name| !name.is_empty())
+        }) {
+            return Some(true);
+        }
+        app.registered.get(number).copied()
+    };
+    let rows: Vec<(Option<&'static str>, String, String)> = me
+        .into_iter()
+        .map(|(name, number)| (Some("You"), name, number))
+        .chain(
+            people
+                .into_iter()
+                .enumerate()
+                .map(|(index, (name, number))| ((index == 0).then_some("Contacts"), name, number)),
+        )
+        .collect();
+    let row_height = 52.0;
+    let list_height = (ui.ctx().content_rect().height() * 0.55).clamp(220.0, 460.0);
     egui::ScrollArea::vertical()
-        .max_height(360.0)
-        .show(ui, |ui| {
-            if people.is_empty() {
+        .id_salt("share-contact-list")
+        .max_height(list_height)
+        .auto_shrink([false, true])
+        .show_rows(ui, row_height, rows.len(), |ui, range| {
+            if rows.is_empty() {
                 theme::text(
                     ui,
-                    crate::i18n::gettext(app.locale, "No contacts match."),
+                    crate::i18n::gettext(locale, "No contacts match."),
                     theme::regular(12.5),
                     palette.dim,
                 );
             }
-            for (name, number) in people {
-                let response = ui
-                    .horizontal(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.vertical(|ui| {
-                            theme::text(ui, name.as_str(), theme::medium(13.5), palette.text);
-                            theme::text(
-                                ui,
-                                format!("+{number}"),
-                                theme::regular(12.0),
-                                palette.secondary,
-                            );
-                        });
-                    })
-                    .response
-                    .interact(egui::Sense::click())
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                if response.clicked() && app.link.is_connected() {
-                    ui.ctx().data_mut(|data| data.remove::<String>(search_id));
-                    app.actions.push(Action::SendContact {
-                        chat: chat.to_owned(),
-                        name,
-                        number,
-                    });
+            for (section, name, number) in &rows[range] {
+                let width = ui.available_width();
+                let (rect, response) =
+                    ui.allocate_exact_size(vec2(width, row_height), egui::Sense::click());
+                let chosen = picked.iter().any(|(_, picked)| picked == number);
+                let label = format!("{name} +{number}");
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, chosen, &label)
+                });
+                if response.hovered() {
+                    ui.painter().rect_filled(rect, 8.0, palette.surface_hover);
                 }
-                ui.add_space(4.0);
+                let painter = ui.painter();
+                let mut x = rect.left() + 8.0;
+                // A section's heading sits in the row's top corner.
+                if let Some(section) = section {
+                    painter.text(
+                        pos2(rect.right() - 8.0, rect.top() + 4.0),
+                        Align2::RIGHT_TOP,
+                        crate::i18n::gettext(locale, section),
+                        theme::medium(10.5),
+                        palette.accent,
+                    );
+                }
+                let check =
+                    egui::Rect::from_center_size(pos2(x + 9.0, rect.center().y), Vec2::splat(18.0));
+                painter.rect_stroke(
+                    check,
+                    4.0,
+                    egui::Stroke::new(
+                        1.5,
+                        if chosen {
+                            palette.accent
+                        } else {
+                            palette.secondary
+                        },
+                    ),
+                    egui::StrokeKind::Inside,
+                );
+                if chosen {
+                    painter.rect_filled(check, 4.0, palette.accent);
+                    Icon::Check.image(palette.on_accent, 14.0).paint_at(
+                        ui,
+                        egui::Rect::from_center_size(check.center(), Vec2::splat(14.0)),
+                    );
+                }
+                x += 28.0;
+                let jid = format!("{number}@s.whatsapp.net");
+                let avatar =
+                    egui::Rect::from_min_size(pos2(x, rect.center().y - 18.0), Vec2::splat(36.0));
+                let picture = app.avatar(&jid);
+                widgets::paint_avatar(ui, &palette, avatar, name, &jid, picture.as_deref());
+                x += 46.0;
+                let painter = ui.painter();
+                painter.text(
+                    pos2(x, rect.center().y - 9.0),
+                    Align2::LEFT_CENTER,
+                    name,
+                    theme::medium(13.5),
+                    palette.text,
+                );
+                painter.text(
+                    pos2(x, rect.center().y + 9.0),
+                    Align2::LEFT_CENTER,
+                    format!("+{number}"),
+                    theme::regular(12.0),
+                    palette.secondary,
+                );
+                // WhatsApp, or not: a small pill at the row's end.
+                let (word, color) = match on_whatsapp(app, number) {
+                    Some(true) => ("WA", palette.accent),
+                    Some(false) => ("NON WA", palette.danger),
+                    None => ("…", palette.dim),
+                };
+                let pill = painter.layout_no_wrap(word.to_owned(), theme::semibold(10.0), color);
+                let pill_rect = egui::Rect::from_min_size(
+                    pos2(
+                        rect.right() - 12.0 - pill.size().x - 12.0,
+                        rect.center().y - pill.size().y / 2.0 - 3.0,
+                    ),
+                    pill.size() + vec2(12.0, 6.0),
+                );
+                painter.rect_stroke(
+                    pill_rect,
+                    pill_rect.height() / 2.0,
+                    egui::Stroke::new(1.0, color),
+                    egui::StrokeKind::Inside,
+                );
+                painter.galley(pill_rect.min + vec2(6.0, 3.0), pill, color);
+                if response
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    if chosen {
+                        picked.retain(|(_, picked)| picked != number);
+                    } else {
+                        picked.push((name.clone(), number.clone()));
+                    }
+                }
             }
         });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        theme::text(
+            ui,
+            format!(
+                "{} {}",
+                picked.len(),
+                crate::i18n::gettext(locale, "selected")
+            ),
+            theme::regular(12.5),
+            palette.secondary,
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let send = crate::i18n::gettext(locale, "Send");
+            let ready = !picked.is_empty() && app.link.is_connected();
+            if ui
+                .add_enabled_ui(ready, |ui| theme::pill_button(ui, &palette, &send, true))
+                .inner
+                .clicked()
+            {
+                app.actions.push(Action::SendContacts {
+                    chat: chat.to_owned(),
+                    people: std::mem::take(&mut picked),
+                });
+                close = true;
+            }
+        });
+    });
+    if close {
+        ui.ctx().data_mut(|data| {
+            data.remove::<String>(search_id);
+            data.remove::<Vec<(String, String)>>(picked_id);
+        });
+        app.actions.push(Action::CloseDialog);
+    } else {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(picked_id, picked));
+    }
 }
 
 /// ZFPlus: the attach menu's Camera. The computer's camera, live, with a
@@ -364,7 +535,7 @@ pub fn shareable_contacts<'a>(
             .cmp(&b.0.to_lowercase())
             .then(a.1.cmp(&b.1))
     });
-    found.truncate(300);
+    // Every contact: the list draws only the rows in sight.
     found
 }
 

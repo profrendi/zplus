@@ -11188,6 +11188,64 @@ mod tests {
 
     /// ZFPlus: the contact's photo in the info panel opens the viewer at
     /// full size, and Save photo saves that full-size file.
+    /// ZFPlus: Send contacts ticks several, marks who has WhatsApp, asks
+    /// WhatsApp about the rest once, and sends the ticked ones together.
+    #[test]
+    fn several_contacts_go_in_one_message() {
+        let mut app = app();
+        app.backend.record_demo_commands();
+        app.link = crate::backend::LinkStatus::Connected;
+        let chat = app.open_chat.clone().expect("a chat");
+        let contact = |id: &str, full: Option<&str>, push: Option<&str>| crate::model::Contact {
+            id: id.into(),
+            full_name: full.map(Into::into),
+            first_name: None,
+            push_name: push.map(Into::into),
+        };
+        app.contacts.clear();
+        for person in [
+            contact("6281111@s.whatsapp.net", Some("Andi"), Some("andi")),
+            contact("6282222@s.whatsapp.net", Some("Budi"), None),
+        ] {
+            app.contacts.insert(person.id.clone(), person);
+        }
+        app.registered.insert("6282222".into(), false);
+        app.dialog = Some(crate::model::Dialog::ShareContact(chat.clone()));
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        app.attach(&ctx);
+        for _ in 0..3 {
+            render(&mut app, &ctx);
+        }
+        let texts = painted_texts(&mut app, &ctx);
+        assert!(texts.iter().any(|text| text == "WA"), "{texts:?}");
+        assert!(texts.iter().any(|text| text == "NON WA"), "{texts:?}");
+        press_labelled(
+            &mut app,
+            &ctx,
+            "Andi +6281111",
+            egui::accesskit::Role::CheckBox,
+        );
+        press_labelled(
+            &mut app,
+            &ctx,
+            "Budi +6282222",
+            egui::accesskit::Role::CheckBox,
+        );
+        press_labelled(&mut app, &ctx, "Send", egui::accesskit::Role::Button);
+        render(&mut app, &ctx);
+        let commands = app.backend.take_demo_commands();
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                crate::backend::Command::SendContacts { people, .. }
+                    if people.len() == 2 && people[0].1 == "6281111" && people[1].1 == "6282222"
+            )),
+            "{commands:?}"
+        );
+        assert_eq!(app.dialog, None);
+    }
+
     #[test]
     fn the_contact_photo_opens_large_and_saves() {
         let mut app = app();

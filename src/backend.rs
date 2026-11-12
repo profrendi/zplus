@@ -224,11 +224,15 @@ pub enum Command {
         longitude: f64,
         quoting: Option<crate::model::ReplyTarget>,
     },
-    /// ZFPlus: sends a contact card for a phone number.
-    SendContact {
+    /// ZFPlus: sends contact cards, one or several in one message, each a
+    /// name and a phone number.
+    SendContacts {
         chat: ChatId,
-        name: String,
-        number: String,
+        people: Vec<(String, String)>,
+    },
+    /// ZFPlus: asks WhatsApp which of these phone numbers have WhatsApp.
+    CheckRegistered {
+        numbers: Vec<String>,
     },
     ReplyInteractive {
         chat: ChatId,
@@ -1247,6 +1251,8 @@ pub enum Event {
     },
     /// ZFPlus: the account's WhatsApp Business quick replies.
     QuickReplies(Vec<crate::model::QuickReply>),
+    /// ZFPlus: which phone numbers have WhatsApp, as WhatsApp answered.
+    Registered(Vec<(String, bool)>),
     /// Linked account identity.
     Me {
         id: String,
