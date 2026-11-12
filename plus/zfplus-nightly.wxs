@@ -19,6 +19,10 @@
     <MajorUpgrade AllowSameVersionUpgrades="yes"
       DowngradeErrorMessage="A newer ZFPlus Nightly is already installed." />
     <Media Id="1" Cabinet="zfplus-nightly.cab" EmbedCab="yes" />
+    <!-- ZFPlus: the shortcuts take the program's own icon, not this one: a
+         shortcut's Icon is a copy under this install's own folder in
+         Windows' installer cache, which goes when an update replaces the
+         install, and a taskbar pin made from it turned white. -->
     <Icon Id="ZFPlusIcon" SourceFile="$(var.IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="ZFPlusIcon" />
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -47,7 +51,7 @@
       <Directory Id="ProgramMenuFolder">
         <Component Id="StartMenuShortcut" Guid="{0CF2989C-47AF-4D15-9D0D-42DFAB057848}">
           <Shortcut Id="StartMenuZFPlusNightly" Name="ZFPlus Nightly" Description="ZFPlus on ZapFast's newest work, before its release"
-            Target="[INSTALLFOLDER]zfplus-nightly.exe" WorkingDirectory="INSTALLFOLDER" Icon="ZFPlusIcon" />
+            Target="[INSTALLFOLDER]zfplus-nightly.exe" WorkingDirectory="INSTALLFOLDER" />
           <RegistryValue Root="HKCU" Key="Software\ZFPlus Nightly" Name="StartMenuShortcut"
             Type="integer" Value="1" KeyPath="yes" />
         </Component>
@@ -55,7 +59,7 @@
       <Directory Id="DesktopFolder">
         <Component Id="DesktopShortcut" Guid="{9B6E5D5E-E45F-4899-B866-85B4D33FB274}">
           <Shortcut Id="DesktopZFPlusNightly" Name="ZFPlus Nightly" Description="ZFPlus on ZapFast's newest work, before its release"
-            Target="[INSTALLFOLDER]zfplus-nightly.exe" WorkingDirectory="INSTALLFOLDER" Icon="ZFPlusIcon" />
+            Target="[INSTALLFOLDER]zfplus-nightly.exe" WorkingDirectory="INSTALLFOLDER" />
           <RegistryValue Root="HKCU" Key="Software\ZFPlus Nightly" Name="DesktopShortcut"
             Type="integer" Value="1" KeyPath="yes" />
         </Component>

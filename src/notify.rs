@@ -27,6 +27,9 @@ pub const UPDATE_TARGET: &str = "zfplus:update";
 /// ZFPlus: the click target of a memory warning: it opens Feature check.
 pub const MEMORY_TARGET: &str = "zfplus:memory";
 
+/// ZFPlus: the click target of a found update: it updates and restarts.
+pub const UPDATE_RESTART_TARGET: &str = "zfplus:update-restart";
+
 /// Chat and message a clicked notification opens. The message id travels with
 /// the click, so the reader lands on what was announced instead of on the end
 /// of the chat. An incoming call has no message: its click only brings the

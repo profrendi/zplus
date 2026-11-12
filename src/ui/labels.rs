@@ -99,19 +99,15 @@ pub fn chip_row(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         return;
     }
     ui.add_space(2.0);
-    let row = widgets::chip_scroll_row(ui, "label-chips", |ui| {
-        ui.horizontal(|ui| {
+    // ZFPlus: wrapped, as the chips above are, so every label shows.
+    let row = ui
+        .horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 6.0);
             label_chips(app, ui, palette);
-            ui.add_space(4.0);
-        });
-    });
-    let hidden = row.content_size.x - row.state.offset.x - row.inner_rect.width();
-    if hidden > 0.5 {
-        widgets::fade_right(ui, row.inner_rect, super::chats::CHIP_FADE, palette.panel);
-    }
+        })
+        .response;
     ui.ctx()
-        .data_mut(|data| data.insert_temp(chip_row_id(), row.inner_rect));
+        .data_mut(|data| data.insert_temp(chip_row_id(), row.rect));
 }
 
 fn label_chips(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {

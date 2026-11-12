@@ -245,7 +245,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             // The window takes the theme's own colour, so the controls on it
             // read in a light theme as in a dark one.
             ui.painter().rect_filled(rect, 0.0, palette.window);
-            let room = rect.shrink(MARGIN);
+            let mut room = rect.shrink(MARGIN);
+            // ZFPlus: below drawn caption buttons, so Keep and Cancel never
+            // sit beside minimise, restore and close.
+            let caption = theme::caption_footprint(ui.ctx());
+            if caption.right > 0.0 || caption.left > 0.0 {
+                room.min.y = room.min.y.max(rect.min.y + caption.height + 8.0);
+            }
             let top = Rect::from_min_size(room.min, vec2(room.width(), BAR));
             let bottom =
                 Rect::from_min_size(pos2(room.min.x, room.max.y - BAR), vec2(room.width(), BAR));

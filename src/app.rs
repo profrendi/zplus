@@ -2538,6 +2538,12 @@ impl App {
                 self.actions.push(Action::ShowWindow);
                 continue;
             }
+            if target.chat == crate::notify::UPDATE_RESTART_TARGET {
+                self.actions.push(Action::UpdateAndRestart);
+                self.actions.push(Action::ShowUpdates);
+                self.actions.push(Action::ShowWindow);
+                continue;
+            }
             if target.chat == crate::notify::MEMORY_TARGET {
                 self.actions.push(Action::ShowMemory);
                 self.actions.push(Action::ShowWindow);
@@ -2593,14 +2599,22 @@ impl App {
         if self.tray_check_asked && check != crate::plus::UpdateCheck::Checking {
             self.tray_check_asked = false;
             let name = crate::channel::NAME;
-            let (title, body) = match (&check, &self.update) {
-                (_, Some(update)) => (
+            let found = match (&check, &self.update) {
+                (_, Some(update)) => Some(update.version.clone()),
+                (crate::plus::UpdateCheck::Available(version), None) => Some(version.clone()),
+                _ => None,
+            };
+            if let Some(version) = found {
+                self.update_restart_notice(
                     format!(
                         "{name} {} is available",
-                        crate::channel::display_version(&update.version)
+                        crate::channel::display_version(&version)
                     ),
-                    "Click to open the update and restart.".to_owned(),
-                ),
+                    "Click to update and restart now.".to_owned(),
+                );
+                return;
+            }
+            let (title, body) = match (&check, &self.update) {
                 (crate::plus::UpdateCheck::Failed(error), None) => {
                     ("Could not check for updates".to_owned(), error.clone())
                 }
@@ -2610,10 +2624,35 @@ impl App {
         }
     }
 
+    /// ZFPlus: a notification that a newer release is out, whose click
+    /// downloads it, installs it and restarts.
+    fn update_restart_notice(&mut self, title: String, body: String) {
+        if !self.settings.notifications {
+            self.toast(title);
+            return;
+        }
+        let waker = self.waker.clone();
+        self.notifications.show(
+            title,
+            body,
+            None,
+            NotificationSound::None,
+            crate::notify::NotificationTarget {
+                account: self.account().id.clone(),
+                chat: crate::notify::UPDATE_RESTART_TARGET.to_owned(),
+                message: None,
+            },
+            std::sync::Arc::clone(&self.notification_opens),
+            move || waker.wake(),
+            false,
+        );
+    }
+
     /// ZFPlus: a notification about an update, whose click opens the update
     /// controls. It names no chat, so it shows even behind the app lock.
     fn update_notice(&mut self, title: String, body: String) {
         if !self.settings.notifications {
+            self.toast(title);
             return;
         }
         let waker = self.waker.clone();
@@ -9944,7 +9983,12 @@ impl App {
             }
             Action::CloseUpdate => self.show_update = false,
             Action::CheckForUpdates => {
-                crate::plus::request_check();
+                // Started here, not on the next tick: with the window in the
+                // tray no tick may come until something else wakes the app.
+                self.last_update_check = Some(Instant::now());
+                self.update_support = None;
+                let waker = self.waker.clone();
+                crate::plus::spawn_check(move || waker.wake());
                 self.tray_check_asked = true;
             }
             Action::UpdateAndRestart => {
@@ -11389,12 +11433,12 @@ impl App {
         if self.video.message().is_some() && self.video_chat != self.open_chat {
             self.video.stop();
         }
-        // The viewer shows the open chat's media, and leaves with it.
-        if self
-            .image_preview
-            .as_ref()
-            .is_some_and(|preview| self.open_chat.as_deref() != Some(preview.chat()))
-        {
+        // The viewer shows the open chat's media, and leaves with it. ZFPlus:
+        // a profile photo belongs to no chat (its chat is empty), and once
+        // closed here in the very frame it opened, so it never showed.
+        if self.image_preview.as_ref().is_some_and(|preview| {
+            !preview.chat().is_empty() && self.open_chat.as_deref() != Some(preview.chat())
+        }) {
             self.image_preview = None;
             self.viewer_media.clear();
             self.viewer_media_chat = None;

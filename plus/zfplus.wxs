@@ -19,6 +19,10 @@
     <MajorUpgrade AllowSameVersionUpgrades="yes"
       DowngradeErrorMessage="A newer version of ZFPlus is already installed." />
     <Media Id="1" Cabinet="zapfast.cab" EmbedCab="yes" />
+    <!-- ZFPlus: the shortcuts take the program's own icon, not this one: a
+         shortcut's Icon is a copy under this install's own folder in
+         Windows' installer cache, which goes when an update replaces the
+         install, and a taskbar pin made from it turned white. -->
     <Icon Id="ZFPlusIcon" SourceFile="$(var.IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="ZFPlusIcon" />
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -47,7 +51,7 @@
       <Directory Id="ProgramMenuFolder">
         <Component Id="StartMenuShortcut" Guid="{A1C4E8D2-5B7F-4E3A-8D90-2C6B1F4E7A55}">
           <Shortcut Id="StartMenuZFPlus" Name="ZFPlus" Description="WhatsApp, native and fast, with Enhancements"
-            Target="[INSTALLFOLDER]zapfast.exe" WorkingDirectory="INSTALLFOLDER" Icon="ZFPlusIcon" />
+            Target="[INSTALLFOLDER]zapfast.exe" WorkingDirectory="INSTALLFOLDER" />
           <RegistryValue Root="HKCU" Key="Software\ZFPlus" Name="StartMenuShortcut"
             Type="integer" Value="1" KeyPath="yes" />
         </Component>
@@ -55,7 +59,7 @@
       <Directory Id="DesktopFolder">
         <Component Id="DesktopShortcut" Guid="{C9D2B7E4-1A3F-4C6E-B8D5-9F0A2E4C6B17}">
           <Shortcut Id="DesktopZFPlus" Name="ZFPlus" Description="WhatsApp, native and fast, with Enhancements"
-            Target="[INSTALLFOLDER]zapfast.exe" WorkingDirectory="INSTALLFOLDER" Icon="ZFPlusIcon" />
+            Target="[INSTALLFOLDER]zapfast.exe" WorkingDirectory="INSTALLFOLDER" />
           <RegistryValue Root="HKCU" Key="Software\ZFPlus" Name="DesktopShortcut"
             Type="integer" Value="1" KeyPath="yes" />
         </Component>

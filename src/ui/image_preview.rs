@@ -373,6 +373,28 @@ fn header(
                     actions.push(Action::ZoomImageOut);
                 }
             }
+            // ZFPlus: a picture opened on its own (a profile photo) can still
+            // be saved, at the size it is shown.
+            if !has_message && let Some(path) = preview.path().map(std::path::Path::to_path_buf) {
+                ui.add_space(8.0);
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("photo.jpg")
+                    .to_owned();
+                if theme::icon_button(
+                    ui,
+                    Icon::Download,
+                    18.0,
+                    palette.secondary,
+                    palette.text,
+                    crate::i18n::gettext(app.locale, "Save as…").as_ref(),
+                )
+                .clicked()
+                {
+                    actions.push(Action::SaveAttachmentAs { path, name });
+                }
+            }
             // What the message itself can do, when the viewer knows which one
             // it is. A picture opened on its own has nothing to act on.
             if has_message {

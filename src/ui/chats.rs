@@ -650,9 +650,6 @@ pub fn filter_chip_id(filter: ChatFilter) -> egui::Id {
     egui::Id::new(("chat-filter", filter as u8))
 }
 
-/// Width of the fade over the filter chips' right edge.
-pub(super) const CHIP_FADE: f32 = 16.0;
-
 /// Filter chips under the search field. Search lists every match, so the
 /// chips hide there.
 fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
@@ -665,8 +662,10 @@ fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
     }
     let palette = app.palette;
     ui.add_space(8.0);
-    let output = widgets::chip_scroll_row(ui, "chat-filters", |ui| {
-        ui.horizontal(|ui| {
+    // ZFPlus: the chips wrap onto a second line in a narrow list instead of
+    // scrolling out of sight, so Channels and the labels always show.
+    {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 6.0);
             for filter in ChatFilter::EVERY {
                 let count = match filter {
@@ -723,18 +722,22 @@ fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
                     app.actions.push(Action::SetChatFilter(next));
                 }
             }
-            ui.add_space(4.0);
-        })
-    });
-    // Chips cut off at the edge fade into the panel, which says the row
-    // scrolls on.
-    let hidden = output.content_size.x - output.state.offset.x - output.inner_rect.width();
-    if hidden > 0.5 {
-        // A translucent sidebar would show the fade as a band; the chips
-        // are only cut there.
-        if !palette.vibrant() {
-            widgets::fade_right(ui, output.inner_rect, CHIP_FADE, palette.panel);
-        }
+            // ZFPlus: labels group chats as folders do; until there is one,
+            // this makes the first.
+            if app.labels.is_empty()
+                && theme::icon_button(
+                    ui,
+                    Icon::Plus,
+                    15.0,
+                    palette.secondary,
+                    palette.text,
+                    &crate::i18n::gettext(app.locale, "New label, to group chats like a folder"),
+                )
+                .clicked()
+            {
+                app.actions.push(Action::ShowDialog(Dialog::Labels));
+            }
+        });
     }
     labels::chip_row(app, ui, &palette);
 }
@@ -3123,7 +3126,7 @@ mod tests {
     /// Both chip rows overflow in a narrow window (#444). Neither draws a
     /// scroll bar, at rest or hovered: a plain vertical wheel scrolls the row.
     #[test]
-    fn narrow_chip_rows_draw_no_scroll_bar_and_follow_the_wheel() {
+    fn narrow_chip_rows_wrap_so_every_chip_shows() {
         let directory = tempfile::tempdir().unwrap();
         let (mut app, _events) =
             App::headless(AppDirs::under(directory.path()), Settings::default());
@@ -3137,7 +3140,7 @@ mod tests {
             .collect();
         let ctx = egui::Context::default();
         app.attach(&ctx);
-        // Narrow enough that both rows scroll.
+        // Narrow enough that both rows would have scrolled before.
         let mut frame = |events| {
             let mut output = ctx.run_ui(
                 egui::RawInput {
@@ -3151,77 +3154,28 @@ mod tests {
             output.shapes
         };
         frame(vec![]);
-        let all = |ctx: &egui::Context| {
-            ctx.data(|data| data.get_temp::<Rect>(filter_chip_id(ChatFilter::All)))
-                .expect("the filter chips are drawn")
-        };
-        let first_label = ctx
-            .data(|data| data.get_temp::<Rect>(super::labels::chip_id("0")))
-            .expect("the first label chip is drawn");
-
-        /// Collects every visible thin rectangle in `shape` into `bars`. A
-        /// scroll bar is a thin rectangle; chips are taller.
-        fn thin_rects(shape: &egui::Shape, bars: &mut Vec<Rect>) {
-            match shape {
-                egui::Shape::Vec(shapes) => {
-                    shapes.iter().for_each(|shape| thin_rects(shape, bars));
-                }
-                egui::Shape::Rect(rect)
-                    if rect.rect.height() < 12.0
-                        && rect.rect.width() > 12.0
-                        && rect.fill.a() > 0 =>
-                {
-                    bars.push(rect.rect);
-                }
-                _ => {}
-            }
+        // ZFPlus: in a list this narrow the chips wrap onto more lines, and
+        // every one of them, the labels' too, lies inside the list's width.
+        let width = 220.0;
+        for filter in ChatFilter::EVERY {
+            let rect = ctx
+                .data(|data| data.get_temp::<Rect>(filter_chip_id(filter)))
+                .expect("every filter chip is drawn");
+            assert!(rect.right() <= width + 0.5, "{filter:?} at {rect:?}");
         }
-        let bars = |shapes: &[egui::epaint::ClippedShape]| {
-            let mut bars = Vec::new();
-            for clipped in shapes {
-                thin_rects(&clipped.shape, &mut bars);
-            }
-            bars
-        };
-
-        // At rest, away from the rows, neither shows a bar.
-        let mut shapes = Vec::new();
-        for _ in 0..5 {
-            shapes = frame(vec![egui::Event::PointerMoved(egui::pos2(110.0, 380.0))]);
+        let all = ctx
+            .data(|data| data.get_temp::<Rect>(filter_chip_id(ChatFilter::All)))
+            .unwrap();
+        let channels = ctx
+            .data(|data| data.get_temp::<Rect>(filter_chip_id(ChatFilter::Channels)))
+            .unwrap();
+        assert!(channels.top() > all.top(), "the row wrapped");
+        for index in 0..8 {
+            let rect = ctx
+                .data(|data| data.get_temp::<Rect>(super::labels::chip_id(&index.to_string())))
+                .expect("every label chip is drawn");
+            assert!(rect.right() <= width + 0.5, "label {index} at {rect:?}");
         }
-        let resting = bars(&shapes);
-        assert!(
-            resting.is_empty(),
-            "the chip rows show bars at rest: {resting:?}"
-        );
-
-        for pointer in [all(&ctx).center(), first_label.center()] {
-            let mut shapes = Vec::new();
-            for _ in 0..5 {
-                shapes = frame(vec![egui::Event::PointerMoved(pointer)]);
-            }
-            let shown = bars(&shapes);
-            assert!(shown.is_empty(), "a hovered chip row drew {shown:?}");
-        }
-
-        let before = all(&ctx).left();
-        // The middle of the row.
-        let pointer = egui::pos2(110.0, all(&ctx).center().y);
-        frame(vec![
-            egui::Event::PointerMoved(pointer),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: vec2(0.0, -60.0),
-                modifiers: egui::Modifiers::NONE,
-                phase: egui::TouchPhase::Move,
-            },
-        ]);
-        frame(vec![egui::Event::PointerMoved(pointer)]);
-        assert!(
-            all(&ctx).left() < before - 1.0,
-            "a vertical wheel left the filter chips at {before}, now {}",
-            all(&ctx).left()
-        );
     }
 
     /// An app with `count` chats, newest first, and a context to draw it in.

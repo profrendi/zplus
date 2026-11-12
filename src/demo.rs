@@ -11169,6 +11169,36 @@ mod tests {
         press_at(app, ctx, pos);
     }
 
+    /// ZFPlus: the contact's photo in the info panel opens the viewer at
+    /// full size, and Save photo saves that full-size file.
+    #[test]
+    fn the_contact_photo_opens_large_and_saves() {
+        let mut app = app();
+        app.backend.record_demo_commands();
+        apply_flags(&mut app, Some("info"));
+        let chat = app.open_chat.clone().expect("a chat");
+        let dir = tempfile::tempdir().unwrap();
+        let full = dir.path().join("photo-full.jpg");
+        image::RgbImage::from_pixel(640, 640, image::Rgb([200, 40, 40]))
+            .save(&full)
+            .unwrap();
+        app.avatars_full.insert(chat.clone(), Some(full.clone()));
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        app.attach(&ctx);
+        for _ in 0..3 {
+            render(&mut app, &ctx);
+        }
+        press_labelled(&mut app, &ctx, "View photo", egui::accesskit::Role::Button);
+        render(&mut app, &ctx);
+
+        let preview = app.image_preview.as_ref().expect("the viewer opened");
+        assert_eq!(preview.path(), Some(full.as_path()));
+        // Opened from the panel, it stays open frame after frame.
+        render(&mut app, &ctx);
+        assert!(app.image_preview.is_some(), "the viewer stays open");
+    }
+
     fn new_group_dialog() -> (App, egui::Context) {
         let mut app = app();
         app.backend.record_demo_commands();
@@ -22158,7 +22188,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_stay_on_one_line_and_locked_is_only_shown_when_needed() {
+    fn filters_all_show_and_locked_is_only_shown_when_needed() {
         use crate::ui::rail::{Destination, destination_id};
         let mut app = app();
         for chat in &mut app.chats {
@@ -22193,8 +22223,12 @@ mod tests {
                 .unwrap()
             })
             .collect();
+        // ZFPlus: the chips wrap rather than scroll out of sight, so every
+        // one lies inside the list, on its first lines.
+        let list = ctx.content_rect();
         for rect in &chips {
-            assert!((rect.top() - chips[0].top()).abs() < 0.1);
+            assert!(rect.right() <= list.right() && rect.top() >= chips[0].top());
+            assert!(rect.top() - chips[0].top() < 80.0, "{chips:?}");
         }
     }
 
