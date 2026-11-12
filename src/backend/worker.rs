@@ -952,6 +952,67 @@ fn behind_a_search(queued: Vec<Command>) -> BehindASearch {
     sorted
 }
 
+/// Why WhatsApp ended a link: a line for the log and one for the window.
+struct LogoutCause {
+    log: String,
+    shown: String,
+}
+
+/// Reads a logout's reason and the stanza behind it. The log line names the
+/// reason, whether it came while connecting, the stanza's tag, its `code`,
+/// and each child's tag and `type` (such as `conflict type=device_removed`):
+/// enough to tell a removal from the phone from a server-side logout, and
+/// nothing private. WhatsApp's own explanation, when it sent one, is shown.
+fn logout_cause(logged_out: &whatsapp_rust::wacore::types::events::LoggedOut) -> LogoutCause {
+    let mut stanza = String::new();
+    let mut conflict = None;
+    if let Some(raw) = &logged_out.raw {
+        stanza.push_str(&raw.tag);
+        if let Some(code) = raw.attrs().optional_string("code") {
+            stanza.push_str(&format!(" code={code}"));
+        }
+        for child in raw.children().unwrap_or_default() {
+            stanza.push_str(&format!(" <{}", child.tag));
+            if let Some(kind) = child.attrs().optional_string("type") {
+                stanza.push_str(&format!(" type={kind}"));
+                if child.tag == "conflict" {
+                    conflict = Some(kind.into_owned());
+                }
+            }
+            stanza.push('>');
+        }
+    } else {
+        stanza.push_str("none");
+    }
+    let log = format!(
+        "reason {:?}, while connecting {}, stanza {stanza}",
+        logged_out.reason, logged_out.on_connect
+    );
+    use whatsapp_rust::wacore::types::events::ConnectFailureReason as Reason;
+    let explained = logged_out.logout_message.as_ref().and_then(|message| {
+        let text = [message.header.as_deref(), message.subtext.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(": ");
+        (!text.is_empty()).then_some(text)
+    });
+    let shown = explained.unwrap_or_else(|| {
+        match (conflict.as_deref(), &logged_out.reason) {
+            (Some("device_removed"), _) => {
+                "WhatsApp removed this device from Linked devices (from the phone, or by WhatsApp itself)"
+            }
+            (Some("replaced"), _) => "Another copy signed in as this device and replaced it",
+            (_, Reason::AccountLocked) => "WhatsApp locked this account",
+            (_, Reason::TempBanned) => "WhatsApp has temporarily banned this account",
+            (_, Reason::ClientOutdated) => "WhatsApp says this version is too old",
+            _ => "WhatsApp ended this device's session",
+        }
+        .to_owned()
+    });
+    LogoutCause { log, shown }
+}
+
 /// Connects `client` now, without waiting out the library's backoff.
 ///
 /// `reconnect_immediately` drops a live socket and skips the wait that would
@@ -4462,7 +4523,14 @@ impl Worker {
                     });
                 }
             }
-            E::LoggedOut(_) => self.on_logged_out().await,
+            E::LoggedOut(logged_out) => {
+                // ZFPlus: say why, so a logout can be traced afterwards. Only
+                // the reason and the stanza's shape are logged, never tokens.
+                let cause = logout_cause(logged_out);
+                log::warn!("link: WhatsApp ended this link: {}", cause.log);
+                self.on_logged_out().await;
+                self.emit(Event::Error(cause.shown));
+            }
             E::ConnectFailure(failure) => {
                 if !failure.reason.is_logged_out() {
                     let detail = failure
@@ -14988,6 +15056,73 @@ mod tests {
         ));
         worker.watch_link();
         assert!(events.try_recv().is_err(), "only one recovery is requested");
+    }
+
+    /// A removal from Linked devices, a server-side 401 and WhatsApp's own
+    /// explanation each read as what they are, and nothing private is logged.
+    #[test]
+    fn a_logout_says_why() {
+        use whatsapp_rust::NodeBuilder;
+        use whatsapp_rust::wacore::types::events::{
+            ConnectFailureReason, LoggedOut, LogoutMessage,
+        };
+        let removed = LoggedOut::builder()
+            .on_connect(false)
+            .reason(ConnectFailureReason::LoggedOut)
+            .raw(
+                NodeBuilder::new("stream:error")
+                    .children([NodeBuilder::new("conflict")
+                        .attr("type", "device_removed")
+                        .build()])
+                    .build(),
+            )
+            .build();
+        let cause = logout_cause(&removed);
+        assert_eq!(
+            cause.log,
+            "reason LoggedOut, while connecting false, stanza stream:error <conflict type=device_removed>"
+        );
+        assert!(
+            cause.shown.contains("removed this device"),
+            "{}",
+            cause.shown
+        );
+
+        let server = LoggedOut::builder()
+            .on_connect(false)
+            .reason(ConnectFailureReason::LoggedOut)
+            .raw(NodeBuilder::new("stream:error").attr("code", "401").build())
+            .build();
+        let cause = logout_cause(&server);
+        assert!(
+            cause.log.ends_with("stanza stream:error code=401"),
+            "{}",
+            cause.log
+        );
+        assert_eq!(cause.shown, "WhatsApp ended this device's session");
+
+        let locked = LoggedOut::builder()
+            .on_connect(true)
+            .reason(ConnectFailureReason::AccountLocked)
+            .logout_message(
+                LogoutMessage::builder()
+                    .header("Your account is locked".to_owned())
+                    .subtext("Open WhatsApp on your phone".to_owned())
+                    .build(),
+            )
+            .raw(
+                NodeBuilder::new("failure")
+                    .attr("reason", "403")
+                    .attr("appeal_token", "secret-token")
+                    .build(),
+            )
+            .build();
+        let cause = logout_cause(&locked);
+        assert_eq!(
+            cause.shown,
+            "Your account is locked: Open WhatsApp on your phone"
+        );
+        assert!(!cause.log.contains("secret-token"), "{}", cause.log);
     }
 
     /// Every dial fails, as on a PC whose network is not up yet, and each one

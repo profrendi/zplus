@@ -938,6 +938,12 @@ pub struct App {
     /// Whether the tray menu offers "Lock ZapFast": whether an app lock
     /// password was set when it last changed.
     tray_lockable: bool,
+    /// ZFPlus: what the tray's update entries say now, so they change only
+    /// when the update's state does.
+    tray_updates: Option<TrayUpdateEntries>,
+    /// ZFPlus: a check asked for from the tray, whose result a notification
+    /// reports once it is known.
+    tray_check_asked: bool,
     /// Whether the app is running without a window.
     pub window_hidden: bool,
     /// Whether window close should keep the process running.
@@ -1279,6 +1285,10 @@ const TRAY_WAIT: Duration = Duration::from_secs(30);
 const TRAY_SHOW: &str = "show";
 const TRAY_LOCK: &str = "lock";
 const TRAY_QUIT: &str = "quit";
+/// ZFPlus: checks for an update from the tray.
+const TRAY_CHECK: &str = "check";
+/// ZFPlus: updates and restarts from the tray, shown while there is one.
+const TRAY_UPDATE: &str = "update";
 
 /// Whether the tray's `Event::Show` is a click on the tray icon, which should
 /// toggle the window as Linux's left click does. Windows only: on macOS it is
@@ -1303,6 +1313,8 @@ fn tray_action(event: fastframe_tray::Event, window_hidden: bool) -> Option<Acti
         Event::Toggle | Event::Menu(TRAY_SHOW) if window_hidden => Action::ShowWindow,
         Event::Toggle | Event::Menu(TRAY_SHOW) => Action::HideWindow,
         Event::Menu(TRAY_LOCK) => Action::LockApp,
+        Event::Menu(TRAY_CHECK) => Action::CheckForUpdates,
+        Event::Menu(TRAY_UPDATE) => Action::UpdateAndRestart,
         Event::Menu(TRAY_QUIT) => Action::Quit,
         Event::Menu(_) => return None,
     })
@@ -1314,7 +1326,7 @@ fn tray_action(event: fastframe_tray::Event, window_hidden: bool) -> Option<Acti
 ///
 /// "Lock ZapFast" is always in the menu, hidden without a password;
 /// `App::sync_tray` shows or hides it as the password is set or removed.
-fn tray_config(lockable: bool) -> fastframe_tray::Config {
+pub(crate) fn tray_config(lockable: bool) -> fastframe_tray::Config {
     use fastframe_tray::MenuItem;
     fastframe_tray::Config {
         id: crate::channel::SLUG,
@@ -1328,9 +1340,51 @@ fn tray_config(lockable: bool) -> fastframe_tray::Config {
             MenuItem::action(TRAY_SHOW, "Show or hide ZapFast"),
             MenuItem::action(TRAY_LOCK, "Lock ZapFast").visible(lockable),
             MenuItem::Separator,
+            MenuItem::action(TRAY_CHECK, "Check for updates"),
+            MenuItem::action(TRAY_UPDATE, "Update and restart").visible(false),
+            MenuItem::Separator,
             MenuItem::action(TRAY_QUIT, "Quit"),
         ],
     }
+}
+
+/// ZFPlus: the tray's update entries: the check entry's label and whether it
+/// can be chosen, and the update entry's, when it shows.
+type TrayUpdateEntries = ((String, bool), Option<(String, bool)>);
+
+/// ZFPlus: what the tray's update entries say, from the update's state:
+/// the check entry's label and whether it can be chosen, and the update
+/// entry's label, if it shows at all, and whether it can be chosen.
+fn tray_update_entries(
+    check: &crate::plus::UpdateCheck,
+    available: Option<&str>,
+    download: &crate::updates::DownloadState,
+) -> TrayUpdateEntries {
+    use crate::updates::DownloadState;
+    let checking = *check == crate::plus::UpdateCheck::Checking;
+    let check_entry = if checking {
+        ("Checking for updates…".to_owned(), false)
+    } else {
+        ("Check for updates".to_owned(), true)
+    };
+    let version = available.map(crate::channel::display_version);
+    let update_entry = match (download, version) {
+        (DownloadState::Installing, _) => Some(("Installing the update…".to_owned(), false)),
+        (DownloadState::Ready(_), Some(version)) => {
+            Some((format!("Restart to update to {version}"), true))
+        }
+        (DownloadState::Downloading { received, total }, Some(version)) => {
+            let share = if *total > 0 {
+                format!(" {}%", received * 100 / total)
+            } else {
+                String::new()
+            };
+            Some((format!("Downloading {version}…{share}"), false))
+        }
+        (_, Some(version)) => Some((format!("Update to {version} and restart"), true)),
+        (_, None) => None,
+    };
+    (check_entry, update_entry)
 }
 
 /// Whether the tray item should be made now. Turning the setting off leaves
@@ -1771,6 +1825,8 @@ impl App {
             #[cfg(test)]
             test_raised: false,
             tray_lockable,
+            tray_updates: None,
+            tray_check_asked: false,
             window_hidden: false,
             hide_intent: false,
             wants_show: false,
@@ -2231,7 +2287,7 @@ impl App {
     }
 
     /// Whether there is a tray item at all, shown by a panel or not.
-    fn has_tray(&self) -> bool {
+    pub(crate) fn has_tray(&self) -> bool {
         #[cfg(test)]
         if self.test_tray_shown.is_some() {
             return true;
@@ -2350,6 +2406,7 @@ impl App {
                 tray.set_visible(TRAY_LOCK, lockable);
             }
         }
+        self.sync_tray_updates();
         self.sync_tray_colour(Instant::now());
         // The same count as the taskbar's; a new icon only when it shows.
         let count = self.unread_chat_count_everywhere();
@@ -2452,6 +2509,12 @@ impl App {
                 .unwrap_or_else(|p| p.into_inner()),
         );
         for target in opened {
+            // ZFPlus: an update notification opens the update controls.
+            if target.chat == crate::notify::UPDATE_TARGET {
+                self.actions.push(Action::ShowUpdates);
+                self.actions.push(Action::ShowWindow);
+                continue;
+            }
             // Behind the app lock nothing changes yet: the message, with its
             // account, opens once unlocked.
             if self.app_lock.is_locked() {
@@ -2472,6 +2535,74 @@ impl App {
             }
             self.actions.push(Action::ShowWindow);
         }
+    }
+
+    /// ZFPlus: keeps the tray's update entries in step with the update, and
+    /// reports a check asked for from the tray once its result is known.
+    fn sync_tray_updates(&mut self) {
+        let check = crate::plus::update_check();
+        let entries = tray_update_entries(
+            &check,
+            self.update.as_ref().map(|update| update.version.as_str()),
+            &self.update_download,
+        );
+        if self.tray_updates.as_ref() != Some(&entries)
+            && let Some(tray) = &mut self.tray
+        {
+            let ((check_label, check_enabled), update) = &entries;
+            tray.set_label(TRAY_CHECK, check_label.clone());
+            tray.set_enabled(TRAY_CHECK, *check_enabled);
+            match update {
+                Some((label, enabled)) => {
+                    tray.set_label(TRAY_UPDATE, label.clone());
+                    tray.set_enabled(TRAY_UPDATE, *enabled);
+                    tray.set_visible(TRAY_UPDATE, true);
+                }
+                None => tray.set_visible(TRAY_UPDATE, false),
+            }
+            self.tray_updates = Some(entries);
+        }
+        if self.tray_check_asked && check != crate::plus::UpdateCheck::Checking {
+            self.tray_check_asked = false;
+            let name = crate::channel::NAME;
+            let (title, body) = match (&check, &self.update) {
+                (_, Some(update)) => (
+                    format!(
+                        "{name} {} is available",
+                        crate::channel::display_version(&update.version)
+                    ),
+                    "Click to open the update and restart.".to_owned(),
+                ),
+                (crate::plus::UpdateCheck::Failed(error), None) => {
+                    ("Could not check for updates".to_owned(), error.clone())
+                }
+                _ => (format!("{name} is up to date"), String::new()),
+            };
+            self.update_notice(title, body);
+        }
+    }
+
+    /// ZFPlus: a notification about an update, whose click opens the update
+    /// controls. It names no chat, so it shows even behind the app lock.
+    fn update_notice(&mut self, title: String, body: String) {
+        if !self.settings.notifications {
+            return;
+        }
+        let waker = self.waker.clone();
+        self.notifications.show(
+            title,
+            body,
+            None,
+            NotificationSound::None,
+            crate::notify::NotificationTarget {
+                account: self.account().id.clone(),
+                chat: crate::notify::UPDATE_TARGET.to_owned(),
+                message: None,
+            },
+            std::sync::Arc::clone(&self.notification_opens),
+            move || waker.wake(),
+            false,
+        );
     }
 
     fn clear_chat_notifications(&mut self, chat: &str) {
@@ -4938,7 +5069,21 @@ impl App {
                 crate::plus::set_update_check(crate::plus::UpdateCheck::Available(version.clone()));
                 let notice = crate::updates::Release { version, url };
                 if self.update.as_ref() != Some(&notice) {
-                    self.toast(format!("ZFPlus {} is available", notice.version));
+                    let shown = format!(
+                        "{} {} is available",
+                        crate::channel::NAME,
+                        crate::channel::display_version(&notice.version)
+                    );
+                    self.toast(shown.clone());
+                    // ZFPlus: said on the desktop too, since the window is
+                    // often closed to the tray; the click opens the update.
+                    // A check asked for from the tray says it itself.
+                    if !self.tray_check_asked {
+                        self.update_notice(
+                            shown,
+                            "Click to open the update and restart.".to_owned(),
+                        );
+                    }
                 }
                 self.update = Some(notice);
             }
@@ -9707,6 +9852,32 @@ impl App {
                 self.inspect_update();
             }
             Action::CloseUpdate => self.show_update = false,
+            Action::CheckForUpdates => {
+                crate::plus::request_check();
+                self.tray_check_asked = true;
+            }
+            Action::UpdateAndRestart => {
+                if matches!(
+                    self.update_download,
+                    crate::updates::DownloadState::Ready(_)
+                ) {
+                    self.apply(Action::InstallUpdate, ctx);
+                } else if self.update.is_some()
+                    && !matches!(
+                        self.update_download,
+                        crate::updates::DownloadState::Downloading { .. }
+                            | crate::updates::DownloadState::Installing
+                    )
+                {
+                    // Installs and restarts by itself once downloaded.
+                    crate::plus::want_install();
+                    self.download_update();
+                }
+            }
+            Action::ShowUpdates => {
+                self.apply(Action::Open(Page::Settings), ctx);
+                self.settings_search = "Check for updates".to_owned();
+            }
             Action::DownloadUpdate => self.download_update(),
             Action::InstallUpdate => {
                 if matches!(
@@ -19016,10 +19187,103 @@ mod tests {
                     fastframe_tray::MenuItem::action(super::TRAY_LOCK, "Lock ZapFast")
                         .visible(lockable),
                     fastframe_tray::MenuItem::Separator,
+                    fastframe_tray::MenuItem::action(super::TRAY_CHECK, "Check for updates"),
+                    fastframe_tray::MenuItem::action(super::TRAY_UPDATE, "Update and restart")
+                        .visible(false),
+                    fastframe_tray::MenuItem::Separator,
                     fastframe_tray::MenuItem::action(super::TRAY_QUIT, "Quit"),
                 ]
             );
         }
+    }
+
+    /// ZFPlus: the tray checks for updates and, while there is one, offers it
+    /// with a restart, saying how far a download has come.
+    #[test]
+    fn the_tray_offers_an_update_with_a_restart() {
+        use crate::plus::UpdateCheck;
+        use crate::updates::DownloadState;
+        use fastframe_tray::Event;
+        assert!(matches!(
+            super::tray_action(Event::Menu(super::TRAY_CHECK), true),
+            Some(Action::CheckForUpdates)
+        ));
+        assert!(matches!(
+            super::tray_action(Event::Menu(super::TRAY_UPDATE), true),
+            Some(Action::UpdateAndRestart)
+        ));
+        let entries = |check: UpdateCheck, version: Option<&str>, download: DownloadState| {
+            super::tray_update_entries(&check, version, &download)
+        };
+        assert_eq!(
+            entries(UpdateCheck::UpToDate, None, DownloadState::Idle),
+            (("Check for updates".to_owned(), true), None)
+        );
+        assert_eq!(
+            entries(UpdateCheck::Checking, None, DownloadState::Idle).0,
+            ("Checking for updates…".to_owned(), false)
+        );
+        assert_eq!(
+            entries(UpdateCheck::UpToDate, Some("0.21.106"), DownloadState::Idle).1,
+            Some(("Update to 0.21.106 and restart".to_owned(), true))
+        );
+        assert_eq!(
+            entries(
+                UpdateCheck::UpToDate,
+                Some("0.21.106"),
+                DownloadState::Downloading {
+                    received: 25,
+                    total: 100
+                }
+            )
+            .1,
+            Some(("Downloading 0.21.106… 25%".to_owned(), false))
+        );
+        assert_eq!(
+            entries(UpdateCheck::UpToDate, None, DownloadState::Installing).1,
+            Some(("Installing the update…".to_owned(), false))
+        );
+    }
+
+    /// ZFPlus: a new update is said on the desktop, and its notification opens
+    /// the update controls in Settings rather than a chat.
+    #[test]
+    fn an_update_notification_opens_the_update_controls() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.apply_backend_event(
+            Event::UpdateAvailable {
+                version: "0.21.106".into(),
+                url: "https://example.invalid/release".into(),
+            },
+            true,
+        );
+        assert!(
+            app.notifications
+                .shown
+                .iter()
+                .any(|shown| shown.title == "ZFPlus 0.21.106 is available"),
+            "{:?}",
+            app.notifications
+                .shown
+                .iter()
+                .map(|s| &s.title)
+                .collect::<Vec<_>>()
+        );
+        app.notification_opens
+            .lock()
+            .unwrap()
+            .push(crate::notify::NotificationTarget {
+                account: app.account().id.clone(),
+                chat: crate::notify::UPDATE_TARGET.to_owned(),
+                message: None,
+            });
+        app.handle_notification_opens();
+        for action in std::mem::take(&mut app.actions) {
+            app.apply(action, &ctx);
+        }
+        assert_eq!(app.page, Page::Settings);
+        assert_eq!(app.settings_search, "Check for updates");
     }
 
     /// The tray offers "Lock ZapFast" as soon as a password is set and stops

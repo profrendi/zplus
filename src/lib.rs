@@ -25,6 +25,7 @@ pub mod channel;
 pub mod demo;
 pub mod diagnostics;
 pub mod emoji;
+pub mod feature_check;
 pub mod geo;
 pub mod group_admin;
 pub mod i18n;

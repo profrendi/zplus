@@ -3948,6 +3948,17 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.chat_search_calendar = true;
             }
             "unread" => app.chat_filter = crate::model::ChatFilter::Unread,
+            // ZFPlus: Private Mode with every blur on, to look at the blur.
+            "plus-blur" => {
+                let plus = &mut app.settings.plus;
+                plus.private_mode = true;
+                plus.show_eye_button = false;
+                plus.blur_names = true;
+                plus.blur_photos = true;
+                plus.blur_recent = true;
+                plus.blur_messages = true;
+                plus.blur_composer = true;
+            }
             "private" => app.chat_filter = crate::model::ChatFilter::Private,
             "favorites" => app.chat_filter = crate::model::ChatFilter::Favorites,
             "groups" => app.chat_filter = crate::model::ChatFilter::Groups,
@@ -6453,6 +6464,73 @@ mod tests {
     }
 
     /// Every label and value in the accessibility tree of one frame.
+    /// ZFPlus: every feature in `feature_check::INVENTORY` is where people
+    /// look for it: each Settings row turns up when searched for by its
+    /// label, and each tray entry is in the tray's menu. The release and
+    /// nightly workflows run this, so a merge or a change that loses one
+    /// stops the release instead of reaching anyone.
+    #[test]
+    fn every_inventoried_feature_is_on_screen() {
+        use crate::feature_check::{INVENTORY, Place};
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        app.page = Page::Settings;
+        let tray: Vec<String> = crate::app::tray_config(true)
+            .menu
+            .into_iter()
+            .filter_map(|item| match item {
+                fastframe_tray::MenuItem::Action { label, .. } => Some(label),
+                _ => None,
+            })
+            .collect();
+        let mut missing = Vec::new();
+        for (place, label) in INVENTORY {
+            let found = match place {
+                Place::Settings => {
+                    app.settings_search = (*label).to_owned();
+                    render(&mut app, &ctx);
+                    let output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1180.0, 780.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| app.frame_ui(ui),
+                    );
+                    // Every text drawn, as painted. The search box draws the
+                    // label once; the row the search found draws it again.
+                    fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+                        match shape {
+                            egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                            egui::Shape::Vec(shapes) => {
+                                for shape in shapes {
+                                    texts(shape, out);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let mut drawn = Vec::new();
+                    for clipped in &output.shapes {
+                        texts(&clipped.shape, &mut drawn);
+                    }
+                    drawn.iter().filter(|text| text.as_str() == *label).count() >= 2
+                }
+                Place::Tray => tray.iter().any(|text| text == label),
+            };
+            if !found {
+                missing.push((place, label));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "missing from the interface: {missing:?}"
+        );
+    }
+
     fn accessible_labels(app: &mut App, ctx: &egui::Context) -> Vec<String> {
         render(app, ctx);
         ctx.enable_accesskit();

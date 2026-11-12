@@ -3294,6 +3294,14 @@ pub enum Action {
     CloseUpdate,
     DownloadUpdate,
     InstallUpdate,
+    /// ZFPlus: from the tray, checks for an update now and says the result in
+    /// a notification, since the window may be closed.
+    CheckForUpdates,
+    /// ZFPlus: from the tray or a notification, updates and restarts: installs
+    /// a downloaded update at once, or downloads one and then installs it.
+    UpdateAndRestart,
+    /// ZFPlus: opens Settings at the update controls.
+    ShowUpdates,
     SetTheme(crate::settings::ThemeChoice),
     /// Draws the interface in the platform's font or in the bundled Inter.
     SetFont(crate::settings::FontChoice),

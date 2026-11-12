@@ -481,17 +481,49 @@ use eframe::glow::{self, HasContext};
 
 /// Set once the blur shader could not be made; the veil is used instead.
 static BLUR_BROKEN: AtomicBool = AtomicBool::new(false);
+/// Set once the blur shader was made and has drawn.
+static BLUR_READY: AtomicBool = AtomicBool::new(false);
+
+/// How the Private Mode blur is drawn on this computer, for the feature check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlurState {
+    /// Nothing blurred yet this run.
+    NotYet,
+    /// The graphics card blurs.
+    Gpu,
+    /// The graphics card refused the shader; a frosted veil hides instead.
+    Veil,
+}
+
+pub fn blur_state() -> BlurState {
+    if BLUR_BROKEN.load(Ordering::Relaxed) {
+        BlurState::Veil
+    } else if BLUR_READY.load(Ordering::Relaxed) {
+        BlurState::Gpu
+    } else {
+        BlurState::NotYet
+    }
+}
 
 struct BlurGl {
     context: usize,
     program: glow::Program,
     vao: glow::VertexArray,
+    /// What is drawn under the area, copied from the screen.
     texture: glow::Texture,
+    /// The first, sideways pass, drawn off screen.
+    pass: glow::Texture,
+    framebuffer: glow::Framebuffer,
+    /// The off-screen texture's size, so it is only remade when that changes.
+    pass_size: (i32, i32),
     u_texture: Option<glow::UniformLocation>,
+    u_original: Option<glow::UniformLocation>,
     u_texel: Option<glow::UniformLocation>,
+    u_direction: Option<glow::UniformLocation>,
+    u_sigma: Option<glow::UniformLocation>,
+    u_masked: Option<glow::UniformLocation>,
     u_size: Option<glow::UniformLocation>,
     u_radius: Option<glow::UniformLocation>,
-    u_spread: Option<glow::UniformLocation>,
 }
 
 // The GL names are plain numbers, used only on the painting thread.
@@ -507,6 +539,16 @@ pub enum Shape {
     /// The circle inside the rectangle.
     Round,
 }
+
+/// How strong the blur is, as the Gaussian's standard deviation in points:
+/// about what WA Web Plus's CSS blur shows, smooth enough that no outline or
+/// letter shape survives it.
+const BLUR_SIGMA: f32 = 6.0;
+
+/// Taps on each side of a pass: one pixel apart, so a pass reads every pixel
+/// within three standard deviations (spread further only for a blur wider
+/// than that, where linear filtering averages the pixels between taps).
+const BLUR_TAPS: i32 = 24;
 
 /// Blurs whatever is drawn under `rect` so far, as WA Web Plus does. Draw
 /// it after the content it hides.
@@ -539,10 +581,14 @@ pub fn blur(
     // The circle's centre in the copied area, when the rectangle was clipped.
     let offset = (rect.min - visible.min) * pixels_per_point;
     let full = rect.size() * pixels_per_point;
-    let spread = 2.3 * pixels_per_point;
+    // A small area cannot hold a wide blur: keep it within a third of the
+    // shorter side, so a name's line still blurs into its own colours.
+    let sigma = (BLUR_SIGMA * pixels_per_point)
+        .min(full.x.min(full.y) / 3.0)
+        .max(1.0);
     let callback = egui_glow::CallbackFn::new(move |info, painter| {
         // SAFETY: GL calls on the painting thread, inside egui_glow's paint.
-        unsafe { paint_blur(&info, painter, corner, offset, full, spread) };
+        unsafe { paint_blur(&info, painter, corner, offset, full, sigma) };
     });
     ui.painter().add(egui::Shape::Callback(egui::PaintCallback {
         rect: visible,
@@ -550,13 +596,17 @@ pub fn blur(
     }));
 }
 
+/// Two passes of a separable Gaussian, as a browser blurs: sideways into an
+/// off-screen texture, then up and down onto the screen, inside the shape.
+/// Every pixel within three standard deviations counts, so edges and letters
+/// melt into a smooth wash instead of the ghosted copies a sparse grid left.
 unsafe fn paint_blur(
     info: &egui::PaintCallbackInfo,
     painter: &egui_glow::Painter,
     corner: f32,
     offset: egui::Vec2,
     full: egui::Vec2,
-    spread: f32,
+    sigma: f32,
 ) {
     let gl = painter.gl();
     let viewport = info.viewport_in_pixels();
@@ -578,7 +628,10 @@ unsafe fn paint_blur(
     }
     if slot.is_none() {
         match unsafe { make_blur(gl, context) } {
-            Ok(made) => *slot = Some(made),
+            Ok(made) => {
+                *slot = Some(made);
+                BLUR_READY.store(true, Ordering::Relaxed);
+            }
             Err(error) => {
                 log::warn!("blur unavailable, using a veil: {error}");
                 BLUR_BROKEN.store(true, Ordering::Relaxed);
@@ -586,11 +639,13 @@ unsafe fn paint_blur(
             }
         }
     }
-    let Some(made) = slot.as_ref() else {
+    let Some(made) = slot.as_mut() else {
         return;
     };
+    let (width, height) = (viewport.width_px, viewport.height_px);
     unsafe {
-        gl.active_texture(glow::TEXTURE0);
+        // What is on screen under the area.
+        gl.active_texture(glow::TEXTURE1);
         gl.bind_texture(glow::TEXTURE_2D, Some(made.texture));
         gl.copy_tex_image_2d(
             glow::TEXTURE_2D,
@@ -598,34 +653,93 @@ unsafe fn paint_blur(
             glow::RGBA,
             viewport.left_px,
             viewport.from_bottom_px,
-            viewport.width_px,
-            viewport.height_px,
+            width,
+            height,
             0,
         );
+        // The off-screen texture for the sideways pass, the area's size.
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(made.pass));
+        if made.pass_size != (width, height) {
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                width,
+                height,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            made.pass_size = (width, height);
+        }
+        let screen = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
+        let scissor = gl.is_enabled(glow::SCISSOR_TEST);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(made.framebuffer));
+        gl.framebuffer_texture_2d(
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(made.pass),
+            0,
+        );
+        let complete = gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
         gl.use_program(Some(made.program));
         gl.bind_vertex_array(Some(made.vao));
-        gl.uniform_1_i32(made.u_texture.as_ref(), 0);
+        gl.disable(glow::BLEND);
+        gl.uniform_1_i32(made.u_original.as_ref(), 1);
         gl.uniform_2_f32(
             made.u_texel.as_ref(),
-            1.0 / viewport.width_px as f32,
-            1.0 / viewport.height_px as f32,
+            1.0 / width as f32,
+            1.0 / height as f32,
         );
+        gl.uniform_1_f32(made.u_sigma.as_ref(), sigma);
         // The shape in the copied area's pixels: where the full rectangle
-        // starts, and its size.
+        // starts, and its size. GL counts rows from the bottom.
         gl.uniform_4_f32(
             made.u_size.as_ref(),
             offset.x,
-            // GL counts rows from the bottom.
-            (viewport.height_px as f32) - (offset.y + full.y),
+            (height as f32) - (offset.y + full.y),
             full.x,
             full.y,
         );
         gl.uniform_1_f32(made.u_radius.as_ref(), corner);
-        gl.uniform_1_f32(made.u_spread.as_ref(), spread);
-        gl.disable(glow::BLEND);
+        if complete {
+            // Sideways, from the copy into the off-screen texture.
+            if scissor {
+                gl.disable(glow::SCISSOR_TEST);
+            }
+            gl.viewport(0, 0, width, height);
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(made.texture));
+            gl.uniform_1_i32(made.u_texture.as_ref(), 0);
+            gl.uniform_2_f32(made.u_direction.as_ref(), 1.0, 0.0);
+            gl.uniform_1_f32(made.u_masked.as_ref(), 0.0);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            // Up and down, from the off-screen texture onto the screen.
+            gl.bind_framebuffer(glow::FRAMEBUFFER, screen);
+            gl.viewport(viewport.left_px, viewport.from_bottom_px, width, height);
+            if scissor {
+                gl.enable(glow::SCISSOR_TEST);
+            }
+            gl.bind_texture(glow::TEXTURE_2D, Some(made.pass));
+            gl.uniform_2_f32(made.u_direction.as_ref(), 0.0, 1.0);
+        } else {
+            // No off-screen target on this driver: one pass each way would
+            // need it, so blur up and down only, from the copy.
+            gl.bind_framebuffer(glow::FRAMEBUFFER, screen);
+            gl.bind_texture(glow::TEXTURE_2D, Some(made.texture));
+            gl.uniform_2_f32(made.u_direction.as_ref(), 0.0, 1.0);
+        }
+        gl.uniform_1_i32(made.u_texture.as_ref(), 0);
+        gl.uniform_1_f32(made.u_masked.as_ref(), 1.0);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
         gl.enable(glow::BLEND);
         gl.bind_vertex_array(None);
+        gl.active_texture(glow::TEXTURE1);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, None);
     }
 }
@@ -660,31 +774,41 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
            gl_Position = vec4(x, y, 0.0, 1.0);\n\
          }}\n"
     );
+    // One direction of a Gaussian per draw, 2 × BLUR_TAPS + 1 reads one pixel
+    // apart. The second pass also masks the result to the rounded shape,
+    // with an antialiased edge.
+    let taps = BLUR_TAPS;
     let fragment = format!(
         "{declaration}\n{precision}{fragment_out}\n{fragment_in} vec2 v_uv;\n\
          uniform sampler2D u_texture;\n\
+         uniform sampler2D u_original;\n\
          uniform vec2 u_texel;\n\
+         uniform vec2 u_direction;\n\
+         uniform float u_sigma;\n\
+         uniform float u_masked;\n\
          uniform vec4 u_size;\n\
          uniform float u_radius;\n\
-         uniform float u_spread;\n\
          void main() {{\n\
+           float spacing = max(1.0, 3.0 * u_sigma / {taps}.0);\n\
+           vec3 sum = vec3(0.0);\n\
+           float total = 0.0;\n\
+           for (int i = -{taps}; i <= {taps}; i++) {{\n\
+             float x = float(i) * spacing;\n\
+             float w = exp(-0.5 * x * x / (u_sigma * u_sigma));\n\
+             sum += {sample}(u_texture, v_uv + u_direction * u_texel * x).rgb * w;\n\
+             total += w;\n\
+           }}\n\
+           vec3 blurred = sum / total;\n\
+           if (u_masked < 0.5) {{\n\
+             FRAG = vec4(blurred, 1.0);\n\
+             return;\n\
+           }}\n\
            vec2 px = v_uv / u_texel - u_size.xy;\n\
            vec2 half_size = u_size.zw * 0.5;\n\
            float r = min(u_radius, min(half_size.x, half_size.y));\n\
            vec2 q = abs(px - half_size) - (half_size - vec2(r));\n\
            float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n\
-           vec4 original = {sample}(u_texture, v_uv);\n\
-           vec3 sum = vec3(0.0);\n\
-           float total = 0.0;\n\
-           for (int i = -4; i <= 4; i++) {{\n\
-             for (int j = -4; j <= 4; j++) {{\n\
-               vec2 o = vec2(float(i), float(j));\n\
-               float w = exp(-dot(o, o) / 12.0);\n\
-               sum += {sample}(u_texture, v_uv + o * u_texel * u_spread).rgb * w;\n\
-               total += w;\n\
-             }}\n\
-           }}\n\
-           vec3 blurred = sum / total;\n\
+           vec4 original = {sample}(u_original, v_uv);\n\
            float inside = clamp(0.5 - d, 0.0, 1.0);\n\
            FRAG = vec4(mix(original.rgb, blurred, inside), 1.0);\n\
          }}\n"
@@ -719,39 +843,41 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
             return Err(log);
         }
         let vao = gl.create_vertex_array()?;
-        let texture = gl.create_texture()?;
-        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as i32,
-        );
+        let mut textures = [None, None];
+        for slot in &mut textures {
+            let texture = gl.create_texture()?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            for (parameter, value) in [
+                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+            ] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, value as i32);
+            }
+            *slot = Some(texture);
+        }
         gl.bind_texture(glow::TEXTURE_2D, None);
+        let [Some(texture), Some(pass)] = textures else {
+            return Err("no textures".to_owned());
+        };
+        let framebuffer = gl.create_framebuffer()?;
         Ok(BlurGl {
             context,
             u_texture: gl.get_uniform_location(program, "u_texture"),
+            u_original: gl.get_uniform_location(program, "u_original"),
             u_texel: gl.get_uniform_location(program, "u_texel"),
+            u_direction: gl.get_uniform_location(program, "u_direction"),
+            u_sigma: gl.get_uniform_location(program, "u_sigma"),
+            u_masked: gl.get_uniform_location(program, "u_masked"),
             u_size: gl.get_uniform_location(program, "u_size"),
             u_radius: gl.get_uniform_location(program, "u_radius"),
-            u_spread: gl.get_uniform_location(program, "u_spread"),
             program,
             vao,
             texture,
+            pass,
+            framebuffer,
+            pass_size: (0, 0),
         })
     }
 }

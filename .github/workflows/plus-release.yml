@@ -25,7 +25,8 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends mingw-w64 wixl msitools zip nasm cmake
+          sudo apt-get install -y -q --no-install-recommends mingw-w64 wixl msitools zip nasm cmake perl \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libpipewire-0.3-dev clang libclang-dev
           rustup show active-toolchain || rustup toolchain install
           rustup target add x86_64-pc-windows-gnu
       - uses: actions/cache@v4
@@ -36,6 +37,14 @@ jobs:
             target
           key: plus-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: plus-windows-
+      # The release gate: every test, including the one that finds each
+      # feature in feature_check::INVENTORY on screen, so a release that lost
+      # a switch, a button or a menu entry is never published.
+      - name: Test
+        run: |
+          cargo test --locked --lib --features demo -- --test-threads 4
+          # The Windows build needs the room.
+          rm -rf target/debug
       - name: Build and package
         id: build
         env:

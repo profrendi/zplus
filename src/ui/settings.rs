@@ -708,7 +708,11 @@ fn sections(app: &App) -> Vec<Section> {
     );
     // ZFPlus: check now, then download, install and restart from here.
     system.block(
-        vec!["Check for updates now".into(), "Update".into()],
+        vec![
+            "Check for updates now".into(),
+            "Update".into(),
+            "Stable and Nightly".into(),
+        ],
         |ui, app| {
             super::plus_about::updates(app, ui);
             ui.add_space(10.0);
@@ -946,6 +950,45 @@ fn diagnostics_section(app: &App) -> Section {
                         }
                     }
                 }
+            }
+        },
+    );
+    section.row(
+        "Feature check",
+        "Checks on this computer: the WhatsApp link, the Private Mode blur, the tray icon, notifications, starting with the computer and updates. Copy the result to paste in a message.",
+        move |ui, app| {
+            let id = egui::Id::new("zfplus-feature-check");
+            ui.horizontal(|ui| {
+                if theme::soft_button(ui, &palette, Some(Icon::Refresh), "Run check", false)
+                    .clicked()
+                {
+                    let checks = crate::feature_check::run(app);
+                    ui.ctx().data_mut(|data| data.insert_temp(id, checks));
+                }
+                let shown: Option<Vec<crate::feature_check::Check>> =
+                    ui.ctx().data(|data| data.get_temp(id));
+                if let Some(checks) = &shown
+                    && theme::soft_button(ui, &palette, Some(Icon::Copy), "Copy", false).clicked()
+                {
+                    ui.ctx().copy_text(crate::feature_check::report(checks));
+                    app.toast("Feature check copied");
+                }
+            });
+            let shown: Option<Vec<crate::feature_check::Check>> =
+                ui.ctx().data(|data| data.get_temp(id));
+            for check in shown.unwrap_or_default() {
+                use crate::feature_check::Status;
+                let color = match check.status {
+                    Status::Good => palette.accent,
+                    Status::Note => palette.secondary,
+                    Status::Problem => palette.danger,
+                };
+                theme::paragraph(
+                    ui,
+                    format!("{}  {}: {}", check.status.mark(), check.name, check.detail),
+                    theme::regular(12.5),
+                    color,
+                );
             }
         },
     );

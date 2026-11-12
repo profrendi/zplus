@@ -102,7 +102,8 @@ jobs:
           # have yet; settle them without upgrading anything else.
           cargo update --workspace --quiet
           cargo fmt --all --check
-          cargo test --locked --lib -- --test-threads 4
+          # With the demo, so feature_check's inventory test runs too.
+          cargo test --locked --lib --features demo -- --test-threads 4
           # The Windows build needs the room.
           rm -rf target/debug
       - name: Version
