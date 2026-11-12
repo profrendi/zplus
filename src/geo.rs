@@ -66,6 +66,16 @@ pub fn is_short_link(text: &str) -> bool {
         })
 }
 
+/// ZFPlus: whether `text` is a web link that does not say where it points
+/// by itself (a shortener of any map service, a place page), so it is
+/// followed to find out. Links that name their spot never reach here.
+pub fn needs_lookup(text: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(text.trim()) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+}
+
 /// ZFPlus: what looking up a short link came to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Lookup {
@@ -263,7 +273,10 @@ fn link(text: &str) -> Option<Spot> {
     if !matches!(url.scheme(), "http" | "https") {
         return None;
     }
-    match service(&url)? {
+    let Some(service) = service(&url) else {
+        return other_service(&url);
+    };
+    match service {
         Service::Google => marked_place(text)
             .or_else(|| url.path().split_once("/@").and_then(|(_, rest)| two(rest)))
             .or_else(|| {
@@ -279,6 +292,106 @@ fn link(text: &str) -> Option<Spot> {
             query_spot(&url, &[]).or_else(|| url.fragment().and_then(openstreetmap_position))
         }
     }
+}
+
+/// ZFPlus: links of other map services: Waze, Bing Maps, HERE and Yandex.
+fn other_service(url: &reqwest::Url) -> Option<Spot> {
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    let site = host.strip_prefix("www.").unwrap_or(&host);
+    // Waze: `?ll=lat,long`, `?to=ll.lat,long`, or a geohash in `/ul/h…`.
+    if site.ends_with("waze.com") {
+        for (key, value) in url.query_pairs() {
+            match key.as_ref() {
+                "ll" | "latlng" => {
+                    if let Some(spot) = pair(&value) {
+                        return Some(spot);
+                    }
+                }
+                "to" | "from" => {
+                    if let Some(spot) = value.strip_prefix("ll.").and_then(pair) {
+                        return Some(spot);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(hash) = url.path().strip_prefix("/ul/h") {
+            return geohash(hash.trim_end_matches('/'));
+        }
+    }
+    // Bing: `cp=lat~long`, or `sp=point.lat_long`.
+    if site == "bing.com" && url.path().starts_with("/maps") {
+        for (key, value) in url.query_pairs() {
+            if key == "cp"
+                && let Some((latitude, longitude)) = value.split_once('~')
+            {
+                return joined(latitude, longitude);
+            }
+            if key == "sp"
+                && let Some(point) = value.strip_prefix("point.")
+                && let Some((latitude, rest)) = point.split_once('_')
+            {
+                return joined(latitude, rest.split('_').next()?);
+            }
+        }
+    }
+    // HERE: `?map=lat,long,zoom`, or `/l/lat,long` on its share links.
+    if site.ends_with("here.com") {
+        if let Some(spot) = url
+            .query_pairs()
+            .find(|(key, _)| key == "map")
+            .and_then(|(_, value)| two(&value))
+        {
+            return Some(spot);
+        }
+        if let Some(rest) = url.path().strip_prefix("/l/") {
+            return two(rest);
+        }
+    }
+    // Yandex writes longitude first: `ll=long,lat` or `pt=long,lat`.
+    if site.starts_with("yandex.") || site.contains(".yandex.") {
+        for (key, value) in url.query_pairs() {
+            if (key == "pt" || key == "ll")
+                && let Some(swapped) = two(&value)
+            {
+                return Some(Spot {
+                    latitude: swapped.longitude,
+                    longitude: swapped.latitude,
+                });
+            }
+        }
+    }
+    // Any other site is not read: `q=12,34` means a spot only on a map.
+    None
+}
+
+/// ZFPlus: the middle of a geohash's cell, as Waze's short links carry.
+fn geohash(hash: &str) -> Option<Spot> {
+    const ALPHABET: &[u8] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+    if hash.is_empty() || hash.len() > 12 {
+        return None;
+    }
+    let (mut latitude, mut longitude) = ((-90.0f64, 90.0f64), (-180.0f64, 180.0f64));
+    let mut even = true;
+    for character in hash.bytes() {
+        let value = ALPHABET
+            .iter()
+            .position(|&letter| letter == character.to_ascii_lowercase())?;
+        for bit in (0..5).rev() {
+            let range = if even { &mut longitude } else { &mut latitude };
+            let middle = (range.0 + range.1) / 2.0;
+            if value >> bit & 1 == 1 {
+                range.0 = middle;
+            } else {
+                range.1 = middle;
+            }
+            even = !even;
+        }
+    }
+    Some(Spot {
+        latitude: (latitude.0 + latitude.1) / 2.0,
+        longitude: (longitude.0 + longitude.1) / 2.0,
+    })
 }
 
 /// Reads a `geo:` URI (RFC 5870): `geo:<lat>,<long>[,<alt>][;params]`. The
@@ -560,6 +673,56 @@ mod tests {
         assert_eq!(spot("https://example.com/?mlat=12&mlon=34"), None);
         assert_eq!(spot("https://example.com/#map=15/12/34"), None);
         assert_eq!(spot("ftp://www.openstreetmap.org/?mlat=12&mlon=34"), None);
+    }
+
+    /// ZFPlus: links from other map services name their spot too.
+    #[test]
+    fn other_map_services_are_read() {
+        let near = |text: &str, latitude: f64, longitude: f64| {
+            let spot = spot(text).unwrap_or_else(|| panic!("{text} was not read"));
+            assert!(
+                (spot.latitude - latitude).abs() < 1e-3
+                    && (spot.longitude - longitude).abs() < 1e-3,
+                "{text}: {spot:?}"
+            );
+        };
+        near(
+            "https://waze.com/ul?ll=-6.9175,107.6191&navigate=yes",
+            -6.9175,
+            107.6191,
+        );
+        near(
+            "https://www.waze.com/live-map/directions?to=ll.-6.9175%2C107.6191",
+            -6.9175,
+            107.6191,
+        );
+        near(
+            "https://www.bing.com/maps?cp=-6.9175~107.6191&lvl=16",
+            -6.9175,
+            107.6191,
+        );
+        near(
+            "https://wego.here.com/?map=-6.9175,107.6191,16",
+            -6.9175,
+            107.6191,
+        );
+        near(
+            "https://share.here.com/l/-6.9175,107.6191",
+            -6.9175,
+            107.6191,
+        );
+        near(
+            "https://yandex.com/maps/?ll=107.6191%2C-6.9175&z=16",
+            -6.9175,
+            107.6191,
+        );
+        // The geohash `qqguxyz` lies in Jakarta.
+        let jakarta = spot("https://waze.com/ul/hqqguxyz").expect("a geohash");
+        assert!(
+            (jakarta.latitude + 6.2025).abs() < 0.01 && (jakarta.longitude - 106.8743).abs() < 0.01,
+            "{jakarta:?}"
+        );
+        assert!(needs_lookup("https://goo.gl/maps/abc") && !needs_lookup("-6.9, 107.6"));
     }
 
     /// ZFPlus: the map page a short link ends on names its spot in a place

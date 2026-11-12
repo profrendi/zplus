@@ -35,7 +35,52 @@ pub fn send(app: &mut App, ui: &mut egui::Ui, chat: &str) {
         });
     });
     ui.add_space(8.0);
-    let hint = crate::i18n::gettext(app.locale, "Paste a map link or coordinates");
+    // ZFPlus: this computer's own location, as a browser's "allow location"
+    // gives it, once the reader asks.
+    ui.horizontal(|ui| {
+        let label = crate::i18n::gettext(app.locale, "My current location");
+        if theme::soft_button(ui, &palette, Some(Icon::MapPin), &label, false).clicked() {
+            let ctx = ui.ctx().clone();
+            crate::plus_location::locate(move || ctx.request_repaint());
+        }
+        match crate::plus_location::here() {
+            Some(crate::plus_location::Here::Looking) => {
+                theme::text(
+                    ui,
+                    crate::i18n::gettext(app.locale, "Finding where you are…"),
+                    theme::regular(12.0),
+                    palette.dim,
+                );
+            }
+            Some(crate::plus_location::Here::Found(spot, accuracy)) => {
+                let text = spot.text();
+                if app.location_draft != text {
+                    app.location_draft = text;
+                }
+                if accuracy > 0.0 {
+                    theme::text(
+                        ui,
+                        format!(
+                            "{} {accuracy:.0} m",
+                            crate::i18n::gettext(app.locale, "Accurate to about")
+                        ),
+                        theme::regular(12.0),
+                        palette.dim,
+                    );
+                }
+                crate::plus_location::forget();
+            }
+            _ => {}
+        }
+    });
+    if let Some(crate::plus_location::Here::Failed(error)) = crate::plus_location::here() {
+        theme::paragraph(ui, &error, theme::regular(12.0), palette.danger);
+    }
+    ui.add_space(6.0);
+    let hint = crate::i18n::gettext(
+        app.locale,
+        "Paste a link from Google Maps, Apple Maps, Waze, OpenStreetMap, Bing or HERE, or coordinates",
+    );
     ui.add(
         egui::TextEdit::singleline(&mut app.location_draft)
             .id_salt("send-location")
@@ -49,7 +94,7 @@ pub fn send(app: &mut App, ui: &mut egui::Ui, chat: &str) {
     // wrong way round is visible in this dialog, not in someone else's chat.
     // ZFPlus: a short link is looked up where it points, once.
     let lookup = (geo::spot(&app.location_draft).is_none()
-        && geo::is_short_link(&app.location_draft))
+        && geo::needs_lookup(&app.location_draft))
     .then(|| {
         let ctx = ui.ctx().clone();
         geo::look_up(&app.location_draft, move || ctx.request_repaint())
