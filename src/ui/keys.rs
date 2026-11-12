@@ -887,6 +887,19 @@ fn drop_shortcut_text(ctx: &egui::Context) {
 /// the crop, also in the cropper's first frame, before egui knows it covers
 /// that control.
 fn editor_keys(app: &mut App, ctx: &egui::Context) {
+    // ZFPlus: text being typed keeps Enter and Escape for itself, and with a
+    // mark picked Escape lets go of it before it closes the editor.
+    if let Some(edit) = app.picture_edit.as_mut() {
+        if edit.writing.is_some() {
+            return;
+        }
+        if edit.selected.is_some()
+            && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            edit.selected = None;
+            return;
+        }
+    }
     let focused = ctx.memory(|memory| memory.focused()).and_then(|focused| {
         ctx.viewport(|viewport| {
             viewport

@@ -3929,6 +3929,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                         points: points.to_vec(),
                         color,
                         width: 0.01,
+                        ..Default::default()
                     };
                     edit.tool = MarkTool::Arrow;
                     edit.marks = vec![
@@ -3963,7 +3964,37 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                             &[[0.6, 0.85], [0.95, 0.97]],
                             [0, 0, 0, 255],
                         ),
+                        Mark {
+                            fill: Some([255, 255, 255, 255]),
+                            ..mark(
+                                MarkTool::RoundedRectangle,
+                                &[[0.05, 0.45], [0.3, 0.7]],
+                                [10, 132, 255, 255],
+                            )
+                        },
                     ];
+                    // ZFPlus: written text in a filled box, and an emoji,
+                    // the Move tool picking the text.
+                    edit.fill = Some([255, 204, 0, 255]);
+                    edit.text_box = true;
+                    edit.color = [0, 0, 0, 255];
+                    edit.font = crate::model::MarkFont::Bold;
+                    edit.writing = Some(crate::model::Writing {
+                        text: "Ketemu di sini!".into(),
+                        center: [0.5, 0.12],
+                        replaces: None,
+                    });
+                    edit.commit_writing();
+                    if let Some(fire) = crate::plus_stamp::emoji("🔥") {
+                        edit.place_stamp(fire);
+                    }
+                    edit.select(Some(edit.marks.len() - 2));
+                }
+            }
+            // ZFPlus: the picture editor's emoji, stickers and GIFs panel.
+            "crop-stamps" => {
+                if let Some(edit) = app.picture_edit.as_mut() {
+                    edit.tool = crate::model::MarkTool::Stamp;
                 }
             }
             "archived" => app.show_archived = true,
@@ -9614,6 +9645,196 @@ mod tests {
         assert!(
             app.picture_texture.is_some(),
             "and found something to draw them with, rather than an empty frame"
+        );
+    }
+
+    /// ZFPlus: the editor's picture on screen, and a point on it given in
+    /// its own proportions.
+    fn editor_point(ctx: &egui::Context, at: [f32; 2]) -> egui::Pos2 {
+        let picture = ctx
+            .data(|data| data.get_temp::<egui::Rect>(crate::ui::image_editor::picture_rect_id()))
+            .expect("the editor drew its picture");
+        egui::pos2(
+            picture.min.x + at[0] * picture.width(),
+            picture.min.y + at[1] * picture.height(),
+        )
+    }
+
+    /// ZFPlus: drags with the primary button from `from` to `to`.
+    fn drag_between(app: &mut App, ctx: &egui::Context, from: egui::Pos2, to: egui::Pos2) {
+        frame_with(app, ctx, vec![egui::Event::PointerMoved(from)]);
+        frame_with(app, ctx, vec![primary(from, true)]);
+        for step in 1..=8 {
+            let pos = from + (to - from) * (step as f32 / 8.0);
+            frame_with(app, ctx, vec![egui::Event::PointerMoved(pos)]);
+        }
+        frame_with(app, ctx, vec![primary(to, false)]);
+        render(app, ctx);
+    }
+
+    /// ZFPlus: what is drawn stays its own object until the picture is sent:
+    /// the Move tool drags it elsewhere and Delete takes it away, each a
+    /// step Undo takes back.
+    #[test]
+    fn the_editor_moves_and_deletes_what_was_drawn() {
+        use crate::model::{Mark, MarkTool};
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        apply_flags(&mut app, Some("crop"));
+        {
+            let edit = app.picture_edit.as_mut().expect("the editor is open");
+            edit.change(|marks| {
+                marks.push(Mark {
+                    tool: MarkTool::Rectangle,
+                    points: vec![[0.2, 0.2], [0.4, 0.4]],
+                    color: [235, 64, 52, 255],
+                    width: 0.01,
+                    fill: Some([255, 204, 0, 255]),
+                    ..Default::default()
+                })
+            });
+            edit.tool = MarkTool::Select;
+        }
+        render(&mut app, &ctx);
+        render(&mut app, &ctx);
+        let from = editor_point(&ctx, [0.3, 0.3]);
+        let to = editor_point(&ctx, [0.6, 0.5]);
+        drag_between(&mut app, &ctx, from, to);
+        let edit = app.picture_edit.as_ref().expect("still open");
+        let [left, top, right, bottom] = edit.marks[0].bounds();
+        assert!(
+            ((left + right) / 2.0 - 0.6).abs() < 0.03 && ((top + bottom) / 2.0 - 0.5).abs() < 0.03,
+            "the rectangle followed the drag: {:?}",
+            edit.marks[0].points
+        );
+        assert_eq!(edit.selected, Some(0), "and stays picked");
+        assert_eq!(edit.history.len(), 2, "drawing and moving, one step each");
+
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Delete, egui::Modifiers::NONE)],
+        );
+        render(&mut app, &ctx);
+        let edit = app.picture_edit.as_ref().expect("still open");
+        assert!(edit.marks.is_empty(), "Delete takes the picked mark away");
+
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Z, egui::Modifiers::COMMAND)],
+        );
+        render(&mut app, &ctx);
+        let edit = app.picture_edit.as_ref().expect("still open");
+        assert_eq!(
+            edit.marks.len(),
+            1,
+            "Undo brings it back where it was moved"
+        );
+        assert!((edit.marks[0].bounds()[0] - 0.5).abs() < 0.03);
+    }
+
+    /// ZFPlus: a click with the Text tool opens a field on the picture;
+    /// Enter puts the words on it as text in the chosen style, picked to
+    /// move, and a double-click opens it again to change.
+    #[test]
+    fn the_editor_writes_text_on_the_picture_and_changes_it() {
+        use crate::model::MarkTool;
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        apply_flags(&mut app, Some("crop"));
+        {
+            let edit = app.picture_edit.as_mut().expect("the editor is open");
+            edit.tool = MarkTool::Text;
+            edit.fill = Some([255, 255, 255, 255]);
+            edit.text_box = true;
+        }
+        render(&mut app, &ctx);
+        render(&mut app, &ctx);
+        let spot = editor_point(&ctx, [0.5, 0.5]);
+        press_at(&mut app, &ctx, spot);
+        assert!(
+            app.picture_edit.as_ref().unwrap().writing.is_some(),
+            "a field opens where the click was"
+        );
+        render(&mut app, &ctx);
+        frame_with(&mut app, &ctx, vec![egui::Event::Text("Halo".into())]);
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        render(&mut app, &ctx);
+        let edit = app
+            .picture_edit
+            .as_ref()
+            .expect("Enter did not close the editor");
+        assert!(edit.writing.is_none());
+        assert_eq!(edit.marks.len(), 1, "{:?}", edit.marks);
+        let text = edit.marks[0]
+            .stamp
+            .as_ref()
+            .and_then(|stamp| stamp.text.as_ref())
+            .expect("a text mark");
+        assert_eq!(text.text, "Halo");
+        assert!(text.boxed && text.fill == Some([255, 255, 255, 255]));
+        assert_eq!(edit.tool, MarkTool::Select);
+        assert_eq!(edit.selected, Some(0));
+        let [left, top, right, bottom] = edit.marks[0].bounds();
+        assert!(((left + right) / 2.0 - 0.5).abs() < 0.01);
+        assert!(((top + bottom) / 2.0 - 0.5).abs() < 0.01);
+
+        // Wait out the last click, then double-click the text to change it.
+        for _ in 0..30 {
+            render(&mut app, &ctx);
+        }
+        double_click_at(&mut app, &ctx, spot);
+        let edit = app.picture_edit.as_ref().unwrap();
+        assert_eq!(
+            edit.writing.as_ref().map(|writing| writing.text.as_str()),
+            Some("Halo"),
+            "the text opens to be changed"
+        );
+        assert_eq!(edit.writing.as_ref().unwrap().replaces, Some(0));
+    }
+
+    /// ZFPlus: an emoji placed from the panel lands in the middle of the
+    /// picture, picked to move or resize, and keeping the edit sends it with
+    /// the picture.
+    #[test]
+    fn a_placed_emoji_is_kept_with_the_picture() {
+        use crate::model::MarkTool;
+        let mut app = app();
+        app.backend.record_demo_commands();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        apply_flags(&mut app, Some("crop"));
+        app.picture_edit.as_mut().expect("the editor is open").tool = MarkTool::Stamp;
+        render(&mut app, &ctx);
+        let texts = painted_texts(&mut app, &ctx);
+        for tab in ["Emoji", "Stickers", "GIFs"] {
+            assert!(texts.iter().any(|text| text == tab), "{tab}: {texts:?}");
+        }
+        app.picture_edit
+            .as_mut()
+            .unwrap()
+            .place_stamp(crate::plus_stamp::emoji("🔥").expect("an emoji"));
+        render(&mut app, &ctx);
+        let edit = app.picture_edit.as_ref().unwrap();
+        assert_eq!(edit.marks[0].tool, MarkTool::Stamp);
+        assert_eq!(edit.selected, Some(0));
+        app.actions.push(crate::model::Action::ApplyPictureEdit);
+        render(&mut app, &ctx);
+        let commands = app.backend.take_demo_commands();
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                crate::backend::Command::ApplyPictureEdit { marks, .. }
+                    if marks.len() == 1 && marks[0].stamp.is_some()
+            )),
+            "the emoji goes with the picture"
         );
     }
 

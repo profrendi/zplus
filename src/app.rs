@@ -8874,7 +8874,9 @@ impl App {
                 }
             }
             Action::ApplyPictureEdit => {
-                if let Some(edit) = self.picture_edit.take() {
+                if let Some(mut edit) = self.picture_edit.take() {
+                    // ZFPlus: text still being typed goes on the picture too.
+                    edit.commit_writing();
                     // Held against the attachment until the file lands, so a
                     // second edit started meanwhile cannot take its origin.
                     self.picture_applying.insert(
@@ -8897,6 +8899,15 @@ impl App {
                         turns: edit.turns,
                         marks: edit.marks,
                     });
+                }
+            }
+            Action::LoadEditorStamps => {
+                if self.stickers.is_empty() && self.stickers_saved.is_empty() {
+                    self.stickers_pending = true;
+                }
+                self.backend.send(Command::RecentStickers);
+                if self.gif_results.is_empty() && !self.gif_pending {
+                    self.actions.push(Action::SearchGifs(String::new()));
                 }
             }
             Action::CancelPictureEdit => {

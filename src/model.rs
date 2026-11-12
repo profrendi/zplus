@@ -2300,45 +2300,194 @@ pub struct PictureEdit {
     pub turns: u8,
     /// ZFPlus: what was drawn on it, oldest first.
     pub marks: Vec<Mark>,
-    /// ZFPlus: marks taken back with Undo, newest last, for Redo.
-    pub undone: Vec<Mark>,
-    /// ZFPlus: the editor's tool, colour and line width.
+    /// ZFPlus: the marks as they were before each change, newest last, for
+    /// Undo; and as they were before each Undo, for Redo. A whole list each
+    /// time, so moving, recolouring and deleting undo as drawing does.
+    pub history: Vec<Vec<Mark>>,
+    pub future: Vec<Vec<Mark>>,
+    /// ZFPlus: the editor's tool, colour, line width, fill and font.
     pub tool: MarkTool,
     pub color: [u8; 4],
     pub stroke: MarkStroke,
+    pub fill: Option<[u8; 4]>,
+    pub font: MarkFont,
+    /// ZFPlus: whether new text gets a box drawn round it.
+    pub text_box: bool,
+    /// ZFPlus: the mark picked with the Move tool, to move, resize, recolour
+    /// or delete, by its place in `marks`.
+    pub selected: Option<usize>,
+    /// ZFPlus: text being typed, before it becomes a mark.
+    pub writing: Option<Writing>,
 }
 
-/// ZFPlus: the picture editor's tools: the crop, and what can be drawn.
+/// ZFPlus: text being typed in the picture editor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Writing {
+    pub text: String,
+    /// Where its middle goes, in the picture's own proportions.
+    pub center: [f32; 2],
+    /// The text mark it replaces, when an existing one is being changed.
+    pub replaces: Option<usize>,
+}
+
+/// ZFPlus: how tall a line of new text is, as a share of the picture's
+/// shorter side.
+pub const TEXT_LINE_SHARE: f32 = 0.07;
+/// ZFPlus: how wide a new emoji, sticker or GIF picture is, as a share of the
+/// picture's shorter side.
+pub const STAMP_SHARE: f32 = 0.25;
+
+/// ZFPlus: the picture editor's tools: the crop, picking what is already
+/// there, and what can be added.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MarkTool {
     #[default]
     Crop,
+    /// Picks a mark to move, resize, recolour or delete.
+    Select,
     Pen,
     Line,
     Arrow,
     Rectangle,
+    RoundedRectangle,
     Ellipse,
     /// Hides what is under it behind large squares of its own colours.
     Pixelate,
+    Text,
+    /// An emoji, a sticker or a GIF's picture, placed as a picture.
+    Stamp,
 }
 
-/// ZFPlus: the three line widths the editor offers.
+impl MarkTool {
+    /// Whether the tool draws a closed shape, which can be filled.
+    pub fn is_shape(self) -> bool {
+        matches!(
+            self,
+            MarkTool::Rectangle | MarkTool::RoundedRectangle | MarkTool::Ellipse
+        )
+    }
+
+    /// Whether the tool draws a line of a chosen width.
+    pub fn has_width(self) -> bool {
+        matches!(
+            self,
+            MarkTool::Pen
+                | MarkTool::Line
+                | MarkTool::Arrow
+                | MarkTool::Rectangle
+                | MarkTool::RoundedRectangle
+                | MarkTool::Ellipse
+        )
+    }
+}
+
+/// ZFPlus: the four line widths the editor offers, as WhatsApp's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MarkStroke {
     Thin,
     #[default]
     Medium,
     Thick,
+    Heavy,
 }
 
 impl MarkStroke {
+    pub const ALL: [MarkStroke; 4] = [
+        MarkStroke::Thin,
+        MarkStroke::Medium,
+        MarkStroke::Thick,
+        MarkStroke::Heavy,
+    ];
+
     /// The width as a share of the picture's shorter side.
     pub fn share(self) -> f32 {
         match self {
-            MarkStroke::Thin => 0.005,
-            MarkStroke::Medium => 0.01,
-            MarkStroke::Thick => 0.02,
+            MarkStroke::Thin => 0.004,
+            MarkStroke::Medium => 0.008,
+            MarkStroke::Thick => 0.015,
+            MarkStroke::Heavy => 0.026,
         }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            MarkStroke::Thin => "Thin",
+            MarkStroke::Medium => "Medium",
+            MarkStroke::Thick => "Thick",
+            MarkStroke::Heavy => "Extra thick",
+        }
+    }
+}
+
+/// ZFPlus: the type styles text can be written in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MarkFont {
+    #[default]
+    Sans,
+    Serif,
+    Bold,
+    Script,
+    Mono,
+}
+
+impl MarkFont {
+    pub const ALL: [MarkFont; 5] = [
+        MarkFont::Sans,
+        MarkFont::Serif,
+        MarkFont::Bold,
+        MarkFont::Script,
+        MarkFont::Mono,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            MarkFont::Sans => "Sans",
+            MarkFont::Serif => "Serif",
+            MarkFont::Bold => "Bold",
+            MarkFont::Script => "Script",
+            MarkFont::Mono => "Mono",
+        }
+    }
+}
+
+/// ZFPlus: a picture placed on the photo: written text, an emoji, a sticker
+/// or a GIF's picture, as straight RGBA. The editor shows these very pixels
+/// and the picture sent gets them, so what is seen is what is sent.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StampImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for StampImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StampImage({}x{})", self.width, self.height)
+    }
+}
+
+/// ZFPlus: what a text mark says and how, to change it later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkText {
+    pub text: String,
+    pub font: MarkFont,
+    pub color: [u8; 4],
+    pub fill: Option<[u8; 4]>,
+    /// A border round the text, in its colour.
+    pub boxed: bool,
+}
+
+/// ZFPlus: a placed picture, and for text, the words it was made from.
+#[derive(Clone, Debug)]
+pub struct Stamp {
+    pub image: std::sync::Arc<StampImage>,
+    pub text: Option<MarkText>,
+}
+
+impl PartialEq for Stamp {
+    fn eq(&self, other: &Self) -> bool {
+        (std::sync::Arc::ptr_eq(&self.image, &other.image) || self.image == other.image)
+            && self.text == other.text
     }
 }
 
@@ -2355,18 +2504,119 @@ pub const MARK_COLORS: [[u8; 4]; 6] = [
 /// ZFPlus: something drawn on a picture before it is sent. Points are in the
 /// turned picture's own proportions (0 to 1 across and down), so a mark
 /// lands in the same place on the full picture as on the editor's copy.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mark {
     pub tool: MarkTool,
     /// A pen's whole path; the two ends of a line, an arrow, or a shape's
-    /// bounding box.
+    /// bounding box; a stamp's box, top left then bottom right.
     pub points: Vec<[f32; 2]>,
     pub color: [u8; 4],
     /// Line width as a share of the picture's shorter side.
     pub width: f32,
+    /// ZFPlus: what a shape is filled with, under its outline.
+    pub fill: Option<[u8; 4]>,
+    /// ZFPlus: the picture of a text or stamp mark.
+    pub stamp: Option<Stamp>,
 }
 
 impl Mark {
+    /// The box round the mark, `[left, top, right, bottom]`, in the
+    /// picture's own proportions.
+    pub fn bounds(&self) -> [f32; 4] {
+        let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for &[x, y] in &self.points {
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        }
+        if self.points.is_empty() {
+            [0.0; 4]
+        } else {
+            bounds
+        }
+    }
+
+    /// The same mark moved by `delta`, in the picture's own proportions.
+    pub fn moved(&self, delta: [f32; 2]) -> Self {
+        Self {
+            points: self
+                .points
+                .iter()
+                .map(|&[x, y]| [x + delta[0], y + delta[1]])
+                .collect(),
+            ..self.clone()
+        }
+    }
+
+    /// The same mark grown or shrunk by `factor` about its box's top left.
+    pub fn scaled(&self, factor: f32) -> Self {
+        let [left, top, _, _] = self.bounds();
+        let factor = factor.max(0.05);
+        Self {
+            points: self
+                .points
+                .iter()
+                .map(|&[x, y]| [left + (x - left) * factor, top + (y - top) * factor])
+                .collect(),
+            // A line grows with its mark, as a picture's does.
+            width: if self.stamp.is_some() {
+                self.width
+            } else {
+                (self.width * factor).clamp(0.001, 0.08)
+            },
+            ..self.clone()
+        }
+    }
+
+    /// Whether `at` touches the mark, within `reach` (both in points of the
+    /// picture as it is shown, `size` being its size there).
+    pub fn hits(&self, at: [f32; 2], size: [f32; 2], reach: f32) -> bool {
+        let screen = |[x, y]: [f32; 2]| [x * size[0], y * size[1]];
+        let point = screen(at);
+        let [left, top, right, bottom] = self.bounds();
+        let (left, top) = (left * size[0], top * size[1]);
+        let (right, bottom) = (right * size[0], bottom * size[1]);
+        let inside = point[0] >= left - reach
+            && point[0] <= right + reach
+            && point[1] >= top - reach
+            && point[1] <= bottom + reach;
+        let reach = reach + self.width * size[0].min(size[1]) / 2.0;
+        match self.tool {
+            MarkTool::Stamp | MarkTool::Text | MarkTool::Pixelate => inside,
+            MarkTool::Rectangle | MarkTool::RoundedRectangle | MarkTool::Ellipse => {
+                if self.fill.is_some() {
+                    return inside;
+                }
+                // An outline is hit on its edge, not anywhere inside.
+                let near_x = (point[0] - left).abs() <= reach || (point[0] - right).abs() <= reach;
+                let near_y = (point[1] - top).abs() <= reach || (point[1] - bottom).abs() <= reach;
+                let within_x = point[0] >= left - reach && point[0] <= right + reach;
+                let within_y = point[1] >= top - reach && point[1] <= bottom + reach;
+                if self.tool == MarkTool::Ellipse {
+                    let (cx, cy) = ((left + right) / 2.0, (top + bottom) / 2.0);
+                    let (rx, ry) = (
+                        ((right - left) / 2.0).max(1.0),
+                        ((bottom - top) / 2.0).max(1.0),
+                    );
+                    let along =
+                        (((point[0] - cx) / rx).powi(2) + ((point[1] - cy) / ry).powi(2)).sqrt();
+                    return (along - 1.0).abs() * rx.min(ry) <= reach;
+                }
+                (near_x && within_y) || (near_y && within_x)
+            }
+            MarkTool::Pen | MarkTool::Line | MarkTool::Arrow => {
+                self.points
+                    .windows(2)
+                    .any(|pair| segment_distance(point, screen(pair[0]), screen(pair[1])) <= reach)
+                    || (self.points.len() == 1
+                        && segment_distance(point, screen(self.points[0]), screen(self.points[0]))
+                            <= reach)
+            }
+            MarkTool::Crop | MarkTool::Select => false,
+        }
+    }
+
     /// The same mark on the picture turned a quarter, the way the picture
     /// itself turns.
     pub fn turned(&self, clockwise: bool) -> Self {
@@ -2382,6 +2632,34 @@ impl Mark {
                     }
                 })
                 .collect(),
+            ..self.clone()
+        }
+    }
+
+    /// The same mark on the picture turned a quarter, with a placed picture
+    /// kept upright: its middle goes round with the picture and its size on
+    /// the picture stays. `aspect` is the picture's width over its height
+    /// before the turn.
+    pub fn turned_upright(&self, clockwise: bool, aspect: f32) -> Self {
+        if self.stamp.is_none() {
+            return self.turned(clockwise);
+        }
+        let [left, top, right, bottom] = self.bounds();
+        let center = [(left + right) / 2.0, (top + bottom) / 2.0];
+        let center = if clockwise {
+            [1.0 - center[1], center[0]]
+        } else {
+            [center[1], 1.0 - center[0]]
+        };
+        let half = [
+            (right - left) / 2.0 * aspect,
+            (bottom - top) / 2.0 / aspect.max(f32::EPSILON),
+        ];
+        Self {
+            points: vec![
+                [center[0] - half[0], center[1] - half[1]],
+                [center[0] + half[0], center[1] + half[1]],
+            ],
             ..self.clone()
         }
     }
@@ -2415,6 +2693,19 @@ impl Mark {
     }
 }
 
+/// The distance from `point` to the segment from `a` to `b`.
+fn segment_distance(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let length = dx * dx + dy * dy;
+    let t = if length <= f32::EPSILON {
+        0.0
+    } else {
+        (((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length).clamp(0.0, 1.0)
+    };
+    let (x, y) = (a[0] + t * dx - point[0], a[1] + t * dy - point[1]);
+    (x * x + y * y).sqrt()
+}
+
 /// ZFPlus: where a line or a shape ends with Shift held, in the picture's
 /// own proportions (`aspect` is its width over its height): a line or an
 /// arrow at the nearest eighth of a turn, a rectangle or an ellipse square.
@@ -2431,7 +2722,10 @@ pub fn snapped(tool: MarkTool, start: [f32; 2], end: [f32; 2], aspect: f32) -> [
                 start[1] + length * angle.sin(),
             ]
         }
-        MarkTool::Rectangle | MarkTool::Ellipse | MarkTool::Pixelate => {
+        MarkTool::Rectangle
+        | MarkTool::RoundedRectangle
+        | MarkTool::Ellipse
+        | MarkTool::Pixelate => {
             let side = dx.abs().max(dy.abs());
             [
                 start[0] + side.copysign(dx) / aspect,
@@ -2458,32 +2752,238 @@ impl PictureEdit {
             crop: PictureCrop::full(width, height),
             turns: 0,
             marks: Vec::new(),
-            undone: Vec::new(),
+            history: Vec::new(),
+            future: Vec::new(),
             tool: MarkTool::default(),
             color: MARK_COLORS[0],
             stroke: MarkStroke::default(),
+            fill: None,
+            font: MarkFont::default(),
+            text_box: false,
+            selected: None,
+            writing: None,
         }
     }
 
     /// ZFPlus: adds a finished mark; it can no longer redo what was undone.
     pub fn drawn(mut self, mark: Mark) -> Self {
-        self.marks.push(mark);
-        self.undone.clear();
+        self.change(|marks| marks.push(mark));
         self
     }
 
-    /// ZFPlus: takes the newest mark back.
+    /// ZFPlus: changes the marks so that Undo can take the change back.
+    pub fn change(&mut self, change: impl FnOnce(&mut Vec<Mark>)) {
+        let before = self.marks.clone();
+        change(&mut self.marks);
+        if self.marks != before {
+            self.history.push(before);
+            self.future.clear();
+        }
+        if self.selected.is_some_and(|at| at >= self.marks.len()) {
+            self.selected = None;
+        }
+    }
+
+    /// ZFPlus: the box, `[left, top, right, bottom]` in the picture's own
+    /// proportions, for a picture of `image`'s size centred on `center`,
+    /// `scale` picture pixels for each of its pixels.
+    fn stamp_box(&self, image: &StampImage, center: [f32; 2], scale: f32) -> Vec<[f32; 2]> {
+        let (wide, tall) = self.displayed_size();
+        let half = [
+            image.width as f32 * scale / wide.max(1) as f32 / 2.0,
+            image.height as f32 * scale / tall.max(1) as f32 / 2.0,
+        ];
+        vec![
+            [center[0] - half[0], center[1] - half[1]],
+            [center[0] + half[0], center[1] + half[1]],
+        ]
+    }
+
+    /// ZFPlus: places an emoji, sticker or GIF picture in the middle of what
+    /// is shown, picked, to move or resize.
+    pub fn place_stamp(&mut self, image: StampImage) {
+        let (wide, tall) = self.displayed_size();
+        let short = wide.min(tall).max(1) as f32;
+        let scale = STAMP_SHARE * short / image.width.max(image.height).max(1) as f32;
+        let crop = self.crop;
+        let center = [
+            (crop.x as f32 + crop.width as f32 / 2.0) / wide.max(1) as f32,
+            (crop.y as f32 + crop.height as f32 / 2.0) / tall.max(1) as f32,
+        ];
+        let points = self.stamp_box(&image, center, scale);
+        let mark = Mark {
+            tool: MarkTool::Stamp,
+            points,
+            stamp: Some(Stamp {
+                image: std::sync::Arc::new(image),
+                text: None,
+            }),
+            ..Mark::default()
+        };
+        self.change(|marks| marks.push(mark));
+        self.selected = Some(self.marks.len() - 1);
+        self.tool = MarkTool::Select;
+    }
+
+    /// ZFPlus: turns the text being typed into a mark, or changes the mark it
+    /// was opened from; empty text takes that mark away. The new mark is
+    /// picked, to move or resize.
+    pub fn commit_writing(&mut self) {
+        let Some(writing) = self.writing.take() else {
+            return;
+        };
+        let words = writing.text.trim_end().to_owned();
+        let old = writing.replaces.and_then(|at| self.marks.get(at).cloned());
+        if words.trim().is_empty() {
+            if let Some(at) = writing.replaces {
+                self.selected = Some(at);
+                self.delete_selected();
+            }
+            return;
+        }
+        let text = MarkText {
+            text: words,
+            font: self.font,
+            color: self.color,
+            fill: self.fill,
+            boxed: self.text_box,
+        };
+        let mark = self.text_mark(text, writing.center, old.as_ref());
+        match writing.replaces {
+            Some(at) if at < self.marks.len() => {
+                self.change(|marks| marks[at] = mark);
+                self.selected = Some(at);
+            }
+            _ => {
+                self.change(|marks| marks.push(mark));
+                self.selected = Some(self.marks.len() - 1);
+            }
+        }
+        self.tool = MarkTool::Select;
+    }
+
+    /// ZFPlus: a text mark for `text` centred on `center`, at the size of
+    /// `old` when it replaces one, else at the size new text gets.
+    fn text_mark(&self, text: MarkText, center: [f32; 2], old: Option<&Mark>) -> Mark {
+        let image = crate::plus_stamp::render_text(&text);
+        let (wide, tall) = self.displayed_size();
+        let short = wide.min(tall).max(1) as f32;
+        let lines = text.text.lines().count().max(1) as f32;
+        let fresh = TEXT_LINE_SHARE * short * lines / image.height.max(1) as f32;
+        // Picture pixels per pixel of the old text's picture keep its size.
+        let scale = old
+            .and_then(|old| {
+                let previous = old.stamp.as_ref()?;
+                let [left, _, right, _] = old.bounds();
+                Some((right - left) * wide as f32 / previous.image.width.max(1) as f32)
+            })
+            .unwrap_or(fresh);
+        Mark {
+            tool: MarkTool::Text,
+            points: self.stamp_box(&image, center, scale),
+            color: text.color,
+            stamp: Some(Stamp {
+                image: std::sync::Arc::new(image),
+                text: Some(text),
+            }),
+            ..Mark::default()
+        }
+    }
+
+    /// ZFPlus: gives the picked mark the editor's colour, fill, width and,
+    /// for text, type style and box, as they are now.
+    pub fn restyle_selected(&mut self) {
+        let Some(at) = self.selected else {
+            return;
+        };
+        let Some(mark) = self.marks.get(at).cloned() else {
+            return;
+        };
+        let restyled = if let Some(text) = mark.stamp.as_ref().and_then(|stamp| stamp.text.clone())
+        {
+            let text = MarkText {
+                font: self.font,
+                color: self.color,
+                fill: self.fill,
+                boxed: self.text_box,
+                ..text
+            };
+            let [left, top, right, bottom] = mark.bounds();
+            let center = [(left + right) / 2.0, (top + bottom) / 2.0];
+            self.text_mark(text, center, Some(&mark))
+        } else if mark.stamp.is_some() || mark.tool == MarkTool::Pixelate {
+            return;
+        } else {
+            Mark {
+                color: self.color,
+                width: if mark.tool.has_width() {
+                    self.stroke.share()
+                } else {
+                    mark.width
+                },
+                fill: if mark.tool.is_shape() {
+                    self.fill
+                } else {
+                    None
+                },
+                ..mark
+            }
+        };
+        self.change(|marks| marks[at] = restyled);
+        self.selected = Some(at);
+    }
+
+    /// ZFPlus: picks a mark and sets the editor's colour and the rest from
+    /// it, so the controls show what it has.
+    pub fn select(&mut self, at: Option<usize>) {
+        self.selected = at;
+        let Some(mark) = at.and_then(|at| self.marks.get(at)) else {
+            return;
+        };
+        if let Some(text) = mark.stamp.as_ref().and_then(|stamp| stamp.text.as_ref()) {
+            self.color = text.color;
+            self.fill = text.fill;
+            self.font = text.font;
+            self.text_box = text.boxed;
+        } else if mark.stamp.is_none() {
+            self.color = mark.color;
+            if mark.tool.is_shape() {
+                self.fill = mark.fill;
+            }
+            if let Some(stroke) = MarkStroke::ALL
+                .into_iter()
+                .find(|stroke| (stroke.share() - mark.width).abs() < 1e-4)
+            {
+                self.stroke = stroke;
+            }
+        }
+    }
+
+    /// ZFPlus: deletes the picked mark.
+    pub fn delete_selected(&mut self) {
+        if let Some(at) = self.selected.take() {
+            self.change(|marks| {
+                if at < marks.len() {
+                    marks.remove(at);
+                }
+            });
+        }
+    }
+
+    /// ZFPlus: takes the newest change back.
     pub fn undo(mut self) -> Self {
-        if let Some(mark) = self.marks.pop() {
-            self.undone.push(mark);
+        if let Some(before) = self.history.pop() {
+            self.future.push(std::mem::replace(&mut self.marks, before));
+            self.selected = None;
         }
         self
     }
 
-    /// ZFPlus: puts back the mark Undo last took.
+    /// ZFPlus: puts back the change Undo last took.
     pub fn redo(mut self) -> Self {
-        if let Some(mark) = self.undone.pop() {
-            self.marks.push(mark);
+        if let Some(after) = self.future.pop() {
+            self.history.push(std::mem::replace(&mut self.marks, after));
+            self.selected = None;
         }
         self
     }
@@ -2500,6 +3000,7 @@ impl PictureEdit {
     /// Turns the picture, carrying the selection round with it.
     pub fn turned(self, clockwise: bool) -> Self {
         let (width, height) = self.displayed_size();
+        let aspect = width.max(1) as f32 / height.max(1) as f32;
         let crop = if clockwise {
             self.crop.turned_clockwise(height)
         } else {
@@ -2512,16 +3013,18 @@ impl PictureEdit {
                 (self.turns + 3) % 4
             },
             crop,
-            marks: self
-                .marks
+            marks: turned_marks(&self.marks, clockwise, aspect),
+            history: self
+                .history
                 .iter()
-                .map(|mark| mark.turned(clockwise))
+                .map(|marks| turned_marks(marks, clockwise, aspect))
                 .collect(),
-            undone: self
-                .undone
+            future: self
+                .future
                 .iter()
-                .map(|mark| mark.turned(clockwise))
+                .map(|marks| turned_marks(marks, clockwise, aspect))
                 .collect(),
+            writing: None,
             ..self
         }
     }
@@ -2534,10 +3037,21 @@ impl PictureEdit {
             crop: PictureCrop::full(self.width, self.height),
             turns: 0,
             marks: Vec::new(),
-            undone: Vec::new(),
+            history: Vec::new(),
+            future: Vec::new(),
+            selected: None,
+            writing: None,
             ..self
         }
     }
+}
+
+/// ZFPlus: every mark on a picture turned a quarter, placed pictures upright.
+fn turned_marks(marks: &[Mark], clockwise: bool, aspect: f32) -> Vec<Mark> {
+    marks
+        .iter()
+        .map(|mark| mark.turned_upright(clockwise, aspect))
+        .collect()
 }
 
 /// Where a staged picture came from before it was cropped. Keeping it means
@@ -3052,6 +3566,9 @@ pub enum Action {
     /// ZFPlus: asks the phone for page after page of a chat's history until
     /// it has nothing older, or stops doing so.
     LoadAllFromPhone(ChatId),
+    /// ZFPlus: the picture editor's stickers and GIFs panel opened: fetch
+    /// the stickers and GIFs it offers.
+    LoadEditorStamps,
     ReloadHistory {
         chat: ChatId,
         message: String,
@@ -3766,6 +4283,7 @@ mod tests {
             points: points.to_vec(),
             color: [0, 0, 0, 255],
             width: 0.01,
+            ..Default::default()
         };
         let wobbly = stroke(&[[0.1, 0.5], [0.3, 0.51], [0.6, 0.495], [0.9, 0.5]]).straightened();
         assert_eq!(wobbly.tool, crate::model::MarkTool::Line);
@@ -3806,6 +4324,7 @@ mod tests {
             points: vec![[0.0, 0.0], [1.0, 0.0]],
             color: [0, 0, 0, 255],
             width: 0.01,
+            ..Default::default()
         };
         let edit = PictureEdit::new(
             crate::app::AttachmentId::default(),
@@ -3819,10 +4338,79 @@ mod tests {
         assert_eq!(turned.marks[0].points, [[1.0, 0.0], [1.0, 1.0]]);
         assert_eq!(turned.turned(false).marks, edit.marks);
         let undone = edit.undo();
-        assert!(undone.marks.is_empty() && undone.undone.len() == 1);
+        assert!(undone.marks.is_empty() && undone.future.len() == 1);
         let redone = undone.redo();
-        assert_eq!(redone.marks, [mark]);
-        assert!(redone.reset().marks.is_empty());
+        assert_eq!(redone.marks, std::slice::from_ref(&mark));
+        assert!(redone.clone().reset().marks.is_empty());
+
+        // Moving and deleting undo too, one step each.
+        let mut moved = redone;
+        moved.change(|marks| marks[0] = marks[0].moved([0.0, 0.5]));
+        assert_eq!(moved.marks[0].points, [[0.0, 0.5], [1.0, 0.5]]);
+        moved.selected = Some(0);
+        moved.delete_selected();
+        assert!(moved.marks.is_empty() && moved.selected.is_none());
+        let back = moved.undo();
+        assert_eq!(back.marks[0].points, [[0.0, 0.5], [1.0, 0.5]]);
+        assert_eq!(back.undo().marks, [mark]);
+    }
+
+    /// ZFPlus: a placed picture keeps its size on the picture and stays
+    /// upright when the picture turns.
+    #[test]
+    fn a_stamp_stays_upright_when_the_picture_turns() {
+        use crate::model::{Mark, MarkTool, Stamp, StampImage};
+        let stamp = Mark {
+            tool: MarkTool::Stamp,
+            // A square on a picture twice as wide as tall.
+            points: vec![[0.1, 0.2], [0.2, 0.4]],
+            stamp: Some(Stamp {
+                image: std::sync::Arc::new(StampImage {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![0; 4],
+                }),
+                text: None,
+            }),
+            ..Default::default()
+        };
+        let turned = stamp.turned_upright(true, 2.0);
+        let [left, top, right, bottom] = turned.bounds();
+        // Still a square on the turned picture, half as wide as tall.
+        assert!(((right - left) - 0.2).abs() < 1e-5, "{turned:?}");
+        assert!(((bottom - top) - 0.1).abs() < 1e-5, "{turned:?}");
+        // Its middle went round with the picture.
+        assert!((((left + right) / 2.0) - 0.7).abs() < 1e-5);
+        assert!((((top + bottom) / 2.0) - 0.15).abs() < 1e-5);
+    }
+
+    /// ZFPlus: a click picks a line near it, a filled shape anywhere inside,
+    /// and an outline only on its edge.
+    #[test]
+    fn a_click_picks_what_it_touches() {
+        use crate::model::{Mark, MarkTool};
+        let size = [100.0, 100.0];
+        let line = Mark {
+            tool: MarkTool::Line,
+            points: vec![[0.1, 0.1], [0.9, 0.1]],
+            width: 0.01,
+            ..Default::default()
+        };
+        assert!(line.hits([0.5, 0.12], size, 3.0));
+        assert!(!line.hits([0.5, 0.3], size, 3.0));
+        let outline = Mark {
+            tool: MarkTool::Rectangle,
+            points: vec![[0.2, 0.2], [0.8, 0.8]],
+            width: 0.01,
+            ..Default::default()
+        };
+        assert!(outline.hits([0.2, 0.5], size, 3.0));
+        assert!(!outline.hits([0.5, 0.5], size, 3.0));
+        let filled = Mark {
+            fill: Some([0, 0, 0, 255]),
+            ..outline
+        };
+        assert!(filled.hits([0.5, 0.5], size, 3.0));
     }
 
     #[test]

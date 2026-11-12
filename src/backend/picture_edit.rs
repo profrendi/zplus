@@ -179,6 +179,37 @@ pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
         let Some(pixmap) = canvas.as_mut() else {
             return;
         };
+        // ZFPlus: text, emoji, stickers and GIF pictures, scaled into their box.
+        if let Some(stamp) = &mark.stamp {
+            let (x0, y0) = at(first);
+            let (x1, y1) = at(last);
+            let image = &stamp.image;
+            if let Some(source) =
+                crate::plus_stamp::pixmap_of_raw(image.width, image.height, &image.rgba)
+            {
+                let scale_x = (x1 - x0).abs() / image.width.max(1) as f32;
+                let scale_y = (y1 - y0).abs() / image.height.max(1) as f32;
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    source.as_ref(),
+                    &resvg::tiny_skia::PixmapPaint {
+                        quality: resvg::tiny_skia::FilterQuality::Bicubic,
+                        ..Default::default()
+                    },
+                    resvg::tiny_skia::Transform::from_row(
+                        scale_x,
+                        0.0,
+                        0.0,
+                        scale_y,
+                        x0.min(x1),
+                        y0.min(y1),
+                    ),
+                    None,
+                );
+            }
+            continue;
+        }
         let mut paint = Paint::default();
         paint.set_color_rgba8(mark.color[0], mark.color[1], mark.color[2], mark.color[3]);
         paint.anti_alias = true;
@@ -221,18 +252,49 @@ pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
                     }
                 }
             }
-            MarkTool::Rectangle | MarkTool::Ellipse => {
+            MarkTool::Rectangle | MarkTool::RoundedRectangle | MarkTool::Ellipse => {
                 let Some(rect) = Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
                 else {
                     continue;
                 };
-                if mark.tool == MarkTool::Rectangle {
-                    path.push_rect(rect);
-                } else {
-                    path.push_oval(rect);
+                let shape = match mark.tool {
+                    MarkTool::Rectangle => Some(PathBuilder::from_rect(rect)),
+                    MarkTool::RoundedRectangle => crate::plus_stamp::rounded_rect(
+                        Some(rect),
+                        rounding(rect.width(), rect.height()),
+                    ),
+                    _ => PathBuilder::from_oval(rect),
+                };
+                let Some(shape) = shape else {
+                    continue;
+                };
+                // ZFPlus: the fill goes under the outline.
+                if let Some(fill) = mark.fill {
+                    let mut inside = Paint::default();
+                    inside.set_color_rgba8(fill[0], fill[1], fill[2], fill[3]);
+                    inside.anti_alias = true;
+                    pixmap.fill_path(
+                        &shape,
+                        &inside,
+                        resvg::tiny_skia::FillRule::Winding,
+                        resvg::tiny_skia::Transform::identity(),
+                        None,
+                    );
                 }
+                pixmap.stroke_path(
+                    &shape,
+                    &paint,
+                    &stroke,
+                    resvg::tiny_skia::Transform::identity(),
+                    None,
+                );
+                continue;
             }
-            MarkTool::Crop | MarkTool::Pixelate => continue,
+            MarkTool::Crop
+            | MarkTool::Pixelate
+            | MarkTool::Select
+            | MarkTool::Text
+            | MarkTool::Stamp => continue,
         }
         if let Some(path) = path.finish() {
             pixmap.stroke_path(
@@ -247,6 +309,12 @@ pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
     if let Some(pixmap) = canvas {
         from_pixmap(picture, &pixmap);
     }
+}
+
+/// ZFPlus: how round a rounded rectangle's corners are: a sixth of its
+/// shorter side, as the editor draws it.
+pub fn rounding(width: f32, height: f32) -> f32 {
+    width.abs().min(height.abs()) / 6.0
 }
 
 /// The picture as tiny-skia's premultiplied pixels.
@@ -371,7 +439,47 @@ mod tests {
             points: points.to_vec(),
             color: [255, 0, 0, 255],
             width: 0.05,
+            ..Default::default()
         }
+    }
+
+    /// ZFPlus: a filled shape is filled under its outline, a rounded
+    /// rectangle leaves its corners alone, and a placed picture lands in its
+    /// box at the picture's size.
+    #[test]
+    fn fills_rounded_corners_and_stamps_land_on_the_picture() {
+        let mut picture = image::RgbaImage::from_pixel(200, 100, image::Rgba([255, 255, 255, 255]));
+        let filled = Mark {
+            fill: Some([0, 0, 255, 255]),
+            ..mark(MarkTool::RoundedRectangle, &[[0.1, 0.1], [0.5, 0.9]])
+        };
+        let blue = std::sync::Arc::new(crate::model::StampImage {
+            width: 2,
+            height: 2,
+            rgba: [0u8, 255, 0, 255].repeat(4),
+        });
+        let stamp = Mark {
+            tool: MarkTool::Stamp,
+            points: vec![[0.7, 0.2], [0.9, 0.6]],
+            stamp: Some(crate::model::Stamp {
+                image: blue,
+                text: None,
+            }),
+            ..Default::default()
+        };
+        draw_marks(&mut picture, &[filled, stamp]);
+        assert_eq!(
+            picture.get_pixel(60, 50).0,
+            [0, 0, 255, 255],
+            "filled inside"
+        );
+        assert_eq!(
+            picture.get_pixel(21, 11).0,
+            [255, 255, 255, 255],
+            "the rounded corner stays clear"
+        );
+        assert_eq!(picture.get_pixel(160, 40).0, [0, 255, 0, 255], "the stamp");
+        assert_eq!(picture.get_pixel(130, 40).0, [255, 255, 255, 255]);
     }
 
     /// ZFPlus: a line lands where it was drawn, in its colour, at the full
