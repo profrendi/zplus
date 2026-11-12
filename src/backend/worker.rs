@@ -7819,7 +7819,7 @@ impl Worker {
                     // A hundred numbers a question, one question at a time,
                     // as WhatsApp's own contact sync asks.
                     for batch in numbers.chunks(100) {
-                        let jids: Vec<Jid> = batch.iter().map(|number| Jid::pn(number)).collect();
+                        let jids: Vec<Jid> = batch.iter().map(Jid::pn).collect();
                         let Ok(results) = client.contacts().is_on_whatsapp(&jids).await else {
                             continue;
                         };
