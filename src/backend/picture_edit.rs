@@ -140,6 +140,10 @@ fn turned_and_cropped(
         3 => image::imageops::rotate270(&picture),
         _ => picture,
     };
+    // ZFPlus: mirrored after the turns, as the editor showed it.
+    if turns & crate::model::PICTURE_MIRRORED != 0 {
+        image::imageops::flip_horizontal_in_place(&mut picture);
+    }
     draw_marks(&mut picture, marks);
     let (width, height) = picture.dimensions();
     let crop = crop.clamped(width, height);
@@ -179,6 +183,11 @@ pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
         let Some(pixmap) = canvas.as_mut() else {
             return;
         };
+        // ZFPlus: a turned mark turns about its box's middle, in pixels.
+        let turn = {
+            let (cx, cy) = at(mark.center());
+            resvg::tiny_skia::Transform::from_rotate_at(mark.angle, cx, cy)
+        };
         // ZFPlus: text, emoji, stickers and GIF pictures, scaled into their box.
         if let Some(stamp) = &mark.stamp {
             let (x0, y0) = at(first);
@@ -197,14 +206,27 @@ pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
                         quality: resvg::tiny_skia::FilterQuality::Bicubic,
                         ..Default::default()
                     },
-                    resvg::tiny_skia::Transform::from_row(
-                        scale_x,
-                        0.0,
-                        0.0,
-                        scale_y,
-                        x0.min(x1),
-                        y0.min(y1),
-                    ),
+                    // Mirrored, it is drawn from its right edge leftward.
+                    if mark.flipped {
+                        resvg::tiny_skia::Transform::from_row(
+                            -scale_x,
+                            0.0,
+                            0.0,
+                            scale_y,
+                            x0.max(x1),
+                            y0.min(y1),
+                        )
+                    } else {
+                        resvg::tiny_skia::Transform::from_row(
+                            scale_x,
+                            0.0,
+                            0.0,
+                            scale_y,
+                            x0.min(x1),
+                            y0.min(y1),
+                        )
+                    }
+                    .post_concat(turn),
                     None,
                 );
             }
@@ -277,17 +299,11 @@ pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
                         &shape,
                         &inside,
                         resvg::tiny_skia::FillRule::Winding,
-                        resvg::tiny_skia::Transform::identity(),
+                        turn,
                         None,
                     );
                 }
-                pixmap.stroke_path(
-                    &shape,
-                    &paint,
-                    &stroke,
-                    resvg::tiny_skia::Transform::identity(),
-                    None,
-                );
+                pixmap.stroke_path(&shape, &paint, &stroke, turn, None);
                 continue;
             }
             MarkTool::Crop
@@ -297,13 +313,7 @@ pub fn draw_marks(picture: &mut image::RgbaImage, marks: &[Mark]) {
             | MarkTool::Stamp => continue,
         }
         if let Some(path) = path.finish() {
-            pixmap.stroke_path(
-                &path,
-                &paint,
-                &stroke,
-                resvg::tiny_skia::Transform::identity(),
-                None,
-            );
+            pixmap.stroke_path(&path, &paint, &stroke, turn, None);
         }
     }
     if let Some(pixmap) = canvas {
@@ -441,6 +451,37 @@ mod tests {
             width: 0.05,
             ..Default::default()
         }
+    }
+
+    /// ZFPlus: a mark turned a quarter lies across where it lay, and a
+    /// mirrored picture is written mirrored.
+    #[test]
+    fn turned_marks_and_a_mirrored_picture_are_written_as_shown() {
+        let mut picture = image::RgbaImage::from_pixel(100, 100, image::Rgba([255, 255, 255, 255]));
+        let bar = Mark {
+            fill: Some([0, 0, 0, 255]),
+            ..mark(MarkTool::Rectangle, &[[0.1, 0.45], [0.9, 0.55]])
+        }
+        .rotated(90.0);
+        draw_marks(&mut picture, &[bar]);
+        assert_eq!(picture.get_pixel(50, 20).0, [0, 0, 0, 255], "upright now");
+        assert_eq!(picture.get_pixel(20, 50).0, [255, 255, 255, 255]);
+
+        let mut half = image::RgbaImage::from_pixel(4, 2, image::Rgba([255, 255, 255, 255]));
+        half.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let crop = PictureCrop::full(4, 2);
+        let edited = edit_pasted_marked(
+            half.as_raw(),
+            4,
+            2,
+            crop,
+            crate::model::PICTURE_MIRRORED,
+            &[],
+        )
+        .unwrap();
+        let written = image::load_from_memory(&edited.bytes).unwrap().to_rgba8();
+        assert!(written.get_pixel(3, 0).0[1] < 60, "red moved to the right");
+        assert!(written.get_pixel(0, 0).0[1] > 200);
     }
 
     /// ZFPlus: a filled shape is filled under its outline, a rounded

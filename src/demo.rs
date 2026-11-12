@@ -3992,6 +3992,23 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 }
             }
             // ZFPlus: the picture editor's emoji, stickers and GIFs panel.
+            // ZFPlus: the editor with the picture mirrored and the text
+            // picked and turned, its round handle showing.
+            "crop-turned" => {
+                if let Some(edit) = app.picture_edit.take() {
+                    let mut edit = edit.mirrored(false);
+                    if let Some(at) = edit
+                        .marks
+                        .iter()
+                        .position(|mark| mark.tool == crate::model::MarkTool::Text)
+                    {
+                        edit.tool = crate::model::MarkTool::Select;
+                        edit.select(Some(at));
+                        edit.rotate_selected(-12.0);
+                    }
+                    app.picture_edit = Some(edit);
+                }
+            }
             "crop-stamps" => {
                 if let Some(edit) = app.picture_edit.as_mut() {
                     edit.tool = crate::model::MarkTool::Stamp;

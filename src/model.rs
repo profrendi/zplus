@@ -2517,9 +2517,99 @@ pub struct Mark {
     pub fill: Option<[u8; 4]>,
     /// ZFPlus: the picture of a text or stamp mark.
     pub stamp: Option<Stamp>,
+    /// ZFPlus: how far it is turned clockwise about its box's middle, in
+    /// degrees, on the picture as shown.
+    pub angle: f32,
+    /// ZFPlus: whether a placed picture is mirrored left to right.
+    pub flipped: bool,
+}
+
+/// ZFPlus: the bit of `PictureEdit::turns` that mirrors the picture left to
+/// right after its quarter turns. Carried in the same byte so every path the
+/// turns already take carries the mirror too.
+pub const PICTURE_MIRRORED: u8 = 4;
+
+/// ZFPlus: `point` turned `degrees` clockwise about `center`, on a screen or
+/// in pixels, where both directions use the same unit.
+pub fn rotate_about(point: [f32; 2], center: [f32; 2], degrees: f32) -> [f32; 2] {
+    if degrees == 0.0 {
+        return point;
+    }
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (x, y) = (point[0] - center[0], point[1] - center[1]);
+    [center[0] + x * cos - y * sin, center[1] + x * sin + y * cos]
 }
 
 impl Mark {
+    /// ZFPlus: whether the mark can be turned and mirrored as an object: all
+    /// but the pixelated area, which hides what lies square under it.
+    pub fn turnable(&self) -> bool {
+        self.tool != MarkTool::Pixelate
+    }
+
+    /// ZFPlus: the middle of the mark's box, in the picture's proportions.
+    pub fn center(&self) -> [f32; 2] {
+        let [left, top, right, bottom] = self.bounds();
+        [(left + right) / 2.0, (top + bottom) / 2.0]
+    }
+
+    /// ZFPlus: the same mark turned `degrees` more clockwise.
+    pub fn rotated(&self, degrees: f32) -> Self {
+        if !self.turnable() {
+            return self.clone();
+        }
+        Self {
+            angle: (self.angle + degrees).rem_euclid(360.0),
+            ..self.clone()
+        }
+    }
+
+    /// ZFPlus: the same mark mirrored left to right (or top to bottom) about
+    /// its own middle, as it shows.
+    pub fn mirrored(&self, vertical: bool) -> Self {
+        if !self.turnable() {
+            return self.clone();
+        }
+        // Top to bottom is left to right, then half a turn.
+        if vertical {
+            return self.mirrored(false).rotated(180.0);
+        }
+        let [cx, _] = self.center();
+        let points = if self.stamp.is_some() || self.tool.is_shape() {
+            self.points.clone()
+        } else {
+            self.points
+                .iter()
+                .map(|&[x, y]| [2.0 * cx - x, y])
+                .collect()
+        };
+        Self {
+            points,
+            angle: (360.0 - self.angle).rem_euclid(360.0),
+            flipped: if self.stamp.is_some() {
+                !self.flipped
+            } else {
+                self.flipped
+            },
+            ..self.clone()
+        }
+    }
+
+    /// ZFPlus: the same mark where the whole picture is mirrored left to
+    /// right. A placed picture keeps reading the right way round, as it does
+    /// when the picture turns; only where it sits moves.
+    pub fn picture_mirrored(&self) -> Self {
+        if self.stamp.is_some() {
+            let [cx, _] = self.center();
+            return self.moved([1.0 - 2.0 * cx, 0.0]);
+        }
+        Self {
+            points: self.points.iter().map(|&[x, y]| [1.0 - x, y]).collect(),
+            angle: (360.0 - self.angle).rem_euclid(360.0),
+            ..self.clone()
+        }
+    }
+
     /// The box round the mark, `[left, top, right, bottom]`, in the
     /// picture's own proportions.
     pub fn bounds(&self) -> [f32; 4] {
@@ -2551,7 +2641,14 @@ impl Mark {
 
     /// The same mark grown or shrunk by `factor` about its box's top left.
     pub fn scaled(&self, factor: f32) -> Self {
-        let [left, top, _, _] = self.bounds();
+        // ZFPlus: a turned mark grows about its middle, so it stays where it
+        // shows; an upright one from its top left, as its corner is dragged.
+        let [left, top] = if self.angle == 0.0 {
+            let [left, top, _, _] = self.bounds();
+            [left, top]
+        } else {
+            self.center()
+        };
         let factor = factor.max(0.05);
         Self {
             points: self
@@ -2572,6 +2669,19 @@ impl Mark {
     /// Whether `at` touches the mark, within `reach` (both in points of the
     /// picture as it is shown, `size` being its size there).
     pub fn hits(&self, at: [f32; 2], size: [f32; 2], reach: f32) -> bool {
+        // ZFPlus: a turned mark is hit where it shows: the point is turned
+        // back about its middle, on the screen where both directions agree.
+        let at = if self.angle == 0.0 {
+            at
+        } else {
+            let center = self.center();
+            let back = rotate_about(
+                [at[0] * size[0], at[1] * size[1]],
+                [center[0] * size[0], center[1] * size[1]],
+                -self.angle,
+            );
+            [back[0] / size[0], back[1] / size[1]]
+        };
         let screen = |[x, y]: [f32; 2]| [x * size[0], y * size[1]];
         let point = screen(at);
         let [left, top, right, bottom] = self.bounds();
@@ -2990,7 +3100,7 @@ impl PictureEdit {
 
     /// The source turned to the side the crop is measured in.
     pub fn displayed_size(&self) -> (u32, u32) {
-        if self.turns.is_multiple_of(2) {
+        if (self.turns % 4).is_multiple_of(2) {
             (self.width, self.height)
         } else {
             (self.height, self.width)
@@ -3006,12 +3116,18 @@ impl PictureEdit {
         } else {
             self.crop.turned_counter_clockwise(width)
         };
+        // ZFPlus: a mirrored picture is mirrored after its turns, so turning
+        // what shows clockwise turns the original the other way.
+        let mirrored = self.turns & PICTURE_MIRRORED;
+        let quarter = self.turns % 4;
+        let forward = clockwise == (mirrored == 0);
         Self {
-            turns: if clockwise {
-                (self.turns + 1) % 4
-            } else {
-                (self.turns + 3) % 4
-            },
+            turns: mirrored
+                | if forward {
+                    (quarter + 1) % 4
+                } else {
+                    (quarter + 3) % 4
+                },
             crop,
             marks: turned_marks(&self.marks, clockwise, aspect),
             history: self
@@ -3026,6 +3142,56 @@ impl PictureEdit {
                 .collect(),
             writing: None,
             ..self
+        }
+    }
+
+    /// ZFPlus: mirrors the picture left to right (or top to bottom), with
+    /// the crop and what is drawn on it. Undo does not take it back, as it
+    /// does not take back a turn; the button does.
+    pub fn mirrored(self, vertical: bool) -> Self {
+        if vertical {
+            // Top to bottom is left to right, then half a turn.
+            return self.mirrored(false).turned(true).turned(true);
+        }
+        let (width, _) = self.displayed_size();
+        let crop = PictureCrop {
+            x: width.saturating_sub(self.crop.x + self.crop.width),
+            ..self.crop
+        };
+        let mirror =
+            |marks: &[Mark]| -> Vec<Mark> { marks.iter().map(Mark::picture_mirrored).collect() };
+        Self {
+            turns: self.turns ^ PICTURE_MIRRORED,
+            crop,
+            marks: mirror(&self.marks),
+            history: self.history.iter().map(|marks| mirror(marks)).collect(),
+            future: self.future.iter().map(|marks| mirror(marks)).collect(),
+            writing: None,
+            ..self
+        }
+    }
+
+    /// ZFPlus: turns the picked mark `degrees` clockwise, one step for Undo.
+    pub fn rotate_selected(&mut self, degrees: f32) {
+        if let Some(at) = self.selected {
+            self.change(|marks| {
+                if let Some(mark) = marks.get_mut(at) {
+                    *mark = mark.rotated(degrees);
+                }
+            });
+            self.selected = Some(at);
+        }
+    }
+
+    /// ZFPlus: mirrors the picked mark, one step for Undo.
+    pub fn mirror_selected(&mut self, vertical: bool) {
+        if let Some(at) = self.selected {
+            self.change(|marks| {
+                if let Some(mark) = marks.get_mut(at) {
+                    *mark = mark.mirrored(vertical);
+                }
+            });
+            self.selected = Some(at);
         }
     }
 
@@ -4385,6 +4551,59 @@ mod tests {
         // Its middle went round with the picture.
         assert!((((left + right) / 2.0) - 0.7).abs() < 1e-5);
         assert!((((top + bottom) / 2.0) - 0.15).abs() < 1e-5);
+    }
+
+    /// ZFPlus: a turned object is hit where it shows, and mirroring a whole
+    /// picture twice, or turning a mirrored one all the way round, brings it
+    /// back as it was.
+    #[test]
+    fn turning_and_mirroring_objects_and_the_picture() {
+        use crate::model::{Mark, MarkTool, PICTURE_MIRRORED, PictureEdit, PictureSource};
+        let bar = Mark {
+            tool: MarkTool::Rectangle,
+            points: vec![[0.1, 0.45], [0.9, 0.55]],
+            width: 0.01,
+            fill: Some([0, 0, 0, 255]),
+            ..Default::default()
+        };
+        let size = [100.0, 100.0];
+        assert!(bar.hits([0.2, 0.5], size, 1.0));
+        let upright = bar.rotated(90.0);
+        assert!(!upright.hits([0.2, 0.5], size, 1.0), "turned away");
+        assert!(upright.hits([0.5, 0.2], size, 1.0), "turned to here");
+        assert_eq!(upright.rotated(270.0).angle, 0.0);
+        let arrow = Mark {
+            tool: MarkTool::Arrow,
+            points: vec![[0.2, 0.5], [0.4, 0.5]],
+            ..Default::default()
+        };
+        assert_eq!(arrow.mirrored(false).points, [[0.4, 0.5], [0.2, 0.5]]);
+
+        let mut edit = PictureEdit::new(
+            crate::app::AttachmentId::default(),
+            PictureSource::Pasted(std::sync::Arc::new(vec![0; 4 * 200 * 100])),
+            200,
+            100,
+        );
+        edit.crop = crate::model::PictureCrop {
+            x: 10,
+            y: 0,
+            width: 50,
+            height: 100,
+        };
+        edit.marks.push(arrow.clone());
+        let mirrored = edit.clone().mirrored(false);
+        assert_eq!(mirrored.turns, PICTURE_MIRRORED);
+        assert_eq!(mirrored.crop.x, 140);
+        assert!((mirrored.marks[0].points[0][0] - 0.8).abs() < 1e-6);
+        let back = mirrored.clone().mirrored(false);
+        assert_eq!(back.turns, 0);
+        assert_eq!(back.crop, edit.crop);
+        let mut round = mirrored;
+        for _ in 0..4 {
+            round = round.turned(true);
+        }
+        assert_eq!(round.turns, PICTURE_MIRRORED, "four turns, still mirrored");
     }
 
     /// ZFPlus: a click picks a line near it, a filled shape anywhere inside,

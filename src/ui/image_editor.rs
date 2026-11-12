@@ -45,7 +45,9 @@ const REACH: f32 = 6.0;
 #[derive(Clone)]
 enum Change {
     Reset,
-    Turn { clockwise: bool },
+    Turn {
+        clockwise: bool,
+    },
     Tool(MarkTool),
     Color([u8; 4]),
     Stroke(MarkStroke),
@@ -56,6 +58,12 @@ enum Change {
     Redo,
     Delete,
     Place(StampImage),
+    /// ZFPlus: turns the picked mark this many degrees clockwise.
+    Rotate(f32),
+    /// ZFPlus: mirrors the picked mark, top to bottom when `true`.
+    Mirror(bool),
+    /// ZFPlus: mirrors the whole picture, top to bottom when `true`.
+    MirrorPicture(bool),
 }
 
 /// ZFPlus: the editor's tools in WhatsApp's order, with their names.
@@ -110,6 +118,48 @@ struct Handling {
     offset: [f32; 2],
     /// Or grown by this much, when the corner handle is dragged.
     grow: Option<f32>,
+    /// ZFPlus: or turned by this many degrees, when the round handle above
+    /// it is dragged.
+    turn: Option<f32>,
+}
+
+/// ZFPlus: where a picked mark's handles show: its outline's four corners
+/// (turned with it), the corner that resizes, and the round one above that
+/// turns it.
+struct Handles {
+    outline: [Pos2; 4],
+    grow: Pos2,
+    turn: Pos2,
+    middle: Pos2,
+}
+
+fn handles_of(mark: &Mark, picture: Rect) -> Handles {
+    let at = |x: f32, y: f32| {
+        pos2(
+            picture.min.x + x * picture.width(),
+            picture.min.y + y * picture.height(),
+        )
+    };
+    let [left, top, right, bottom] = mark.bounds();
+    let pad = mark.width * picture.width().min(picture.height()) / 2.0 + 4.0;
+    let flat = Rect::from_min_max(at(left, top), at(right, bottom)).expand(pad);
+    let middle = flat.center();
+    let turn = |point: Pos2| {
+        let [x, y] =
+            crate::model::rotate_about([point.x, point.y], [middle.x, middle.y], mark.angle);
+        pos2(x, y)
+    };
+    Handles {
+        outline: [
+            turn(flat.left_top()),
+            turn(flat.right_top()),
+            turn(flat.right_bottom()),
+            turn(flat.left_bottom()),
+        ],
+        grow: turn(flat.right_bottom()),
+        turn: turn(flat.center_top() - vec2(0.0, 26.0)),
+        middle,
+    }
 }
 
 fn handling_id() -> egui::Id {
@@ -476,6 +526,39 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             change = Some(Change::TextBox(!edit.text_box));
                         }
                     }
+                    // ZFPlus: the picked object turns and mirrors; its round
+                    // handle turns it freely.
+                    if picked.is_some_and(Mark::turnable) {
+                        ui.add_space(8.0);
+                        for (icon, name, step) in [
+                            (Icon::RotateLeft, "Turn it left", Change::Rotate(-90.0)),
+                            (Icon::RotateRight, "Turn it right", Change::Rotate(90.0)),
+                            (
+                                Icon::FlipHorizontal,
+                                "Mirror it left to right",
+                                Change::Mirror(false),
+                            ),
+                            (
+                                Icon::FlipVertical,
+                                "Mirror it top to bottom",
+                                Change::Mirror(true),
+                            ),
+                        ] {
+                            let name = crate::i18n::gettext(locale, name);
+                            if theme::icon_button(
+                                ui,
+                                icon,
+                                18.0,
+                                palette.secondary,
+                                palette.text,
+                                &name,
+                            )
+                            .clicked()
+                            {
+                                change = Some(step);
+                            }
+                        }
+                    }
                 },
             );
             // ZFPlus: the tools, at the bottom left.
@@ -570,6 +653,25 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     {
                         change = Some(Change::Turn { clockwise: false });
                     }
+                    // ZFPlus: mirror the whole picture.
+                    for (icon, name, vertical) in [
+                        (Icon::FlipVertical, "Flip top to bottom", true),
+                        (Icon::FlipHorizontal, "Flip left to right", false),
+                    ] {
+                        let name = crate::i18n::gettext(locale, name);
+                        if theme::icon_button(
+                            ui,
+                            icon,
+                            18.0,
+                            palette.secondary,
+                            palette.text,
+                            &name,
+                        )
+                        .clicked()
+                        {
+                            change = Some(Change::MirrorPicture(vertical));
+                        }
+                    }
                 },
             );
         });
@@ -646,6 +748,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Some(Change::Redo) => edit = edit.redo(),
         Some(Change::Delete) => edit.delete_selected(),
         Some(Change::Place(image)) => edit.place_stamp(image),
+        Some(Change::Rotate(degrees)) => edit.rotate_selected(degrees),
+        Some(Change::Mirror(vertical)) => edit.mirror_selected(vertical),
+        Some(Change::MirrorPicture(vertical)) => edit = edit.mirrored(vertical),
         None => {}
     }
     prune_stamp_textures(ctx, &edit);
@@ -659,6 +764,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
 /// ZFPlus: the mark as it shows while it is dragged or resized.
 fn handled(mark: &Mark, handling: Handling) -> Mark {
+    if let Some(turn) = handling.turn {
+        return mark.rotated(turn);
+    }
     match handling.grow {
         Some(grow) => mark.scaled(grow),
         None => mark.moved(handling.offset),
@@ -694,20 +802,80 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
             Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::Default);
-    let grip = edit.selected.and_then(|at| edit.marks.get(at)).map(|mark| {
-        let [_, _, right, bottom] = mark.bounds();
-        Rect::from_center_size(
-            pos2(
-                picture.min.x + right * size[0],
-                picture.min.y + bottom * size[1],
-            ),
-            Vec2::splat(GRIP),
+    let picked_handles = edit
+        .selected
+        .and_then(|at| edit.marks.get(at))
+        .map(|mark| (handles_of(mark, picture), mark.turnable()));
+    let corner = picked_handles.as_ref().map(|(handles, _)| {
+        ui.interact(
+            Rect::from_center_size(handles.grow, Vec2::splat(GRIP)),
+            ui.id().with("picture-select-grow"),
+            Sense::DRAG,
         )
+        .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
     });
-    let corner = grip.map(|grip| {
-        ui.interact(grip, ui.id().with("picture-select-grow"), Sense::DRAG)
-            .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
-    });
+    // ZFPlus: the round handle above a picked mark turns it freely; Shift
+    // keeps it to steps of fifteen degrees.
+    let turner = picked_handles
+        .as_ref()
+        .filter(|(_, turnable)| *turnable)
+        .map(|(handles, _)| {
+            ui.interact(
+                Rect::from_center_size(handles.turn, Vec2::splat(GRIP)),
+                ui.id().with("picture-select-turn"),
+                Sense::DRAG,
+            )
+            .on_hover_cursor(egui::CursorIcon::Grab)
+        });
+    if let Some(turner) = &turner
+        && let Some(at) = edit.selected
+        && let Some((handles, _)) = &picked_handles
+    {
+        let middle = handles.middle;
+        let start_of = |pointer: Pos2| {
+            (pointer.y - middle.y)
+                .atan2(pointer.x - middle.x)
+                .to_degrees()
+        };
+        if turner.drag_started() {
+            handling = Some(Handling {
+                at,
+                offset: [0.0; 2],
+                grow: None,
+                turn: Some(0.0),
+            });
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(
+                    handling_id().with("turn-from"),
+                    turner.interact_pointer_pos().map_or(0.0, start_of),
+                )
+            });
+        }
+        if turner.dragged()
+            && let Some(current) = handling.as_mut()
+            && let Some(pointer) = turner.interact_pointer_pos()
+        {
+            let from: f32 = ui
+                .ctx()
+                .data(|data| data.get_temp(handling_id().with("turn-from")))
+                .unwrap_or(0.0);
+            let mut turn = start_of(pointer) - from;
+            if ui.input(|input| input.modifiers.shift) {
+                let base = edit.marks.get(at).map_or(0.0, |mark| mark.angle);
+                turn = ((base + turn) / 15.0).round() * 15.0 - base;
+            }
+            current.turn = Some(turn);
+        }
+        if turner.drag_stopped()
+            && let Some(done) = handling.take()
+            && let Some(turn) = done.turn
+        {
+            edit.rotate_selected(turn);
+        }
+    }
+    let on_turner = turner
+        .as_ref()
+        .is_some_and(|turner| turner.dragged() || turner.drag_stopped() || turner.hovered());
     if let Some(corner) = &corner
         && let Some(at) = edit.selected
     {
@@ -716,6 +884,7 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
                 at,
                 offset: [0.0; 2],
                 grow: Some(1.0),
+                turn: None,
             });
         }
         if corner.dragged()
@@ -723,7 +892,12 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
             && let Some(mark) = edit.marks.get(at)
         {
             let [left, top, right, bottom] = mark.bounds();
-            let span = vec2((right - left) * size[0], (bottom - top) * size[1]);
+            let [x, y] = crate::model::rotate_about(
+                [(right - left) * size[0], (bottom - top) * size[1]],
+                [0.0, 0.0],
+                mark.angle,
+            );
+            let span = vec2(x, y);
             let reach = span.length().max(1.0);
             let delta = corner.drag_delta();
             let along = (delta.x * span.x + delta.y * span.y) / reach;
@@ -741,9 +915,10 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
             });
         }
     }
-    let on_corner = corner
-        .as_ref()
-        .is_some_and(|corner| corner.dragged() || corner.drag_stopped() || corner.hovered());
+    let on_corner = on_turner
+        || corner
+            .as_ref()
+            .is_some_and(|corner| corner.dragged() || corner.drag_stopped() || corner.hovered());
     if !on_corner {
         if area.double_clicked()
             && let Some(at) = area.interact_pointer_pos().and_then(|at| topmost(edit, at))
@@ -772,11 +947,13 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
                 at,
                 offset: [0.0; 2],
                 grow: None,
+                turn: None,
             });
         }
         if area.dragged()
             && let Some(current) = handling.as_mut()
             && current.grow.is_none()
+            && current.turn.is_none()
         {
             let delta = area.drag_delta();
             current.offset[0] += delta.x / size[0];
@@ -785,6 +962,7 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         if area.drag_stopped()
             && let Some(done) = handling.take()
             && done.grow.is_none()
+            && done.turn.is_none()
         {
             edit.change(|marks| {
                 if let Some(mark) = marks.get_mut(done.at) {
@@ -945,22 +1123,10 @@ fn outline_selected(
     mark: &Mark,
     picture: Rect,
 ) -> bool {
-    let [left, top, right, bottom] = mark.bounds();
-    let at = |x: f32, y: f32| {
-        pos2(
-            picture.min.x + x * picture.width(),
-            picture.min.y + y * picture.height(),
-        )
-    };
-    let pad = mark.width * picture.width().min(picture.height()) / 2.0 + 4.0;
-    let outline = Rect::from_min_max(at(left, top), at(right, bottom)).expand(pad);
+    let handles = handles_of(mark, picture);
     let painter = ui.painter();
-    for side in [
-        [outline.left_top(), outline.right_top()],
-        [outline.right_top(), outline.right_bottom()],
-        [outline.right_bottom(), outline.left_bottom()],
-        [outline.left_bottom(), outline.left_top()],
-    ] {
+    let [lt, rt, rb, lb] = handles.outline;
+    for side in [[lt, rt], [rt, rb], [rb, lb], [lb, lt]] {
         painter.add(egui::Shape::dashed_line(
             &side,
             Stroke::new(1.5, palette.accent),
@@ -968,9 +1134,17 @@ fn outline_selected(
             4.0,
         ));
     }
-    let corner = at(right, bottom);
-    painter.circle_filled(corner, 6.0, palette.accent);
-    painter.circle_stroke(corner, 6.0, Stroke::new(1.5, palette.on_accent));
+    painter.circle_filled(handles.grow, 6.0, palette.accent);
+    painter.circle_stroke(handles.grow, 6.0, Stroke::new(1.5, palette.on_accent));
+    // ZFPlus: the round handle that turns it, on a stalk above its top.
+    if mark.turnable() {
+        let top_middle = lt + (rt - lt) / 2.0;
+        painter.line_segment([top_middle, handles.turn], Stroke::new(1.5, palette.accent));
+        painter.circle_filled(handles.turn, 7.0, palette.surface);
+        painter.circle_stroke(handles.turn, 7.0, Stroke::new(2.0, palette.accent));
+        painter.circle_stroke(handles.turn, 3.0, Stroke::new(1.5, palette.accent));
+    }
+    let outline = Rect::from_points(&handles.outline);
     let bin = Rect::from_center_size(outline.right_top() + vec2(14.0, -14.0), Vec2::splat(26.0));
     let mut clicked = false;
     ui.scope_builder(egui::UiBuilder::new().max_rect(bin), |ui| {
@@ -1222,6 +1396,7 @@ fn draw_input(
                 None
             },
             stamp: None,
+            ..Default::default()
         });
     }
     if response.dragged()
@@ -1269,12 +1444,20 @@ fn draw_input(
 /// ZFPlus: draws a mark over the editor's copy of the picture, the way it
 /// will look on the picture sent.
 fn paint_mark(ui: &egui::Ui, palette: theme::Palette, mark: &Mark, picture: Rect) {
-    let at = |[x, y]: [f32; 2]| {
+    let flat = |[x, y]: [f32; 2]| {
         pos2(
             picture.min.x + x * picture.width(),
             picture.min.y + y * picture.height(),
         )
     };
+    // ZFPlus: a turned mark turns about its box's middle, on the screen.
+    let middle = flat(mark.center());
+    let turn = |point: Pos2| {
+        let [x, y] =
+            crate::model::rotate_about([point.x, point.y], [middle.x, middle.y], mark.angle);
+        pos2(x, y)
+    };
+    let at = |point: [f32; 2]| turn(flat(point));
     let color =
         Color32::from_rgba_unmultiplied(mark.color[0], mark.color[1], mark.color[2], mark.color[3]);
     let width = (mark.width * picture.width().min(picture.height())).max(1.0);
@@ -1289,15 +1472,48 @@ fn paint_mark(ui: &egui::Ui, palette: theme::Palette, mark: &Mark, picture: Rect
         return;
     };
     let (a, b) = (at(first), at(last));
-    // ZFPlus: text, emoji, stickers and GIF pictures show as they will be sent.
+    // ZFPlus: text, emoji, stickers and GIF pictures show as they will be
+    // sent, turned and mirrored with them.
     if let Some(stamp) = &mark.stamp {
         let texture = stamp_texture(ui.ctx(), &stamp.image);
-        painter.image(
-            texture,
-            Rect::from_two_pos(a, b),
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
+        let box_ = Rect::from_two_pos(flat(first), flat(last));
+        let (left, right) = if mark.flipped { (1.0, 0.0) } else { (0.0, 1.0) };
+        let corners = [
+            (box_.left_top(), pos2(left, 0.0)),
+            (box_.right_top(), pos2(right, 0.0)),
+            (box_.right_bottom(), pos2(right, 1.0)),
+            (box_.left_bottom(), pos2(left, 1.0)),
+        ];
+        let mut mesh = egui::epaint::Mesh {
+            texture_id: texture,
+            ..Default::default()
+        };
+        for (place, uv) in corners {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: turn(place),
+                uv,
+                color: Color32::WHITE,
+            });
+        }
+        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+        painter.add(egui::Shape::mesh(mesh));
+        return;
+    }
+    // ZFPlus: a turned shape is drawn as the polygon of its outline.
+    if mark.angle != 0.0 && mark.tool.is_shape() {
+        let rect = Rect::from_two_pos(flat(first), flat(last));
+        let points: Vec<Pos2> = shape_outline(mark.tool, rect)
+            .into_iter()
+            .map(turn)
+            .collect();
+        if let Some(fill) = mark.fill {
+            painter.add(egui::Shape::convex_polygon(
+                points.clone(),
+                Color32::from_rgba_unmultiplied(fill[0], fill[1], fill[2], fill[3]),
+                Stroke::NONE,
+            ));
+        }
+        painter.add(egui::Shape::closed_line(points, stroke));
         return;
     }
     let fill = mark
@@ -1380,6 +1596,43 @@ fn paint_mark(ui: &egui::Ui, palette: theme::Palette, mark: &Mark, picture: Rect
             }
         }
         MarkTool::Crop | MarkTool::Select | MarkTool::Text | MarkTool::Stamp => {}
+    }
+}
+
+/// ZFPlus: the outline of a rectangle, rounded rectangle or ellipse in
+/// `rect`, as points going round it, to turn and draw as a polygon.
+fn shape_outline(tool: MarkTool, rect: Rect) -> Vec<Pos2> {
+    match tool {
+        MarkTool::Ellipse => (0..64)
+            .map(|step| {
+                let angle = step as f32 / 64.0 * std::f32::consts::TAU;
+                rect.center() + vec2(angle.cos() * rect.width(), angle.sin() * rect.height()) / 2.0
+            })
+            .collect(),
+        MarkTool::RoundedRectangle => {
+            let radius = crate::backend::picture_edit::rounding(rect.width(), rect.height());
+            let corners = [
+                (rect.right_top() + vec2(-radius, radius), -90.0f32),
+                (rect.right_bottom() + vec2(-radius, -radius), 0.0),
+                (rect.left_bottom() + vec2(radius, -radius), 90.0),
+                (rect.left_top() + vec2(radius, radius), 180.0),
+            ];
+            corners
+                .into_iter()
+                .flat_map(|(middle, start)| {
+                    (0..=8).map(move |step| {
+                        let angle = (start + step as f32 * 90.0 / 8.0).to_radians();
+                        middle + vec2(angle.cos(), angle.sin()) * radius
+                    })
+                })
+                .collect()
+        }
+        _ => vec![
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ],
     }
 }
 
@@ -1578,12 +1831,23 @@ fn turned_corners(turns: u8) -> [Pos2; 4] {
 /// The turn is taken out of the texture's own corners, so the pixels are
 /// never copied and turning a picture costs nothing.
 fn paint_turned(ui: &egui::Ui, texture: egui::TextureId, rect: Rect, turns: u8) {
-    let places = [
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-    ];
+    // ZFPlus: mirrored after the turns: each corner shows what the corner
+    // across from it would.
+    let places = if turns & crate::model::PICTURE_MIRRORED != 0 {
+        [
+            rect.right_top(),
+            rect.left_top(),
+            rect.left_bottom(),
+            rect.right_bottom(),
+        ]
+    } else {
+        [
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ]
+    };
     let mut mesh = egui::epaint::Mesh {
         texture_id: texture,
         ..Default::default()

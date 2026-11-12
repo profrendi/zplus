@@ -984,6 +984,9 @@ fastframe_icons::icons! {
         Refresh => lucide "refresh-cw",
         RotateLeft => "rotate-ccw",
         RotateRight => "rotate-cw",
+        // ZFPlus: mirroring in the picture editor.
+        FlipHorizontal => "flip-horizontal",
+        FlipVertical => "flip-vertical",
         // ZFPlus: the attach menu's camera.
         Camera => "camera",
         // ZFPlus: the picture editor's drawing tools.
