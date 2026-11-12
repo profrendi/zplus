@@ -47,6 +47,10 @@ pub struct PlusSettings {
     pub notify_online: bool,
     pub notify_typing: bool,
     pub prevent_list_jump: bool,
+    /// Ask the phone for the whole chat history when this computer is
+    /// linked, as WhatsApp for Windows does, instead of only recent chats.
+    /// Read once, at linking.
+    pub full_history: bool,
     // Extra buttons.
     pub extra_buttons: bool,
     pub like_button: bool,
@@ -82,6 +86,7 @@ impl Default for PlusSettings {
             notify_online: false,
             notify_typing: false,
             prevent_list_jump: false,
+            full_history: true,
             extra_buttons: true,
             like_button: true,
             new_chat_button: true,
@@ -137,6 +142,9 @@ impl PlusSettings {
     }
     pub fn prevent_list_jump(&self) -> bool {
         self.customizations && self.prevent_list_jump
+    }
+    pub fn full_history(&self) -> bool {
+        self.customizations && self.full_history
     }
     pub fn like_button(&self) -> bool {
         self.extra_buttons && self.like_button

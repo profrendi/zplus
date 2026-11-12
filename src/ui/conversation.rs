@@ -706,6 +706,18 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                     };
                     let export_label = crate::i18n::gettext(app.locale, "Export chat…");
                     let clear_label = crate::i18n::gettext(app.locale, "Clear chat");
+                    let loading_all = app
+                        .conversations
+                        .get(&chat.id)
+                        .is_some_and(|conversation| conversation.load_all);
+                    let load_all_label = crate::i18n::gettext(
+                        app.locale,
+                        if loading_all {
+                            "Stop loading from phone"
+                        } else {
+                            "Load all messages from phone"
+                        },
+                    );
                     let copy_number_label = crate::i18n::gettext(app.locale, "Copy number");
                     let close_label = crate::i18n::gettext(app.locale, "Close chat");
                     let search_label = crate::i18n::gettext(app.locale, "Search messages");
@@ -723,6 +735,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                             archive_label.as_ref(),
                             clear_label.as_ref(),
                             export_label.as_ref(),
+                            load_all_label.as_ref(),
                             leave_label.as_ref(),
                             copy_number_label.as_ref(),
                             close_label.as_ref(),
@@ -817,6 +830,16 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                                     chat: chat.id.clone(),
                                     include_media: false,
                                 }));
+                            }
+                            // ZFPlus: everything the phone keeps of this chat.
+                            if widgets::menu_item_enabled(
+                                ui,
+                                &palette,
+                                Some(Icon::Refresh),
+                                load_all_label.as_ref(),
+                                loading_all || app.is_connected(),
+                            ) {
+                                app.actions.push(Action::LoadAllFromPhone(chat.id.clone()));
                             }
                             super::blocking::menu(app, ui, &chat.id);
                             // Clearing reaches the phone, so it waits for a

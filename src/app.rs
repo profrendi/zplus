@@ -37,6 +37,8 @@ fn download_notice(error: String) -> String {
 pub const PAGE: usize = 60;
 /// Minimum delay between phone history requests.
 const PHONE_COOLDOWN: Duration = Duration::from_secs(6);
+/// ZFPlus: empty answers in a row after which loading a whole chat stops.
+const LOAD_ALL_MISSES: u32 = 4;
 /// WhatsApp message-edit window.
 pub const EDIT_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// WhatsApp revoke-for-everyone window.
@@ -201,6 +203,9 @@ pub struct Conversation {
     pub phone_misses: u32,
     /// Whether messages arrived after the latest phone request.
     pub phone_delivered: bool,
+    /// ZFPlus: the reader asked for everything the phone has of this chat,
+    /// so pages keep being asked for, one after another.
+    pub load_all: bool,
     /// The height each row last took, keyed by message id, so the transcript
     /// can skip rows far from the viewport instead of laying them out.
     pub(crate) rows: HashMap<String, RowHeight>,
@@ -4772,6 +4777,16 @@ impl App {
                 conversation.phone_delivered = false;
                 // Page the archive again after phone history arrives.
                 conversation.complete = false;
+                if conversation.load_all && (!more || conversation.phone_misses >= LOAD_ALL_MISSES)
+                {
+                    conversation.load_all = false;
+                    let done = if more {
+                        "The phone stopped sending older messages. Try again later."
+                    } else {
+                        "Every message your phone has of this chat is here."
+                    };
+                    self.toast(crate::i18n::gettext(self.locale, done));
+                }
             }
             Event::ReceiptsPrivacy { disabled } => self.account_receipts_off = disabled,
             Event::AccountPrivacy { values, failed } => {
@@ -8052,6 +8067,7 @@ impl App {
             Action::MarkUnread(chat) => self.mark_unread(&chat),
             Action::LoadOlder { chat, explicit } => self.load_older(&chat, explicit),
             Action::FetchOlder(chat) => self.fetch_older(&chat, true),
+            Action::LoadAllFromPhone(chat) => self.load_all_from_phone(&chat),
             Action::ReloadHistory { chat, message } => {
                 if !self.is_connected() {
                     return;
@@ -10800,6 +10816,7 @@ impl App {
         self.plus_lock_when_away(ctx);
         self.sync_diagnostics();
         self.tick_login_item();
+        self.tick_load_all();
         // Nobody reads behind the lock screen: messages stay unread, the
         // phone keeps notifying, and notifications here say nothing.
         if self.app_lock.is_locked() {
@@ -10914,6 +10931,41 @@ impl App {
     }
 
     /// Collects a finished read or change of the login item.
+    /// ZFPlus: starts or stops loading a chat's whole history from the phone.
+    fn load_all_from_phone(&mut self, chat: &str) {
+        let conversation = self.conversations.entry(chat.to_owned()).or_default();
+        if conversation.load_all {
+            conversation.load_all = false;
+            return;
+        }
+        // Asked again, the phone gets another chance even if it said it had
+        // nothing more: the reader may have just turned it on.
+        conversation.load_all = true;
+        conversation.phone_exhausted = false;
+        conversation.phone_misses = 0;
+        conversation.phone_answered = None;
+        self.toast(crate::i18n::gettext(
+            self.locale,
+            "Loading older messages from your phone. Keep it online.",
+        ));
+        self.fetch_older(chat, true);
+    }
+
+    /// ZFPlus: asks the next page for each chat loading its whole history,
+    /// once the last one has been answered. `fetch_older` keeps the pace the
+    /// phone sets, waiting longer after each empty answer.
+    fn tick_load_all(&mut self) {
+        let waiting: Vec<ChatId> = self
+            .conversations
+            .iter()
+            .filter(|(_, conversation)| conversation.load_all && !conversation.fetching_phone)
+            .map(|(chat, _)| chat.clone())
+            .collect();
+        for chat in waiting {
+            self.fetch_older(&chat, true);
+        }
+    }
+
     fn tick_login_item(&mut self) {
         let Some(outcome) = self.login_item.poll() else {
             return;
@@ -16095,6 +16147,56 @@ mod tests {
     /// A background page is not an answer to a request the reader made.
     /// Counting it as one would look like the phone missing, and back off the
     /// next scroll by the miss cooldown.
+    /// ZFPlus: Load all messages from phone keeps asking, one page after
+    /// the other at the phone's pace, until the phone has nothing older.
+    #[test]
+    fn loading_a_whole_chat_asks_until_the_phone_has_no_more() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let (backend, events) = Backend::detached();
+        app.backend = backend;
+        app.link = LinkStatus::Connected;
+        let chat = "peer@s.whatsapp.net";
+        app.apply(Action::LoadAllFromPhone(chat.into()), &ctx);
+        assert!(app.conversations[chat].load_all);
+        assert!(
+            app.conversations[chat].fetching_phone,
+            "the first page is asked"
+        );
+
+        let answer = |more: bool| Event::OlderFetched {
+            chat: chat.into(),
+            more,
+            silent: false,
+        };
+        events.send(answer(true)).unwrap();
+        app.handle_events();
+        app.conversations.get_mut(chat).unwrap().phone_delivered = true;
+        app.tick_load_all();
+        assert!(
+            !app.conversations[chat].fetching_phone,
+            "the next page waits for the phone's pace"
+        );
+        app.conversations.get_mut(chat).unwrap().phone_answered =
+            Some(Instant::now() - PHONE_COOLDOWN * 2);
+        app.tick_load_all();
+        assert!(app.conversations[chat].fetching_phone, "then it is asked");
+
+        let toasts = app.toasts.len();
+        events.send(answer(false)).unwrap();
+        app.handle_events();
+        assert!(!app.conversations[chat].load_all, "the phone has no more");
+        assert_eq!(app.toasts.len(), toasts + 1, "and the reader is told");
+        app.tick_load_all();
+        assert!(!app.conversations[chat].fetching_phone);
+
+        // Asked again, it starts over; asked once more, it stops.
+        app.apply(Action::LoadAllFromPhone(chat.into()), &ctx);
+        assert!(app.conversations[chat].load_all);
+        app.apply(Action::LoadAllFromPhone(chat.into()), &ctx);
+        assert!(!app.conversations[chat].load_all);
+    }
+
     #[test]
     fn a_silent_page_does_not_count_against_the_phone() {
         let mut app = app();

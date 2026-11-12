@@ -53,6 +53,7 @@ pub const INVENTORY: &[(Place, &str)] = &[
         "Prevent chats list jumping on message submission",
     ),
     (Place::Settings, "Set custom chat background image"),
+    (Place::Settings, "Full chat history when linking"),
     // Enhancements · Extra buttons
     (Place::Settings, "Like button"),
     (Place::Settings, "Pin chat button"),

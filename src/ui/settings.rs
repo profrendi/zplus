@@ -1127,6 +1127,11 @@ fn plus_sections() -> Vec<Section> {
             "A chat you send to keeps its place until someone answers.",
             |p| &mut p.prevent_list_jump,
         ),
+        Tick(
+            "Full chat history when linking",
+            "When this computer is linked, ask the phone for every chat's history from the last year, as WhatsApp for Windows does, not only recent messages. It takes effect at the next link, and the first sync takes longer. Older than that, use Load all messages from phone in a chat's menu.",
+            |p| &mut p.full_history,
+        ),
         Always(
             "Set custom chat background image",
             "Settings → Appearance → Wallpaper → Choose image.",

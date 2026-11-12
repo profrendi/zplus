@@ -3458,12 +3458,7 @@ impl Worker {
         };
         let bot = builder
             // WhatsApp reads the linked-device name, version, and icon at pairing.
-            .with_device_props(
-                DevicePropsOverride::new()
-                    .with_os(device_name())
-                    .with_version(app_version())
-                    .with_platform_type(wa::device_props::PlatformType::DESKTOP),
-            )
+            .with_device_props(device_props(crate::plus::get().full_history()))
             .with_event_handler(UiEvents {
                 sender,
                 generation: self.privacy_generation,
@@ -13026,6 +13021,31 @@ fn silence_everyone(context: &mut wa::ContextInfo) {
 /// phone puts it.
 /// ZFPlus: a vCard for a WhatsApp number, as the phone writes one: the
 /// `waid` lets WhatsApp offer to message or save it.
+/// How long back a full sync at linking reaches: WhatsApp for Windows' own
+/// year. Older messages come a page at a time, on request.
+const FULL_HISTORY_DAYS: u32 = 365;
+
+/// What this computer tells WhatsApp about itself at linking. With
+/// `full_history` it is the shape WhatsApp for Windows sends, which asks the
+/// phone for a year of every chat; without it, the recent chats a browser
+/// gets. The four sync fields go together (see `DEVICE_PROPS` in wacore).
+fn device_props(full_history: bool) -> DevicePropsOverride {
+    let props = DevicePropsOverride::new()
+        .with_os(device_name())
+        .with_version(app_version());
+    if !full_history {
+        return props.with_platform_type(wa::device_props::PlatformType::DESKTOP);
+    }
+    let mut sync = whatsapp_rust::wacore::store::device::default_history_sync_config();
+    sync.full_sync_days_limit = Some(FULL_HISTORY_DAYS);
+    sync.on_demand_ready = Some(true);
+    sync.complete_on_demand_ready = Some(true);
+    props
+        .with_platform_type(wa::device_props::PlatformType::UWP)
+        .with_require_full_sync(true)
+        .with_history_sync_config(sync)
+}
+
 fn contact_vcard(name: &str, number: &str) -> String {
     let digits: String = number.chars().filter(char::is_ascii_digit).collect();
     let name = name.replace(['\n', '\r'], " ").replace(';', ",");
@@ -15174,6 +15194,26 @@ fn clear_boundary(read: crate::archive::Result<Vec<Message>>) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn full_history_asks_for_a_year_as_whatsapp_for_windows_does() {
+        let full = super::device_props(true);
+        assert_eq!(full.require_full_sync, Some(true));
+        assert_eq!(
+            full.platform_type,
+            Some(super::wa::device_props::PlatformType::UWP)
+        );
+        let sync = full.history_sync_config.expect("a sync config");
+        assert_eq!(sync.full_sync_days_limit, Some(365));
+        assert_eq!(sync.on_demand_ready, Some(true));
+        let recent = super::device_props(false);
+        assert_eq!(recent.require_full_sync, None);
+        assert!(recent.history_sync_config.is_none());
+        assert_eq!(
+            recent.platform_type,
+            Some(super::wa::device_props::PlatformType::DESKTOP)
+        );
+    }
+
     #[test]
     fn a_shared_contact_card_carries_one_clean_name_and_the_number() {
         let card = super::contact_vcard("Budi;\nSantoso", "+62 812-3456");

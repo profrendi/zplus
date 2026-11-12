@@ -3049,6 +3049,9 @@ pub enum Action {
     },
     /// Requests messages older than the local archive, for the reader.
     FetchOlder(ChatId),
+    /// ZFPlus: asks the phone for page after page of a chat's history until
+    /// it has nothing older, or stops doing so.
+    LoadAllFromPhone(ChatId),
     ReloadHistory {
         chat: ChatId,
         message: String,
