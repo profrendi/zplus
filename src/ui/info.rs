@@ -826,6 +826,42 @@ fn actions(app: &mut App, ui: &mut egui::Ui, shown: &Shown, mine: bool, editable
             }],
         ));
     }
+    // ZFPlus: search the chat's messages from its panel, as WhatsApp does.
+    if shown.has_chat {
+        buttons.push((
+            Icon::Search,
+            "Search",
+            vec![
+                Action::OpenChat(id.to_owned()),
+                Action::CloseInfo,
+                Action::OpenChatSearch,
+            ],
+        ));
+    }
+    // ZFPlus: the photo at its full size, saved where the reader picks.
+    if let Some(full) = app.avatar_full(id) {
+        let stem: String = shown
+            .name
+            .trim_start_matches('~')
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == ' ' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let stem = stem.trim();
+        buttons.push((
+            Icon::Download,
+            "Save photo",
+            vec![Action::SaveAttachmentAs {
+                path: full,
+                name: format!("{}.jpg", if stem.is_empty() { "photo" } else { stem }),
+            }],
+        ));
+    }
     if let Some(phone) = &shown.phone {
         buttons.push((
             Icon::Copy,

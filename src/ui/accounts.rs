@@ -168,6 +168,36 @@ fn menu(app: &mut App, button: &egui::Response) {
                 }
             }
             widgets::menu_separator(ui, &palette);
+            // ZFPlus: the account on screen's profile, and its own chat.
+            if widgets::menu_item(
+                ui,
+                &palette,
+                Some(Icon::User),
+                &gettext(app.locale, "Profile"),
+            ) {
+                app.actions.push(Action::Open(crate::model::Page::Settings));
+                ui.close();
+            }
+            if let Some(phone) = app
+                .me
+                .as_deref()
+                .and_then(crate::model::phone_of)
+                .map(str::to_owned)
+                && widgets::menu_item(
+                    ui,
+                    &palette,
+                    Some(Icon::MessageCircle),
+                    &gettext(app.locale, "Message yourself"),
+                )
+            {
+                let name = app.me_name.clone().unwrap_or_else(|| format!("+{phone}"));
+                app.actions.push(Action::StartChat {
+                    id: format!("{phone}@s.whatsapp.net"),
+                    name: format!("{name} (You)"),
+                    dismiss_dialog: true,
+                });
+                ui.close();
+            }
             if widgets::menu_item(
                 ui,
                 &palette,

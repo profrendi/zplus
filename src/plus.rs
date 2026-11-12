@@ -51,6 +51,10 @@ pub struct PlusSettings {
     /// linked, as WhatsApp for Windows does, instead of only recent chats.
     /// Read once, at linking.
     pub full_history: bool,
+    /// Show the app's memory and CPU, live, in the left rail.
+    pub usage_meter: bool,
+    /// Warn when the app's own memory passes this many MB; 0 never warns.
+    pub memory_alert_mb: u32,
     // Extra buttons.
     pub extra_buttons: bool,
     pub like_button: bool,
@@ -87,6 +91,8 @@ impl Default for PlusSettings {
             notify_typing: false,
             prevent_list_jump: false,
             full_history: true,
+            usage_meter: true,
+            memory_alert_mb: 600,
             extra_buttons: true,
             like_button: true,
             new_chat_button: true,
@@ -482,7 +488,7 @@ pub fn allow_notice(key: &str, every: std::time::Duration) -> bool {
 // Gaussian blur shader. Should the GPU refuse the shader, the frosted veil
 // above stands in.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use eframe::egui_glow;
 use eframe::glow::{self, HasContext};
@@ -515,6 +521,8 @@ pub fn blur_state() -> BlurState {
 
 struct BlurGl {
     context: usize,
+    /// The window it was made in, as `BLUR_WINDOW` counted it.
+    window: u64,
     program: glow::Program,
     vao: glow::VertexArray,
     /// What is drawn under the area, copied from the screen.
@@ -556,6 +564,22 @@ fn blur_capacity(current: (i32, i32), needed: (i32, i32)) -> (i32, i32) {
 unsafe impl Send for BlurGl {}
 
 static BLUR_GL: LazyLock<Mutex<Option<BlurGl>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Which window the blur's GL objects belong to. Each window has a GL
+/// context of its own, and a new one can sit at the address the last one was
+/// freed from, so the context's address alone cannot tell them apart: the
+/// blur once took a new window's own textures, its font texture among them,
+/// for its own, and wrote the screen into them, which drew every letter as a
+/// coloured block.
+static BLUR_WINDOW: AtomicU64 = AtomicU64::new(0);
+
+/// A window opened or closed: the blur's GL objects went with the old one,
+/// so the next blur makes its own again in the new one. They are not
+/// deleted: their context is already gone.
+pub fn forget_blur_gl() {
+    BLUR_WINDOW.fetch_add(1, Ordering::SeqCst);
+    *BLUR_GL.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
 
 /// How a blurred area is shaped.
 #[derive(Clone, Copy)]
@@ -648,12 +672,16 @@ unsafe fn paint_blur(
     }
     let mut slot = BLUR_GL.lock().unwrap_or_else(|p| p.into_inner());
     let context = std::sync::Arc::as_ptr(gl) as usize;
-    if slot.as_ref().is_some_and(|made| made.context != context) {
+    let window = BLUR_WINDOW.load(Ordering::SeqCst);
+    if slot
+        .as_ref()
+        .is_some_and(|made| made.context != context || made.window != window)
+    {
         // A new window: the old names belonged to its context.
         *slot = None;
     }
     if slot.is_none() {
-        match unsafe { make_blur(gl, context) } {
+        match unsafe { make_blur(gl, context, window) } {
             Ok(made) => {
                 *slot = Some(made);
                 BLUR_READY.store(true, Ordering::Relaxed);
@@ -781,7 +809,7 @@ unsafe fn paint_blur(
     }
 }
 
-unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String> {
+unsafe fn make_blur(gl: &glow::Context, context: usize, window: u64) -> Result<BlurGl, String> {
     let version = egui_glow::ShaderVersion::get(gl);
     let declaration = version.version_declaration();
     let modern = version.is_new_shader_interface();
@@ -906,6 +934,7 @@ unsafe fn make_blur(gl: &glow::Context, context: usize) -> Result<BlurGl, String
         let framebuffer = gl.create_framebuffer()?;
         Ok(BlurGl {
             context,
+            window,
             u_texture: gl.get_uniform_location(program, "u_texture"),
             u_original: gl.get_uniform_location(program, "u_original"),
             u_texel: gl.get_uniform_location(program, "u_texel"),
@@ -1029,6 +1058,70 @@ pub fn request_check() {
 
 pub fn take_check_request() -> bool {
     CHECK_REQUESTED.swap(false, Ordering::Relaxed)
+}
+
+/// A newer release a check asked for here found, for the app to take.
+static FOUND: Mutex<Option<(String, String)>> = Mutex::new(None);
+/// Whether a check asked for here is running.
+static CHECKING: AtomicBool = AtomicBool::new(false);
+
+/// ZFPlus: checks for an update on a thread of its own, answering through
+/// [`update_check`] and [`take_found`], and wakes the app with `wake`. A
+/// check asked for from the tray or Settings went through the account's
+/// worker before, and waited there behind whatever the worker was busy with
+/// (a history sync, a reconnect), so the tray's entry stayed on "Checking…".
+/// A check that has not answered within a minute says so.
+pub fn spawn_check(wake: impl Fn() + Send + Clone + 'static) {
+    if CHECKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    set_update_check(UpdateCheck::Checking);
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let watch = done.clone();
+    let wake_late = wake.clone();
+    let _ = std::thread::Builder::new()
+        .name("zfplus-update-watch".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            if !watch.load(Ordering::SeqCst) && update_check() == UpdateCheck::Checking {
+                set_update_check(UpdateCheck::Failed(
+                    "No answer from GitHub within a minute. Check the connection and try again."
+                        .to_owned(),
+                ));
+                CHECKING.store(false, Ordering::SeqCst);
+                wake_late();
+            }
+        });
+    let spawned = std::thread::Builder::new()
+        .name("zfplus-update-check".into())
+        .spawn(move || {
+            let result = crate::updates::updater().and_then(|updater| updater.check());
+            crate::channel::refresh_latest();
+            match result {
+                Ok(Some(release)) => {
+                    *FOUND.lock().unwrap_or_else(|p| p.into_inner()) =
+                        Some((release.version.clone(), release.url));
+                    set_update_check(UpdateCheck::Available(release.version));
+                }
+                Ok(None) => set_update_check(UpdateCheck::UpToDate),
+                Err(error) => {
+                    log::debug!("could not check for a newer release: {error:#}");
+                    set_update_check(UpdateCheck::Failed(format!("{error:#}")));
+                }
+            }
+            done.store(true, Ordering::SeqCst);
+            CHECKING.store(false, Ordering::SeqCst);
+            wake();
+        });
+    if spawned.is_err() {
+        CHECKING.store(false, Ordering::SeqCst);
+        set_update_check(UpdateCheck::Failed("Could not start the check".to_owned()));
+    }
+}
+
+/// The release a check asked for here found, once.
+pub fn take_found() -> Option<(String, String)> {
+    FOUND.lock().unwrap_or_else(|p| p.into_inner()).take()
 }
 
 /// The reader asked to download, install and restart now.

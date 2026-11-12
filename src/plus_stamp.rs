@@ -558,6 +558,104 @@ pub fn picture(path: &std::path::Path) -> Option<StampImage> {
     })
 }
 
+/// The longest side of a panel thumbnail.
+const THUMB_SIDE: u32 = 96;
+/// Thumbnails kept: about 37 KB each.
+const THUMBS_KEPT: usize = 300;
+
+enum Thumb {
+    Waiting,
+    Ready(std::sync::Arc<StampImage>),
+    Failed,
+}
+
+#[derive(Default)]
+struct Thumbs {
+    made: HashMap<PathBuf, (Thumb, u64)>,
+    /// Asked for, newest last: the newest is made first, as the panel shows it.
+    queue: Vec<(PathBuf, Box<dyn FnOnce() + Send>)>,
+    working: bool,
+    clock: u64,
+}
+
+static THUMBS: std::sync::LazyLock<std::sync::Mutex<Thumbs>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A sticker's or GIF's still, at most `THUMB_SIDE` on its longer side,
+/// once made. One thread makes them, newest asked first, and wakes the
+/// window with `wake` when one is ready; the oldest are let go past
+/// `THUMBS_KEPT`. A moving picture shows its first frame.
+pub fn thumbnail(
+    path: &std::path::Path,
+    wake: impl FnOnce() + Send + 'static,
+) -> Option<std::sync::Arc<StampImage>> {
+    let mut thumbs = THUMBS.lock().unwrap_or_else(|p| p.into_inner());
+    thumbs.clock += 1;
+    let clock = thumbs.clock;
+    if let Some((thumb, used)) = thumbs.made.get_mut(path) {
+        *used = clock;
+        return match thumb {
+            Thumb::Ready(image) => Some(image.clone()),
+            Thumb::Waiting | Thumb::Failed => None,
+        };
+    }
+    thumbs
+        .made
+        .insert(path.to_path_buf(), (Thumb::Waiting, clock));
+    thumbs.queue.push((path.to_path_buf(), Box::new(wake)));
+    if thumbs.made.len() > THUMBS_KEPT {
+        let mut ages: Vec<(u64, PathBuf)> = thumbs
+            .made
+            .iter()
+            .filter(|(_, (thumb, _))| !matches!(thumb, Thumb::Waiting))
+            .map(|(path, (_, used))| (*used, path.clone()))
+            .collect();
+        ages.sort_unstable();
+        let over = thumbs.made.len() - THUMBS_KEPT;
+        for (_, path) in ages.into_iter().take(over) {
+            thumbs.made.remove(&path);
+        }
+    }
+    if !thumbs.working {
+        thumbs.working = true;
+        let _ = std::thread::Builder::new()
+            .name("zfplus-thumbnails".into())
+            .spawn(make_thumbnails);
+    }
+    None
+}
+
+fn make_thumbnails() {
+    loop {
+        let next = {
+            let mut thumbs = THUMBS.lock().unwrap_or_else(|p| p.into_inner());
+            match thumbs.queue.pop() {
+                Some(next) => next,
+                None => {
+                    thumbs.working = false;
+                    return;
+                }
+            }
+        };
+        let (path, wake) = next;
+        let made = image::open(&path).ok().map(|picture| {
+            let picture = picture.thumbnail(THUMB_SIDE, THUMB_SIDE).to_rgba8();
+            std::sync::Arc::new(StampImage {
+                width: picture.width(),
+                height: picture.height(),
+                rgba: picture.into_raw(),
+            })
+        });
+        {
+            let mut thumbs = THUMBS.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((thumb, _)) = thumbs.made.get_mut(&path) {
+                *thumb = made.map_or(Thumb::Failed, Thumb::Ready);
+            }
+        }
+        wake();
+    }
+}
+
 /// A rectangle with its corners rounded by `radius`, as a closed path.
 pub fn rounded_rect(rect: Option<tiny_skia::Rect>, radius: f32) -> Option<tiny_skia::Path> {
     let rect = rect?;
@@ -692,6 +790,25 @@ mod tests {
             EMOJI.iter().all(|emoji| super::emoji(emoji).is_some()),
             "every offered emoji is in the font"
         );
+    }
+
+    #[test]
+    fn a_thumbnail_is_small_and_made_off_the_window() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sticker.png");
+        image::RgbaImage::from_pixel(512, 256, image::Rgba([0, 128, 255, 255]))
+            .save(&path)
+            .unwrap();
+        let (sender, woken) = std::sync::mpsc::channel();
+        assert!(
+            thumbnail(&path, move || sender.send(()).unwrap()).is_none(),
+            "made later"
+        );
+        woken
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the thread says when it is ready");
+        let made = thumbnail(&path, || {}).expect("ready");
+        assert_eq!((made.width, made.height), (96, 48));
     }
 
     #[test]

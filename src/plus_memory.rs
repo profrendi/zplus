@@ -29,7 +29,7 @@ pub struct Process {
 }
 
 /// What the app holds, in bytes unless named otherwise.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     pub process: Option<Process>,
     /// egui's textures, by kind: (count, bytes), largest first.
@@ -42,6 +42,8 @@ pub struct Snapshot {
     /// Messages held for drawing, and in how many chats.
     pub messages: u64,
     pub chats: u64,
+    /// The process's CPU over the last second, in percent of the machine.
+    pub cpu: f32,
 }
 
 impl Snapshot {
@@ -145,7 +147,48 @@ pub fn snapshot(ctx: &egui::Context, messages: u64, chats: u64) -> Snapshot {
         sqlite_bytes: sqlite_bytes(),
         messages,
         chats,
+        cpu: RECENT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .back()
+            .map_or(0.0, |(_, cpu)| *cpu),
     }
+}
+
+/// The process's CPU time when last measured, to tell the next second's use.
+static CPU_LAST: Mutex<Option<(Instant, f64)>> = Mutex::new(None);
+
+/// The process's CPU since the last call, in percent of the whole machine,
+/// as Task Manager counts it.
+fn cpu_percent() -> f32 {
+    let now = Instant::now();
+    let seconds = crate::prof::cpu::process_seconds();
+    let mut last = CPU_LAST.lock().unwrap_or_else(|p| p.into_inner());
+    let percent = match *last {
+        Some((at, before)) => {
+            let wall = now.duration_since(at).as_secs_f64().max(0.001);
+            let cpus = crate::prof::cpu::logical_cpus().max(1) as f64;
+            ((seconds - before).max(0.0) / wall / cpus * 100.0) as f32
+        }
+        None => 0.0,
+    };
+    *last = Some((now, seconds));
+    percent.clamp(0.0, 100.0)
+}
+
+/// The last minute of memory (MB, private) and CPU (percent), a sample a
+/// second, oldest first: what the left rail's meter draws.
+const HISTORY: usize = 60;
+static RECENT: Mutex<std::collections::VecDeque<(f32, f32)>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+pub fn recent() -> Vec<(f32, f32)> {
+    RECENT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .copied()
+        .collect()
 }
 
 /// The newest snapshot, for Diagnostics' sampler thread.
@@ -177,6 +220,87 @@ pub fn tick(ctx: &egui::Context, messages: u64, chats: u64) {
         log::info!("memory: {}", snapshot.line());
     }
     *LATEST.lock().unwrap_or_else(|p| p.into_inner()) = Some(snapshot);
+}
+
+/// When the rail's meter was last drawn: the sampler wakes the window for
+/// it only while it is on screen.
+static METER_DRAWN: Mutex<Option<Instant>> = Mutex::new(None);
+/// The memory warning's limit in MB, which the sampler wakes the app for
+/// even when no window is drawn; 0 for none.
+static LIMIT_MB: AtomicU64 = AtomicU64::new(0);
+
+pub fn meter_drawn() {
+    *METER_DRAWN.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+}
+
+pub fn set_limit(limit_mb: u32) {
+    LIMIT_MB.store(u64::from(limit_mb), Ordering::Relaxed);
+}
+
+/// ZFPlus: samples the process's memory and CPU once a second on a thread
+/// of its own, for the rail's meter and the memory warning. It wakes the
+/// window only for something to show: a meter on screen whose numbers moved,
+/// or memory past the warning's limit. Nothing is drawn for it otherwise,
+/// so an idle window stays idle.
+pub fn start_sampler(wake: impl Fn() + Send + 'static) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("zfplus-usage".into())
+        .spawn(move || {
+            let mut shown = (0.0f32, 0.0f32);
+            let mut was_over = false;
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let Some(process) = process() else {
+                    continue;
+                };
+                let memory = process.private as f32 / (1024.0 * 1024.0);
+                let cpu = cpu_percent();
+                {
+                    let mut recent = RECENT.lock().unwrap_or_else(|p| p.into_inner());
+                    if recent.len() == HISTORY {
+                        recent.pop_front();
+                    }
+                    recent.push_back((memory, cpu));
+                }
+                let on_screen = METER_DRAWN
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(3));
+                let moved = (memory - shown.0).abs() >= 1.0 || (cpu - shown.1).abs() >= 0.5;
+                let limit = LIMIT_MB.load(Ordering::Relaxed) as f32;
+                let over = limit > 0.0 && memory > limit;
+                // Only the crossing wakes the app for the warning.
+                let crossed = over && !was_over;
+                was_over = over;
+                if (on_screen && moved) || crossed {
+                    shown = (memory, cpu);
+                    wake();
+                }
+            }
+        });
+}
+
+/// ZFPlus: whether the memory warning should go off now: the process has
+/// passed `limit_mb`, and has not since the last warning come back under
+/// nine tenths of it. `armed` is the state between calls.
+pub fn alert(private_mb: u64, limit_mb: u32, armed: &mut bool) -> bool {
+    if limit_mb == 0 {
+        *armed = true;
+        return false;
+    }
+    let limit = u64::from(limit_mb);
+    if private_mb > limit && *armed {
+        *armed = false;
+        return true;
+    }
+    if private_mb * 10 < limit * 9 {
+        *armed = true;
+    }
+    false
 }
 
 #[cfg(windows)]
@@ -272,6 +396,19 @@ mod tests {
     }
 
     #[test]
+    fn the_warning_goes_off_once_until_memory_comes_back_down() {
+        let mut armed = true;
+        assert!(!alert(500, 600, &mut armed));
+        assert!(alert(700, 600, &mut armed), "past the limit");
+        assert!(!alert(800, 600, &mut armed), "once");
+        assert!(!alert(560, 600, &mut armed), "still near the limit");
+        assert!(!alert(650, 600, &mut armed), "not again while near it");
+        assert!(!alert(500, 600, &mut armed), "back under nine tenths");
+        assert!(alert(650, 600, &mut armed), "and again");
+        assert!(!alert(5000, 0, &mut armed), "0 never warns");
+    }
+
+    #[test]
     fn the_line_names_the_largest_kinds() {
         let snapshot = Snapshot {
             process: Some(Process {
@@ -287,6 +424,7 @@ mod tests {
             sqlite_bytes: 5 << 20,
             messages: 1200,
             chats: 6,
+            cpu: 1.5,
         };
         assert_eq!(
             snapshot.line(),

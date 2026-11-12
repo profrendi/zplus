@@ -5,7 +5,7 @@
 //! avatars fill the rail between the two, so every chat is still one click
 //! away. Beside the list they would only repeat it.
 
-use egui::{Frame, Margin, Rect, Sense, Vec2, vec2};
+use egui::{Color32, Frame, Margin, Rect, Sense, Vec2, vec2};
 
 use crate::app::App;
 use crate::i18n::gettext;
@@ -238,7 +238,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                     );
                 }
                 let rest = (ui.available_height() - foot).max(0.0);
-                ui.add_space(rest);
+                // ZFPlus: the app's memory and CPU, live, in the room left.
+                if !hidden && app.settings.plus.usage_meter && rest >= METER + GAP {
+                    ui.add_space(rest - METER);
+                    usage_meter(app, ui, &palette);
+                } else {
+                    ui.add_space(rest);
+                }
                 for destination in bottom {
                     if destination == Destination::Settings {
                         if eye {
@@ -290,6 +296,96 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
     // beside the conversation the rail ends as the list does.
     if hidden {
         widgets::paint_edge_beside(ui, &palette, rect);
+    }
+}
+
+/// ZFPlus: the height of the usage meter.
+const METER: f32 = 92.0;
+
+/// ZFPlus: the app's own memory and CPU, as Task Manager counts them, with
+/// the last minute of each drawn under it. It is redrawn when its numbers
+/// move while it shows (`plus_memory::start_sampler`), and Settings →
+/// Diagnostics turns it off. A click opens Feature check, which says what holds the memory.
+fn usage_meter(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, METER), Sense::click());
+    // The sampler wakes the window when the numbers move, while this shows.
+    crate::plus_memory::meter_drawn();
+    let recent = crate::plus_memory::recent();
+    let Some(&(memory, cpu)) = recent.last() else {
+        return;
+    };
+    let limit = app.settings.plus.memory_alert_mb as f32;
+    let warm = limit > 0.0 && memory > limit;
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect.shrink2(vec2(4.0, 0.0)), 8.0, palette.surface_hover);
+    }
+    let painter = ui.painter();
+    let x = rect.center().x;
+    let mut y = rect.top() + 4.0;
+    let mut metric = |label: &str, value: String, color: Color32, series: Vec<f32>, top: f32| {
+        painter.text(
+            egui::pos2(x, y),
+            egui::Align2::CENTER_TOP,
+            label,
+            theme::medium(9.5),
+            palette.dim,
+        );
+        y += 12.0;
+        painter.text(
+            egui::pos2(x, y),
+            egui::Align2::CENTER_TOP,
+            value,
+            theme::semibold(11.5),
+            color,
+        );
+        y += 15.0;
+        // The last minute, as a line under the number.
+        let spark = Rect::from_min_size(egui::pos2(rect.left() + 8.0, y), vec2(width - 16.0, 12.0));
+        let top = series.iter().copied().fold(top, f32::max).max(1.0);
+        let count = series.len().max(2) as f32 - 1.0;
+        let points: Vec<egui::Pos2> = series
+            .iter()
+            .enumerate()
+            .map(|(at, value)| {
+                egui::pos2(
+                    spark.left() + spark.width() * at as f32 / count,
+                    spark.bottom() - spark.height() * (value / top).clamp(0.0, 1.0),
+                )
+            })
+            .collect();
+        if points.len() >= 2 {
+            painter.add(egui::Shape::line(points, egui::Stroke::new(1.2, color)));
+        }
+        y += 17.0;
+    };
+    let memory_color = if warm { palette.danger } else { palette.accent };
+    metric(
+        "RAM",
+        format!("{memory:.0} MB"),
+        memory_color,
+        recent.iter().map(|(memory, _)| *memory).collect(),
+        limit.max(200.0),
+    );
+    metric(
+        "CPU",
+        format!("{cpu:.1}%"),
+        palette.secondary,
+        recent.iter().map(|(_, cpu)| *cpu).collect(),
+        10.0,
+    );
+    let hint = format!(
+        "{}: {memory:.0} MB, CPU {cpu:.1}%. Click for what holds it.",
+        crate::channel::NAME
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &hint));
+    if response
+        .on_hover_text(hint.as_str())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    {
+        app.actions.push(Action::ShowMemory);
     }
 }
 

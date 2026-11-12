@@ -961,6 +961,8 @@ pub struct App {
     pub camera_texture: Option<(u64, egui::TextureHandle)>,
     /// ZFPlus: when the memory was last measured (`plus_memory::tick`).
     memory_measured: Option<Instant>,
+    /// ZFPlus: whether the memory warning may go off (`plus_memory::alert`).
+    memory_alert_armed: bool,
     /// Whether window close should keep the process running.
     pub hide_intent: bool,
     /// Whether a headless app should create a window.
@@ -1847,6 +1849,7 @@ impl App {
             camera: None,
             camera_texture: None,
             memory_measured: None,
+            memory_alert_armed: true,
             hide_intent: false,
             wants_show: false,
             tray_wait: None,
@@ -2236,6 +2239,7 @@ impl App {
 
     /// Updates the linked app while no window exists.
     pub fn window_gone(&mut self) {
+        crate::plus::forget_blur_gl();
         self.flush_open_draft();
         self.clear_chat_lock_entry();
         if self.dialog == Some(Dialog::UnlockLockedChats) {
@@ -2531,6 +2535,11 @@ impl App {
             // ZFPlus: an update notification opens the update controls.
             if target.chat == crate::notify::UPDATE_TARGET {
                 self.actions.push(Action::ShowUpdates);
+                self.actions.push(Action::ShowWindow);
+                continue;
+            }
+            if target.chat == crate::notify::MEMORY_TARGET {
+                self.actions.push(Action::ShowMemory);
                 self.actions.push(Action::ShowWindow);
                 continue;
             }
@@ -2879,6 +2888,15 @@ impl App {
 
     /// Initializes a newly created window.
     pub fn attach(&mut self, ctx: &egui::Context) {
+        // ZFPlus: the blur's GL objects belonged to the last window.
+        crate::plus::forget_blur_gl();
+        // ZFPlus: memory and CPU for the rail's meter and the warning. Tests
+        // keep their windows idle.
+        #[cfg(not(test))]
+        {
+            let waker = self.waker.clone();
+            crate::plus_memory::start_sampler(move || waker.wake());
+        }
         // Texture handles belong to the window's egui context. Keep the
         // underlying pictures and recreate handles for the new window.
         self.call_local_texture = None;
@@ -5098,28 +5116,7 @@ impl App {
                     }
                 }
             }
-            Event::UpdateAvailable { version, url } => {
-                crate::plus::set_update_check(crate::plus::UpdateCheck::Available(version.clone()));
-                let notice = crate::updates::Release { version, url };
-                if self.update.as_ref() != Some(&notice) {
-                    let shown = format!(
-                        "{} {} is available",
-                        crate::channel::NAME,
-                        crate::channel::display_version(&notice.version)
-                    );
-                    self.toast(shown.clone());
-                    // ZFPlus: said on the desktop too, since the window is
-                    // often closed to the tray; the click opens the update.
-                    // A check asked for from the tray says it itself.
-                    if !self.tray_check_asked {
-                        self.update_notice(
-                            shown,
-                            "Click to open the update and restart.".to_owned(),
-                        );
-                    }
-                }
-                self.update = Some(notice);
-            }
+            Event::UpdateAvailable { version, url } => self.update_available(version, url),
             Event::UpdateSupport(result) => {
                 self.update_support = Some(result);
                 self.update_inspecting = false;
@@ -7227,11 +7224,16 @@ impl App {
             self.last_update_check = Some(now);
             self.backend.send(Command::CheckForUpdates);
         }
-        // ZFPlus: a check asked for from About or Settings.
+        // ZFPlus: a check asked for from the tray, About or Settings, on a
+        // thread of its own rather than behind the account's worker.
         if crate::plus::take_check_request() {
             self.last_update_check = Some(now);
             self.update_support = None;
-            self.backend.send(Command::CheckForUpdates);
+            let waker = self.waker.clone();
+            crate::plus::spawn_check(move || waker.wake());
+        }
+        if let Some((version, url)) = crate::plus::take_found() {
+            self.update_available(version, url);
         }
         self.maybe_download_update();
         if self.settings_dirty && self.last_settings_save.elapsed() > Duration::from_secs(2) {
@@ -9963,6 +9965,10 @@ impl App {
                     self.download_update();
                 }
             }
+            Action::ShowMemory => {
+                self.apply(Action::Open(Page::Settings), ctx);
+                self.settings_search = "Feature check".to_owned();
+            }
             Action::ShowUpdates => {
                 self.apply(Action::Open(Page::Settings), ctx);
                 self.settings_search = "Check for updates".to_owned();
@@ -10981,6 +10987,27 @@ impl App {
         }
     }
 
+    /// A newer release is out: said once, in a toast and on the desktop.
+    fn update_available(&mut self, version: String, url: String) {
+        crate::plus::set_update_check(crate::plus::UpdateCheck::Available(version.clone()));
+        let notice = crate::updates::Release { version, url };
+        if self.update.as_ref() != Some(&notice) {
+            let shown = format!(
+                "{} {} is available",
+                crate::channel::NAME,
+                crate::channel::display_version(&notice.version)
+            );
+            self.toast(shown.clone());
+            // ZFPlus: said on the desktop too, since the window is
+            // often closed to the tray; the click opens the update.
+            // A check asked for from the tray says it itself.
+            if !self.tray_check_asked {
+                self.update_notice(shown, "Click to open the update and restart.".to_owned());
+            }
+        }
+        self.update = Some(notice);
+    }
+
     /// ZFPlus: measures what the app holds once a second, for Feature check,
     /// Diagnostics and a line in the log every ten minutes.
     fn measure_memory(&mut self, ctx: &egui::Context) {
@@ -11001,6 +11028,48 @@ impl App {
             }
         }
         crate::plus_memory::tick(ctx, messages, chats);
+        let private = crate::plus_memory::latest()
+            .and_then(|memory| memory.process)
+            .map_or(0, |process| process.private >> 20);
+        // Tests run hundreds of apps in one process, which passes any limit.
+        let limit = if cfg!(test) {
+            0
+        } else {
+            self.settings.plus.memory_alert_mb
+        };
+        crate::plus_memory::set_limit(limit);
+        if crate::plus_memory::alert(private, limit, &mut self.memory_alert_armed) {
+            let title = format!("{} is using {private} MB", crate::channel::NAME);
+            let body = format!(
+                "More than the {limit} MB you set. Click to see what holds it; quitting from the tray and opening it again frees it."
+            );
+            log::warn!("memory warning: {private} MB, over {limit} MB");
+            self.toast(title.clone());
+            self.memory_notice(title, body);
+        }
+    }
+
+    /// ZFPlus: a desktop notification about the memory, which opens Feature
+    /// check when clicked.
+    fn memory_notice(&mut self, title: String, body: String) {
+        if !self.settings.notifications {
+            return;
+        }
+        let waker = self.waker.clone();
+        self.notifications.show(
+            title,
+            body,
+            None,
+            NotificationSound::None,
+            crate::notify::NotificationTarget {
+                account: self.account().id.clone(),
+                chat: crate::notify::MEMORY_TARGET.to_owned(),
+                message: None,
+            },
+            std::sync::Arc::clone(&self.notification_opens),
+            move || waker.wake(),
+            false,
+        );
     }
 
     fn tick_login_item(&mut self) {

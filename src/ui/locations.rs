@@ -45,7 +45,17 @@ pub fn send(app: &mut App, ui: &mut egui::Ui, chat: &str) {
     ui.add_space(6.0);
     // The spot is read again here and shown before it is sent: a pair read the
     // wrong way round is visible in this dialog, not in someone else's chat.
-    let here = geo::spot(&app.location_draft);
+    // ZFPlus: a short link is looked up where it points, once.
+    let lookup = (geo::spot(&app.location_draft).is_none()
+        && geo::is_short_link(&app.location_draft))
+    .then(|| {
+        let ctx = ui.ctx().clone();
+        geo::look_up(&app.location_draft, move || ctx.request_repaint())
+    });
+    let here = geo::spot(&app.location_draft).or(match &lookup {
+        Some(geo::Lookup::Found(spot, _)) => Some(*spot),
+        _ => None,
+    });
     match here {
         Some(here) => {
             theme::text(ui, here.text(), theme::regular(13.0), palette.text);
@@ -57,12 +67,20 @@ pub fn send(app: &mut App, ui: &mut egui::Ui, chat: &str) {
         None if app.location_draft.trim().is_empty() => {}
         // A short link names its spot only on the server it redirects
         // through, and ZapFast asks no server, so it asks for the full link.
+        None if matches!(lookup, Some(geo::Lookup::Looking)) => {
+            theme::text(
+                ui,
+                crate::i18n::gettext(app.locale, "Reading the map link…"),
+                theme::regular(12.0),
+                palette.dim,
+            );
+        }
         None if geo::is_short_link(&app.location_draft) => {
             theme::text(
                 ui,
                 crate::i18n::gettext(
                     app.locale,
-                    "Short links only open online. Paste the full map link or the coordinates.",
+                    "This link names no exact spot. Open it, copy the full map link or the coordinates, and paste that.",
                 ),
                 theme::regular(12.0),
                 palette.dim,

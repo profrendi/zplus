@@ -68,6 +68,8 @@ pub const INVENTORY: &[(Place, &str)] = &[
     (Place::Settings, "Record performance"),
     (Place::Settings, "Copy performance report"),
     (Place::Settings, "Feature check"),
+    (Place::Settings, "Show memory and CPU in the left rail"),
+    (Place::Settings, "Warn when memory passes"),
     (Place::Settings, "Diagnostics folder"),
     // The tray icon's menu
     (Place::Tray, "Show or hide ZapFast"),

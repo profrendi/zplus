@@ -50,8 +50,8 @@ pub fn map_url(spot: Spot) -> String {
 }
 
 /// Whether `text` is a shortened map link, which names its spot only on the
-/// server it redirects through. Following it would mean asking that server,
-/// and ZapFast never does, so the dialog asks for the full link instead.
+/// server it redirects through. ZFPlus follows it there ([`look_up`]) when
+/// the reader pastes one to send.
 pub fn is_short_link(text: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(text.trim()) else {
         return false;
@@ -64,6 +64,150 @@ pub fn is_short_link(text: &str) -> bool {
                 "goo.gl" | "maps.app.goo.gl" | "app.goo.gl" | "g.co" | "g.page"
             )
         })
+}
+
+/// ZFPlus: what looking up a short link came to.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Lookup {
+    Looking,
+    /// The spot, and the full link it came from.
+    Found(Spot, String),
+    Failed(String),
+}
+
+/// Short links looked up so far, by link.
+static LOOKUPS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Lookup>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// ZFPlus: where a short map link (`maps.app.goo.gl/…`) points, looked up
+/// once on a thread of its own: the redirects are followed to the full Google
+/// Maps link, which names the spot, and failing that the map page's own
+/// coordinates are read. Only the link the reader pasted is asked for, from
+/// the server it belongs to. `wake` is called when the answer is in.
+pub fn look_up(link: &str, wake: impl FnOnce() + Send + 'static) -> Lookup {
+    let link = link.trim().to_owned();
+    let mut lookups = LOOKUPS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(known) = lookups.get(&link) {
+        return known.clone();
+    }
+    lookups.insert(link.clone(), Lookup::Looking);
+    drop(lookups);
+    let spawned = std::thread::Builder::new()
+        .name("zfplus-map-link".into())
+        .spawn(move || {
+            let answer = match follow(&link) {
+                Ok((spot, full)) => Lookup::Found(spot, full),
+                Err(error) => {
+                    log::info!("a short map link could not be read: {error}");
+                    Lookup::Failed(error)
+                }
+            };
+            LOOKUPS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(link, answer);
+            wake();
+        });
+    if spawned.is_err() {
+        return Lookup::Failed("Could not start the lookup".to_owned());
+    }
+    Lookup::Looking
+}
+
+/// Follows a short link's redirects to a spot.
+fn follow(link: &str) -> Result<(Spot, String), String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(crate::proxy::ureq_proxy())
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36")
+        .build()
+        .into();
+    let mut at = link.to_owned();
+    for _ in 0..8 {
+        if let Some(spot) = spot(&at) {
+            return Ok((spot, at));
+        }
+        let mut response = agent
+            .get(&at)
+            .call()
+            .map_err(|error| format!("could not reach the link: {error}"))?;
+        let status = response.status().as_u16();
+        if (300..400).contains(&status) {
+            let next = response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .ok_or("a redirect without a place")?;
+            let next = reqwest::Url::parse(&at)
+                .and_then(|base| base.join(next))
+                .map_err(|_| "a redirect to an unreadable place")?;
+            // A consent page carries the real link in `continue`.
+            at = next
+                .query_pairs()
+                .find(|(key, _)| key == "continue")
+                .map(|(_, value)| value.into_owned())
+                .filter(|_| {
+                    next.host_str()
+                        .is_some_and(|host| host.starts_with("consent."))
+                })
+                .unwrap_or_else(|| next.to_string());
+            continue;
+        }
+        if !(200..300).contains(&status) {
+            return Err(format!("the link answered {status}"));
+        }
+        // The last page: Google's map page states where it centres.
+        let page = response
+            .body_mut()
+            .with_config()
+            .limit(4 * 1024 * 1024)
+            .read_to_string()
+            .map_err(|error| format!("could not read the map page: {error}"))?;
+        return page_spot(&page)
+            .map(|spot| (spot, at.clone()))
+            .ok_or_else(|| "the map page names no spot".to_owned());
+    }
+    Err("too many redirects".to_owned())
+}
+
+/// The spot a Google Maps page names: a place marker or `@lat,long` in the
+/// links it carries, else the centre its start-up state holds
+/// (`APP_INITIALIZATION_STATE=[[[zoom,long,lat]`).
+fn page_spot(page: &str) -> Option<Spot> {
+    let numeric = |marker: &str| {
+        let (_, rest) = page.split_once(marker)?;
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+            .unwrap_or(rest.len());
+        rest[..end].parse::<f64>().ok()
+    };
+    if let (Some(latitude), Some(longitude)) = (numeric("!3d"), numeric("!4d")) {
+        let spot = Spot {
+            latitude,
+            longitude,
+        };
+        if spot.is_on_earth() {
+            return Some(spot);
+        }
+    }
+    for (at, _) in page.match_indices("/@") {
+        if let Some(spot) = two(&page[at + 2..]).filter(|spot| spot.is_on_earth()) {
+            return Some(spot);
+        }
+    }
+    let state = page.split_once("APP_INITIALIZATION_STATE=[[[")?.1;
+    let mut numbers = state
+        .split([',', ']'])
+        .take(3)
+        .map(|value| value.trim().parse::<f64>().ok());
+    let (_zoom, longitude, latitude) = (numbers.next()??, numbers.next()??, numbers.next()??);
+    Some(Spot {
+        latitude,
+        longitude,
+    })
+    .filter(|spot| spot.is_on_earth())
 }
 
 /// The map service a link belongs to. Only these links are read, so a page
@@ -418,8 +562,22 @@ mod tests {
         assert_eq!(spot("ftp://www.openstreetmap.org/?mlat=12&mlon=34"), None);
     }
 
+    /// ZFPlus: the map page a short link ends on names its spot in a place
+    /// marker or in its start-up state.
+    #[test]
+    fn a_map_page_names_its_spot() {
+        let marked =
+            "<a href=\"https://www.google.com/maps/place/X/data=!4m2!3m1!1s0x0!3d-6.2!4d106.8\">";
+        let spot = super::page_spot(marked).unwrap();
+        assert!((spot.latitude + 6.2).abs() < 1e-9 && (spot.longitude - 106.8).abs() < 1e-9);
+        let centred = "x;window.APP_INITIALIZATION_STATE=[[[1234.5,106.81,-6.21],[0,0,0]";
+        let spot = super::page_spot(centred).unwrap();
+        assert!((spot.latitude + 6.21).abs() < 1e-9 && (spot.longitude - 106.81).abs() < 1e-9);
+        assert!(super::page_spot("<html>nothing here</html>").is_none());
+    }
+
     /// A short link names its spot only on the server it redirects through,
-    /// and nothing here asks a server, so it is recognised and refused.
+    /// so it is recognised, and not read as a spot by itself.
     #[test]
     fn short_links_are_recognised_and_not_read() {
         for link in [

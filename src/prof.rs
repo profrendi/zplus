@@ -733,7 +733,7 @@ fn summary(state: &State) -> String {
 }
 
 /// CPU time of the process and of one thread.
-mod cpu {
+pub(crate) mod cpu {
     pub fn logical_cpus() -> usize {
         std::thread::available_parallelism().map_or(1, |n| n.get())
     }

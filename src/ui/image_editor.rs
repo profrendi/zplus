@@ -643,6 +643,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         None => {}
     }
     prune_stamp_textures(ctx, &edit);
+    // The panel's thumbnails go when it closes.
+    if edit.tool != MarkTool::Stamp {
+        ctx.data_mut(|data| data.remove::<ThumbTextures>(thumb_textures_id()));
+    }
     app.picture_edit = Some(edit);
     app.actions.extend(actions);
 }
@@ -979,6 +983,43 @@ fn outline_selected(
     clicked
 }
 
+/// ZFPlus: the panel's thumbnail textures, by file.
+#[derive(Clone, Default)]
+struct ThumbTextures(HashMap<std::path::PathBuf, egui::TextureHandle>);
+
+fn thumb_textures_id() -> egui::Id {
+    egui::Id::new("picture-editor-thumb-textures")
+}
+
+/// ZFPlus: a sticker's or GIF's small still, once its thread has made it.
+fn thumbnail_texture(
+    ctx: &egui::Context,
+    path: &std::path::Path,
+    wake: impl FnOnce() + Send + 'static,
+) -> Option<egui::TextureHandle> {
+    if let Some(texture) = ctx.data(|data| {
+        data.get_temp::<ThumbTextures>(thumb_textures_id())
+            .and_then(|textures| textures.0.get(path).cloned())
+    }) {
+        return Some(texture);
+    }
+    let image = crate::plus_stamp::thumbnail(path, wake)?;
+    let texture = ctx.load_texture(
+        "picture-editor-thumb",
+        egui::ColorImage::from_rgba_unmultiplied(
+            [image.width as usize, image.height as usize],
+            &image.rgba,
+        ),
+        egui::TextureOptions::LINEAR,
+    );
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<ThumbTextures>(thumb_textures_id())
+            .0
+            .insert(path.to_path_buf(), texture.clone());
+    });
+    Some(texture)
+}
+
 /// ZFPlus: what the emoji, stickers and GIFs panel offers, read from the app
 /// before the editor borrows it.
 struct StampSources {
@@ -1044,14 +1085,14 @@ fn stamp_panel(
         ui.ctx().data_mut(|data| data.insert_temp(query_id, query));
         ui.add_space(6.0);
     }
-    egui::ScrollArea::vertical()
-        .id_salt("picture-editor-stamps")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                match tab {
-                    StampTab::Emoji => {
+    match tab {
+        StampTab::Emoji => {
+            egui::ScrollArea::vertical()
+                .id_salt("picture-editor-emoji")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
                         for emoji in crate::plus_stamp::EMOJI {
                             let button = ui.add(
                                 egui::Button::new(egui::RichText::new(*emoji).size(26.0))
@@ -1062,48 +1103,78 @@ fn stamp_panel(
                                 placed = crate::plus_stamp::emoji(emoji);
                             }
                         }
-                    }
-                    StampTab::Stickers | StampTab::Gifs => {
-                        let paths = if tab == StampTab::Stickers {
-                            &sources.stickers
-                        } else {
-                            &sources.gifs
-                        };
-                        if paths.is_empty() {
-                            let words = if sources.loading {
-                                "Loading…"
-                            } else if tab == StampTab::Stickers {
-                                "No stickers yet. Stickers you send, receive or save show here."
-                            } else {
-                                "No GIFs to show. Check the GIF key in Settings."
-                            };
-                            theme::text(
-                                ui,
-                                crate::i18n::gettext(locale, words),
-                                theme::regular(12.5),
-                                palette.dim,
-                            );
-                        }
-                        for path in paths {
-                            let (rect, response) =
-                                ui.allocate_exact_size(Vec2::splat(84.0), Sense::click());
-                            if response.hovered() {
-                                ui.painter().rect_filled(rect, 6.0, palette.surface_hover);
+                    });
+                });
+        }
+        StampTab::Stickers | StampTab::Gifs => {
+            let paths = if tab == StampTab::Stickers {
+                &sources.stickers
+            } else {
+                &sources.gifs
+            };
+            if paths.is_empty() {
+                let words = if sources.loading {
+                    "Loading…"
+                } else if tab == StampTab::Stickers {
+                    "No stickers yet. Stickers you send, receive or save show here."
+                } else {
+                    "No GIFs to show. Check the GIF key in Settings."
+                };
+                theme::text(
+                    ui,
+                    crate::i18n::gettext(locale, words),
+                    theme::regular(12.5),
+                    palette.dim,
+                );
+            }
+            // Only the rows in sight are drawn, each from a small still
+            // thumbnail made on a thread of its own: a few hundred stickers
+            // at full size, every frame of the moving ones, once took more
+            // than a gigabyte here.
+            const TILE: f32 = 84.0;
+            const GAP: f32 = 4.0;
+            let columns = ((ui.available_width() + GAP) / (TILE + GAP))
+                .floor()
+                .max(1.0) as usize;
+            let rows = paths.len().div_ceil(columns);
+            egui::ScrollArea::vertical()
+                .id_salt(("picture-editor-stamps", tab as u8))
+                .auto_shrink([false, false])
+                .show_rows(ui, TILE + GAP, rows, |ui, range| {
+                    for row in range {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(GAP, GAP);
+                            for path in paths.iter().skip(row * columns).take(columns) {
+                                let (rect, response) =
+                                    ui.allocate_exact_size(Vec2::splat(TILE), Sense::click());
+                                if response.hovered() {
+                                    ui.painter().rect_filled(rect, 6.0, palette.surface_hover);
+                                }
+                                let ctx = ui.ctx().clone();
+                                if let Some(texture) =
+                                    thumbnail_texture(ui.ctx(), path, move || ctx.request_repaint())
+                                {
+                                    let size = texture.size_vec2();
+                                    let scale = ((TILE - 6.0) / size.x.max(size.y)).min(1.0);
+                                    ui.painter().image(
+                                        texture.id(),
+                                        Rect::from_center_size(rect.center(), size * scale),
+                                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                                        Color32::WHITE,
+                                    );
+                                }
+                                if response
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    placed = crate::plus_stamp::picture(path);
+                                }
                             }
-                            widgets::file_image(ui, path)
-                                .fit_to_exact_size(rect.size() - Vec2::splat(6.0))
-                                .paint_at(ui, rect.shrink(3.0));
-                            if response
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                placed = crate::plus_stamp::picture(path);
-                            }
-                        }
+                        });
                     }
-                }
-            });
-        });
+                });
+        }
+    }
     ui.ctx().data_mut(|data| data.insert_temp(tab_id, tab));
     placed
 }

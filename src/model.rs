@@ -3569,6 +3569,9 @@ pub enum Action {
     /// ZFPlus: the picture editor's stickers and GIFs panel opened: fetch
     /// the stickers and GIFs it offers.
     LoadEditorStamps,
+    /// ZFPlus: opens Settings on Feature check, which says what holds the
+    /// memory.
+    ShowMemory,
     ReloadHistory {
         chat: ChatId,
         message: String,

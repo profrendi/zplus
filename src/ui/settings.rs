@@ -933,6 +933,48 @@ fn diagnostics_section(app: &App) -> Section {
         "Writes CPU use and frame times to prof.csv and prof-summary.txt, once a second, while it is on. Only numbers and names of parts of ZFPlus: no messages, names or phone numbers. Press F12 to see the numbers live. Turn it off when you are done.",
         |settings| &mut settings.plus.diagnostics,
     );
+    section.toggle(
+        "Show memory and CPU in the left rail",
+        "ZFPlus's own memory and CPU, as Task Manager counts them, with the last minute of each, in the empty part of the left rail. Click it to see what holds the memory.",
+        |settings| &mut settings.plus.usage_meter,
+    );
+    section.row(
+        "Warn when memory passes",
+        "A notification when ZFPlus's own memory goes over this. Use − and + to pick, 100 MB at a time; Off never warns.",
+        move |ui, app| {
+            let limit = app.settings.plus.memory_alert_mb;
+            let mut changed = None;
+            if theme::soft_button(ui, &palette, None, "+", false)
+                .on_hover_text("Higher")
+                .clicked()
+            {
+                changed = Some((limit / 100 * 100 + 100).clamp(200, 4000));
+            }
+            let label = if limit == 0 {
+                "Off".to_owned()
+            } else {
+                format!("{limit} MB")
+            };
+            ui.add_sized(
+                [84.0, 24.0],
+                egui::Label::new(
+                    egui::RichText::new(label)
+                        .font(theme::medium(13.5))
+                        .color(if limit == 0 { palette.secondary } else { palette.text }),
+                ),
+            );
+            if theme::soft_button(ui, &palette, None, "−", false)
+                .on_hover_text("Lower, down to Off")
+                .clicked()
+            {
+                changed = Some(if limit <= 200 { 0 } else { limit / 100 * 100 - 100 });
+            }
+            if let Some(limit) = changed {
+                app.settings.plus.memory_alert_mb = limit;
+                app.actions.push(Action::SettingsChanged);
+            }
+        },
+    );
     section.row(
         "Copy performance report",
         "The summary of the current recording, or of the last one, to paste in a message.",
