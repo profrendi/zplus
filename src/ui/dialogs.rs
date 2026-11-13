@@ -565,7 +565,7 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
     let rows = 2 + listed;
     let spacing = ui.spacing().item_spacing.y;
     let content_height = rows as f32 * theme::ROW_HEIGHT + (rows - 1) as f32 * spacing;
-    let room = (ui.ctx().content_rect().height() - 220.0).clamp(100.0, 820.0);
+    let room = (ui.ctx().content_rect().height() - 280.0).clamp(100.0, 420.0);
     let list_height = content_height.min(room);
     egui::ScrollArea::vertical()
         .id_salt("new-chat-contacts")
