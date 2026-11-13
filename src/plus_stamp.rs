@@ -846,7 +846,7 @@ pub fn picture(path: &std::path::Path) -> Option<StampImage> {
 
 /// ZFPlus: the longest side a picture inserted from a file keeps: sharp on
 /// a sent photo, light in memory.
-const INSERTED_SIDE: u32 = 1600;
+const INSERTED_SIDE: u32 = 2048;
 
 /// `picture` no longer than `side` on its longer side.
 fn fit(picture: image::RgbaImage, side: u32) -> image::RgbaImage {

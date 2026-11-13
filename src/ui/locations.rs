@@ -345,7 +345,7 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
                 .map(|(index, (name, number))| ((index == 0).then_some("Contacts"), name, number)),
         )
         .collect();
-    let row_height = 52.0;
+    let row_height = 70.0;
     let list_height = (ui.ctx().content_rect().height() * 0.55).clamp(220.0, 460.0);
     egui::ScrollArea::vertical()
         .id_salt("share-contact-list")
@@ -457,14 +457,13 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
                     egui::StrokeKind::Inside,
                 );
                 painter.galley(pill_rect.min + vec2(6.0, 3.0), pill, color);
-                // ZFPlus: a long name ends in an ellipsis before the pill.
+                // ZFPlus: a long name wraps onto a second line before the
+                // pill, so it shows whole and stays clear of the rest.
                 let room = (pill_rect.left() - 10.0 - x).max(40.0);
-                let title = widgets::line(ui, name, theme::medium(13.5), palette.text, room, 1);
-                title.paint(
-                    ui,
-                    pos2(x, rect.center().y - 9.0 - title.size().y / 2.0),
-                    palette.text,
-                );
+                let title = widgets::line(ui, name, theme::medium(13.5), palette.text, room, 3);
+                let block = title.size().y + 2.0 + 15.0;
+                let top = rect.center().y - block / 2.0;
+                title.paint(ui, pos2(x, top), palette.text);
                 let phone = widgets::line(
                     ui,
                     &format!("+{number}"),
@@ -473,11 +472,7 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
                     room,
                     1,
                 );
-                phone.paint(
-                    ui,
-                    pos2(x, rect.center().y + 9.0 - phone.size().y / 2.0),
-                    palette.secondary,
-                );
+                phone.paint(ui, pos2(x, top + title.size().y + 2.0), palette.secondary);
                 if response
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()

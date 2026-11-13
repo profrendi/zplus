@@ -26,9 +26,13 @@ pub(crate) mod overlay;
 pub mod pane;
 pub mod picker;
 pub mod plus_about;
+pub mod plus_community;
 pub mod plus_group;
 pub mod plus_new_chat;
 pub mod plus_pages;
+pub mod plus_panel;
+pub mod plus_people;
+pub mod plus_status;
 pub mod polls;
 pub mod profile;
 pub mod rail;
@@ -49,6 +53,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = &ctx;
     track_keyboard_focus(ctx);
     info::release_thumbnails(app, ctx);
+    plus_pages::release_textures(app);
     picker::release_gif_animations(app, ctx);
     // The message list sets it again when it is drawn with focus.
     app.messages_focused = false;

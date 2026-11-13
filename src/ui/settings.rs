@@ -882,7 +882,20 @@ fn sections(app: &App) -> Vec<Section> {
             )
             .clicked()
             {
-                app.actions.push(Action::OpenLog(log));
+                app.actions.push(Action::OpenLog(log.clone()));
+            }
+            // ZFPlus: the folder the log and its earlier copy are in.
+            if let Some(folder) = log.parent()
+                && theme::soft_button(
+                    ui,
+                    &palette,
+                    Some(Icon::ExternalLink),
+                    &crate::i18n::gettext(app.locale, "Open folder"),
+                    false,
+                )
+                .clicked()
+            {
+                app.actions.push(Action::OpenFolder(folder.to_path_buf()));
             }
         },
     );
@@ -1159,7 +1172,7 @@ fn plus_sections() -> Vec<Section> {
         ),
         Always(
             "View statuses privately",
-            "ZapFast does not open statuses, so it never marks one as seen.",
+            "Statuses opened on the Status page never tell their sender they were seen.",
         ),
         Tick(
             "Play audio messages privately",
@@ -1277,16 +1290,35 @@ fn plus_sections() -> Vec<Section> {
     ] {
         let mut section = Section::new(Text::from(title));
         section.toggle(master_title, master_description, master);
-        let keywords = options
+        let blur_strength = title.ends_with("Private Mode");
+        let mut keywords: Vec<Text> = options
             .iter()
             .map(|option| match option {
                 Tick(label, _, _) | Always(label, _) => Text::from(*label),
             })
             .collect();
+        if blur_strength {
+            keywords.push(Text::from("Blur strength"));
+        }
         section.block(keywords, move |ui, app| {
             let active = *master(&mut app.settings);
             for option in options {
                 plus_option(ui, app, option, active);
+            }
+            // ZFPlus: how strong the blur is.
+            if blur_strength {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    theme::text(ui, "Blur strength", theme::regular(13.5), app.palette.text);
+                    let mut level = app.settings.plus.blur_level.clamp(1, 10);
+                    let slider = ui
+                        .add(egui::Slider::new(&mut level, 1..=10).show_value(true))
+                        .on_hover_text("1 is light; 10 leaves only colours.");
+                    if slider.changed() {
+                        app.settings.plus.blur_level = level;
+                        app.actions.push(Action::SettingsChanged);
+                    }
+                });
             }
             ui.add_space(8.0);
         });

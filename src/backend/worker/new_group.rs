@@ -277,8 +277,14 @@ fn create_failure(error: &GroupError) -> CreateFailure {
             | IqError::ClientState(_)
             | IqError::InternalChannelClosed,
         ) => CreateFailure::Offline,
-        GroupError::Iq(IqError::ServerError { code, .. }) => CreateFailure::from_code(*code),
-        GroupError::InvalidRequest(_) => CreateFailure::NotAccepted,
+        GroupError::Iq(IqError::ServerError { code, .. }) => {
+            log::warn!("WhatsApp answered a new group with code {code}");
+            CreateFailure::from_code(*code)
+        }
+        GroupError::InvalidRequest(_) => {
+            log::warn!("a new group's request was not valid");
+            CreateFailure::NotAccepted
+        }
         _ => CreateFailure::Failed,
     }
 }
@@ -295,45 +301,58 @@ fn stage_picture(dir: &Path, jpeg: &[u8]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// ZFPlus: New group's choices that WhatsApp takes as the group is made.
+/// ZFPlus: New group's choices. The create request itself stays exactly as
+/// ZapFast sends it (WhatsApp refuses some settings inside it with a 400), so
+/// nothing is added here; `plus_group_after` sets them on the new group.
 fn plus_group_options(
-    mut options: GroupCreateOptions,
-    extra: crate::plus::GroupOptions,
+    options: GroupCreateOptions,
+    _extra: crate::plus::GroupOptions,
 ) -> GroupCreateOptions {
-    use whatsapp_rust::{MemberAddMode, MemberLinkMode, MembershipApprovalMode};
-    options.ephemeral_expiration = Some(extra.timer);
-    options.member_add_mode = Some(if extra.members_add {
-        MemberAddMode::AllMemberAdd
-    } else {
-        MemberAddMode::AdminAdd
-    });
-    options.member_link_mode = Some(if extra.members_invite {
-        MemberLinkMode::AllMemberLink
-    } else {
-        MemberLinkMode::AdminLink
-    });
-    options.membership_approval_mode = Some(if extra.approve {
-        MembershipApprovalMode::On
-    } else {
-        MembershipApprovalMode::Off
-    });
     options
 }
 
-/// ZFPlus: New group's choices set once the group exists: only admins
-/// edit its settings, or only admins send.
+/// ZFPlus: New group's choices set once the group exists, one request each
+/// as WhatsApp Web does when they are changed in Group permissions.
 async fn plus_group_after(client: &Client, jid: &Jid, extra: crate::plus::GroupOptions) {
-    if !extra.members_edit && client.groups().set_locked(jid.clone(), true).await.is_err() {
-        log::warn!("could not keep a new group's settings to admins");
-    }
-    if !extra.members_send
-        && client
-            .groups()
-            .set_announce(jid.clone(), true)
+    use whatsapp_rust::{MemberAddMode, MemberLinkMode, MembershipApprovalMode};
+    let groups = client.groups();
+    if extra.timer != 0
+        && groups
+            .set_ephemeral(jid.clone(), extra.timer)
             .await
             .is_err()
     {
+        log::warn!("could not set a new group's disappearing messages");
+    }
+    if !extra.members_edit && groups.set_locked(jid.clone(), true).await.is_err() {
+        log::warn!("could not keep a new group's settings to admins");
+    }
+    if !extra.members_send && groups.set_announce(jid.clone(), true).await.is_err() {
         log::warn!("could not keep a new group's messages to admins");
+    }
+    if !extra.members_add
+        && groups
+            .set_member_add_mode(jid.clone(), MemberAddMode::AdminAdd)
+            .await
+            .is_err()
+    {
+        log::warn!("could not keep adding members to admins");
+    }
+    if extra.members_invite
+        && groups
+            .set_member_link_mode(jid, MemberLinkMode::AllMemberLink)
+            .await
+            .is_err()
+    {
+        log::warn!("could not let members invite with the link");
+    }
+    if extra.approve
+        && groups
+            .set_membership_approval(jid.clone(), MembershipApprovalMode::On)
+            .await
+            .is_err()
+    {
+        log::warn!("could not turn on approving new members");
     }
 }
 

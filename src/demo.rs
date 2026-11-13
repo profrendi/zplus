@@ -12068,8 +12068,10 @@ mod tests {
         );
         let ctx = egui::Context::default();
         app.attach(&ctx);
+        // ZFPlus: members have large rows, so the window is tall enough to
+        // show Mira's under Jonas's.
         let shapes = (0..3)
-            .map(|_| frame_sized(&mut app, &ctx, 780.0, Vec::new()))
+            .map(|_| frame_sized(&mut app, &ctx, 1100.0, Vec::new()))
             .last()
             .unwrap();
         let mut drawn = Vec::new();

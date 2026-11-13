@@ -41,6 +41,7 @@ pub const INVENTORY: &[(Place, &str)] = &[
     (Place::Settings, "Play audio messages privately"),
     (Place::Settings, "Disable read receipts"),
     (Place::Settings, "Hide online status (Invisible Mode)"),
+    (Place::Settings, "Blur strength"),
     // Enhancements · Customizations
     (Place::Settings, "Restore deleted messages"),
     (Place::Settings, "Notify about online activities"),
@@ -71,6 +72,9 @@ pub const INVENTORY: &[(Place, &str)] = &[
     (Place::Settings, "Show memory and CPU in the left rail"),
     (Place::Settings, "Warn when memory passes"),
     (Place::Settings, "Diagnostics folder"),
+    // Files and the app itself
+    (Place::Settings, "App folder"),
+    (Place::Settings, "Remove ZFPlus"),
     // The tray icon's menu
     (Place::Tray, "Show or hide ZapFast"),
     (Place::Tray, "Lock ZapFast"),
@@ -232,6 +236,76 @@ pub fn run(app: &App) -> Vec<Check> {
         }
         None => check(Status::Note, "Memory", "Not measured yet"),
     });
+    // ZFPlus: the pages and lists, as this run has them.
+    checks.push(if app.statuses.is_empty() {
+        check(
+            Status::Note,
+            "Status",
+            "No updates kept yet: open Status to load them",
+        )
+    } else {
+        let people: std::collections::HashSet<&str> = app
+            .statuses
+            .iter()
+            .map(|post| post.sender.as_str())
+            .collect();
+        check(
+            Status::Good,
+            "Status",
+            format!(
+                "{} updates from {} people in the last day",
+                app.statuses.len(),
+                people.len()
+            ),
+        )
+    });
+    checks.push(match &app.status_privacy {
+        Some((audience, people)) => check(
+            Status::Good,
+            "Status privacy",
+            format!("Read from WhatsApp: {audience:?}, {} people", people.len()),
+        ),
+        None => check(
+            Status::Note,
+            "Status privacy",
+            "Not read yet: open Status privacy",
+        ),
+    });
+    let synced = app
+        .labels
+        .iter()
+        .filter(|label| label.id.starts_with("wa:"))
+        .count();
+    checks.push(check(
+        if synced == app.labels.len() {
+            Status::Good
+        } else {
+            Status::Note
+        },
+        "Lists",
+        format!(
+            "{} lists, {synced} kept in step with WhatsApp",
+            app.labels.len()
+        ),
+    ));
+    checks.push(match &app.communities {
+        Some(Ok(communities)) => check(
+            Status::Good,
+            "Communities",
+            format!("{} communities", communities.len()),
+        ),
+        Some(Err(error)) => check(Status::Problem, "Communities", error.clone()),
+        None => check(
+            Status::Note,
+            "Communities",
+            "Not loaded yet: open Communities",
+        ),
+    });
+    checks.push(check(
+        Status::Good,
+        "Private Mode blur strength",
+        format!("{} of 10", app.settings.plus.blur_level.clamp(1, 10)),
+    ));
     checks.push(check(
         Status::Good,
         "Features in this build",

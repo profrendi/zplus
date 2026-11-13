@@ -2962,6 +2962,31 @@ impl Archive {
     }
 
     /// ZFPlus: one status update as WhatsApp sent it.
+    /// ZFPlus: who posted a kept status update, and the update as sent.
+    pub fn plus_status_entry(&self, id: &str) -> Result<Option<(String, Vec<u8>)>> {
+        self.plus_status_table()?;
+        self.connection
+            .query_row(
+                "SELECT sender, raw FROM plus_statuses WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+    }
+
+    /// ZFPlus: the oldest status update kept, to ask the phone for those
+    /// before it: its id, whether it is ours and when it came.
+    pub fn plus_oldest_status(&self) -> Result<Option<(String, String, i64)>> {
+        self.plus_status_table()?;
+        self.connection
+            .query_row(
+                "SELECT id, sender, timestamp FROM plus_statuses ORDER BY timestamp ASC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+    }
+
     pub fn plus_status_raw(&self, id: &str) -> Result<Option<Vec<u8>>> {
         self.plus_status_table()?;
         self.connection

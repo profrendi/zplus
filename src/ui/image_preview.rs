@@ -901,14 +901,28 @@ fn video(
         );
     let size = fit(aspect, stage.size());
     let media = Rect::from_center_size(stage.center(), size);
+    // ZFPlus: a clip zooms too: the wheel (or a pinch) over it, and a drag
+    // moves it while larger. The controls stay where the clip fits.
+    let zoom_id = egui::Id::new(("viewer-clip-zoom", message));
+    let (mut zoom, mut pan): (f32, Vec2) = ui
+        .data(|data| data.get_temp(zoom_id))
+        .unwrap_or((1.0, Vec2::ZERO));
+    if ui.rect_contains_pointer(stage) {
+        let (scroll, pinch) = ui.input(|input| (input.smooth_scroll_delta.y, input.zoom_delta()));
+        let factor = (scroll / 400.0).exp() * pinch;
+        if (factor - 1.0).abs() > f32::EPSILON {
+            zoom = (zoom * factor).clamp(1.0, 6.0);
+        }
+    }
+    let shown = Rect::from_center_size(media.center() + pan, media.size() * zoom);
     // The player pauses a clip it has not been told about for 1.5 s, so the
     // viewer has to say it is still on screen, as the chat renderer does.
     app.video.saw(message);
     match status.as_ref().and_then(|status| status.frame.clone()) {
         Some(frame) => {
-            ui.painter().image(
+            ui.painter().with_clip_rect(stage).image(
                 frame.id(),
-                media,
+                shown,
                 Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
@@ -926,8 +940,23 @@ fn video(
     // Clicking the frame plays or pauses, as in the bubble. A clip that is not
     // here yet is offered for download instead.
     let response = ui
-        .interact(media, egui::Id::new("viewer-video"), Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+        .interact(
+            media,
+            egui::Id::new("viewer-video"),
+            Sense::click_and_drag(),
+        )
+        .on_hover_cursor(if zoom > 1.0 {
+            egui::CursorIcon::Grab
+        } else {
+            egui::CursorIcon::PointingHand
+        });
+    if response.dragged() && zoom > 1.0 {
+        pan += response.drag_delta();
+    }
+    if zoom <= 1.0 {
+        pan = Vec2::ZERO;
+    }
+    ui.data_mut(|data| data.insert_temp(zoom_id, (zoom, pan)));
     let downloading = path.is_none()
         && matches!(
             app.viewer_media_state.get(message),

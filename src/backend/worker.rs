@@ -1501,6 +1501,7 @@ pub async fn run(
         online_changed: Instant::now(),
         online_sent: None,
         lists_pushed: false,
+        plus_statuses_asked: false,
         presence_in_flight: false,
         presence_refresh_pending: false,
         presence_generation: 0,
@@ -2068,6 +2069,8 @@ struct Worker {
     online_sent: Option<bool>,
     /// ZFPlus: whether the lists made here were sent to WhatsApp this run.
     lists_pushed: bool,
+    /// ZFPlus: the phone was asked for statuses from before this run's.
+    plus_statuses_asked: bool,
     /// A presence request currently awaiting its result.
     presence_in_flight: bool,
     /// Push-name sync can trigger a library-owned availability announcement.
@@ -5395,6 +5398,9 @@ impl Worker {
                     self.lists_pushed = true;
                     self.recover_lists();
                 }
+                // ZFPlus: Status's mutes and privacy, and the day's statuses.
+                self.plus_recover_status_settings();
+                self.plus_ask_older_statuses();
             }
             E::ServerAck(ack) => self.server_ack(ack),
             E::LabelEditUpdate(update) => self.list_edited(update),
@@ -11899,6 +11905,9 @@ impl Worker {
     fn fetch_avatar(&mut self, id: String, full: bool) {
         let path = self.avatar_file(&id, full);
         if let Ok(metadata) = std::fs::metadata(&path)
+            // ZFPlus: a community found without a picture by the group
+            // route is asked again by its own.
+            && (metadata.len() > 0 || !plus_pages::is_community(&id))
             && metadata
                 .modified()
                 .ok()
@@ -11947,13 +11956,17 @@ impl Worker {
             return;
         };
         let commands = self.commands.clone();
+        // ZFPlus: a community's picture comes by the community route.
+        let community = plus_pages::is_community(&id);
         tokio::spawn(async move {
             let fetched = async {
                 let mut picture = None;
                 let mut failed = false;
                 'lookup: for jid in &candidates {
                     for preview in [!full, false] {
-                        let target = if jid.is_group() {
+                        let target = if community {
+                            whatsapp_rust::ProfilePictureTarget::Community(jid)
+                        } else if jid.is_group() {
                             whatsapp_rust::ProfilePictureTarget::Group(jid)
                         } else {
                             whatsapp_rust::ProfilePictureTarget::Contact(jid)
@@ -15329,6 +15342,17 @@ fn parse_history(compressed: &[u8]) -> Result<ParsedHistory, String> {
             Ok(None) => break,
             Err(error) => return Err(error.to_string()),
         };
+        // ZFPlus: statuses the phone sends as a chat of their own (an
+        // on-demand answer) go to the Status page, not the chat list.
+        if conversation.id == "status@broadcast" {
+            let statuses: Vec<wa::WebMessageInfo> = conversation
+                .messages
+                .iter()
+                .filter_map(|entry| entry.message.as_option().cloned())
+                .collect();
+            plus_pages::stash_history_statuses(&statuses);
+            continue;
+        }
         chats.push(parse_conversation(conversation));
     }
     let remainder = stream.remainder().map_err(|error| error.to_string())?;
@@ -21491,6 +21515,7 @@ mod receipt_tests {
             online_changed: Instant::now(),
             online_sent: None,
             lists_pushed: false,
+            plus_statuses_asked: false,
             presence_in_flight: false,
             presence_refresh_pending: false,
             presence_generation: 0,

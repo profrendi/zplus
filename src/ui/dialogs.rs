@@ -15,6 +15,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(dialog) = app.dialog.clone() else {
         return;
     };
+    // ZFPlus: Status, Channels, Communities and Business tools fill the
+    // window beside the rail, and Lists the chat list's column, as
+    // WhatsApp Web lays them out, rather than floating as a dialog.
+    if let Some(region) = super::plus_panel::region(app, ctx, &dialog) {
+        super::plus_panel::show(app, ctx, dialog, region);
+        return;
+    }
     let palette = app.palette;
     let frame = Frame::new()
         .fill(palette.overlay)

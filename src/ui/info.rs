@@ -960,13 +960,32 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
     let Some((_, members)) = app.info_members.take() else {
         return;
     };
-    theme::text(
-        ui,
-        format!("Members ({})", members.len()),
-        theme::medium(12.5),
-        palette.secondary,
-    );
+    // ZFPlus: "N members" with Search beside it, as WhatsApp Web has them;
+    // Search opens a large list in the middle of the window.
+    ui.horizontal(|ui| {
+        theme::text(
+            ui,
+            format!("{} members", members.len()),
+            theme::medium(13.0),
+            palette.secondary,
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::icon_button(
+                ui,
+                Icon::Search,
+                17.0,
+                palette.secondary,
+                palette.text,
+                "Search members",
+            )
+            .clicked()
+            {
+                ui.data_mut(|data| data.insert_temp(member_search_id(), id.to_owned()));
+            }
+        });
+    });
     ui.add_space(4.0);
+    member_search(app, ui.ctx(), id, &members);
     if shown.can_add {
         let label = crate::i18n::gettext(app.locale, "Add members");
         let response = nav_row(app, ui, Icon::UserPlus, &label, ADD_MEMBERS_STOP);
@@ -990,10 +1009,12 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
     let locale = app.locale;
     let mut chosen: Option<(String, crate::group_admin::MemberChange)> = None;
     // Limit the visible rows because groups can have thousands of members.
-    let row_height = 30.0;
+    // ZFPlus: large rows, a picture, the name and the number, as
+    // WhatsApp Web lists members.
+    let row_height = 58.0;
     let rows = ((window - photo - 300.0) / row_height)
         .floor()
-        .clamp(2.0, 8.0);
+        .clamp(3.0, 9.0);
     let mut open = None;
     // `show_rows` reads the spacing from outside its closure.
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1042,8 +1063,8 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
                     }
                     let picture = app.avatar(member);
                     let avatar = egui::Rect::from_center_size(
-                        egui::pos2(rect.left() + 16.0, rect.center().y),
-                        egui::Vec2::splat(24.0),
+                        egui::pos2(rect.left() + 26.0, rect.center().y),
+                        egui::Vec2::splat(44.0),
                     );
                     widgets::paint_avatar(
                         ui,
@@ -1092,19 +1113,34 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
                         tag.paint(ui, pill.min + vec2(6.0, 2.0), palette.accent);
                         end = pill.left() - 6.0;
                     }
+                    let left = rect.left() + 60.0;
                     let line = widgets::line(
                         ui,
                         name,
-                        theme::regular(13.0),
+                        theme::regular(15.0),
                         palette.text,
-                        (end - rect.left() - 34.0).max(20.0),
+                        (end - left).max(20.0),
                         1,
                     );
-                    line.paint(
-                        ui,
-                        egui::pos2(rect.left() + 34.0, rect.center().y - line.size().y / 2.0),
-                        palette.text,
-                    );
+                    let number = super::plus_people::second_line(member);
+                    let top = if number.is_empty() || number.contains(name.trim_start_matches('~'))
+                    {
+                        rect.center().y - line.size().y / 2.0
+                    } else {
+                        rect.top() + 9.0
+                    };
+                    line.paint(ui, egui::pos2(left, top), palette.text);
+                    if top != rect.center().y - line.size().y / 2.0 {
+                        let phone = widgets::line(
+                            ui,
+                            &number,
+                            theme::regular(12.5),
+                            palette.secondary,
+                            (rect.right() - left - 8.0).max(20.0),
+                            1,
+                        );
+                        phone.paint(ui, egui::pos2(left, rect.top() + 32.0), palette.secondary);
+                    }
                 }
                 // The menu opens from its button or a right-click on the row.
                 if let Some(more) = &more {
@@ -2049,6 +2085,82 @@ fn permission_row(
 /// Where the "Group permissions" row was drawn, for interaction tests.
 pub fn permissions_row_id() -> egui::Id {
     egui::Id::new("group-permissions-row")
+}
+
+/// ZFPlus: the group whose Search members is open.
+fn member_search_id() -> egui::Id {
+    egui::Id::new("plus-member-search")
+}
+
+/// ZFPlus: Search members, large in the middle of the window: a search
+/// field and the members found, each with picture, name and number. A
+/// click opens a chat with them.
+fn member_search(app: &mut App, ctx: &egui::Context, group: &str, members: &[(String, String)]) {
+    let open: Option<String> = ctx.data(|data| data.get_temp(member_search_id()));
+    if open.as_deref() != Some(group) {
+        return;
+    }
+    let palette = app.palette;
+    let screen = ctx.content_rect();
+    let size = Vec2::new(
+        (screen.width() - 40.0).min(520.0),
+        (screen.height() * 0.78).max(320.0),
+    );
+    let mut close = false;
+    let area = egui::Area::new(egui::Id::new("plus-member-search-area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.center() - size / 2.0)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(palette.overlay)
+                .stroke(Stroke::new(1.0, palette.outline))
+                .corner_radius(14.0)
+                .inner_margin(16.0)
+                .shadow(palette.modal_shadow())
+                .show(ui, |ui| {
+                    ui.set_min_size(size - Vec2::splat(32.0));
+                    ui.set_max_size(size - Vec2::splat(32.0));
+                    ui.horizontal(|ui| {
+                        if theme::icon_button(
+                            ui,
+                            Icon::X,
+                            18.0,
+                            palette.secondary,
+                            palette.text,
+                            "Close",
+                        )
+                        .clicked()
+                        {
+                            close = true;
+                        }
+                        theme::text(ui, "Search members", theme::semibold(17.0), palette.text);
+                    });
+                    ui.add_space(8.0);
+                    let people: Vec<(String, String)> = members.to_vec();
+                    let mut picked: Vec<String> = Vec::new();
+                    let room = ui.available_height() - 60.0;
+                    super::plus_people::picker_with(
+                        ui,
+                        app,
+                        "member-search",
+                        &people,
+                        &mut picked,
+                        room,
+                        false,
+                    );
+                    if let Some(member) = picked.first() {
+                        app.actions.push(Action::OpenChat(member.clone()));
+                        close = true;
+                    }
+                });
+        });
+    let _ = area;
+    if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        close = true;
+    }
+    if close {
+        ctx.data_mut(|data| data.remove::<String>(member_search_id()));
+    }
 }
 
 /// Where the "Add members" row was drawn, for interaction tests.

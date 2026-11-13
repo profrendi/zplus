@@ -76,8 +76,6 @@ enum Change {
     Grid(Option<GridLayout>),
     /// ZFPlus: opens the picked text to change its words.
     EditText,
-    /// ZFPlus: crops the canvas to its pictures.
-    Fit,
 }
 
 /// ZFPlus: the editor's tools in WhatsApp's order, with their names.
@@ -441,8 +439,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             #[cfg(any(test, feature = "demo"))]
             ui.ctx()
                 .data_mut(|data| data.insert_temp(picture_rect_id(), picture));
-            if let Some(id) = texture(ui, &source, pasted.as_ref(), picture.size()) {
-                paint_turned(ui, id, picture, edit.turns);
+            // ZFPlus: a canvas (a grid or free canvas) lies where the photo
+            // was; the photo is one of the pictures on it, never behind.
+            match edit.canvas() {
+                Some([r, g, b, a]) => {
+                    ui.painter().rect_filled(
+                        picture,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(r, g, b, a),
+                    );
+                }
+                None => {
+                    if let Some(id) = texture(ui, &source, pasted.as_ref(), picture.size()) {
+                        paint_turned(ui, id, picture, edit.turns);
+                    }
+                }
             }
             let drawing = edit.tool != MarkTool::Crop;
             match edit.tool {
@@ -847,15 +858,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                     if ui.button("No grid").clicked() {
                                         change = Some(Change::Grid(None));
                                     }
-                                    if ui
-                                        .button("Fit to the pictures")
-                                        .on_hover_text(
-                                            "Crops the canvas to where its pictures and text are",
-                                        )
-                                        .clicked()
-                                    {
-                                        change = Some(Change::Fit);
-                                    }
                                     for layout in GridLayout::ALL {
                                         if ui.button(layout.name()).clicked() {
                                             change = Some(Change::Grid(Some(layout)));
@@ -1080,10 +1082,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             edit.insert_picture(image);
         }
         Some(Change::Grid(None)) => edit.remove_grid(),
-        Some(Change::Fit) => {
-            edit.commit_writing();
-            edit.fit_to_content();
-        }
         Some(Change::Grid(Some(layout))) => {
             edit.commit_writing();
             let original =
@@ -1607,6 +1605,24 @@ fn handled(mark: &Mark, handling: Handling) -> Mark {
     }
 }
 
+/// ZFPlus: with the Move tool, the photo itself is a picture to size, move
+/// or crop: the first time it is clicked or dragged, it becomes one, where
+/// it was, on a canvas that shows wherever it leaves.
+fn photo_picked(
+    edit: &mut PictureEdit,
+    at: Pos2,
+    topmost: &dyn Fn(&PictureEdit, Pos2) -> Option<usize>,
+) -> Option<usize> {
+    if edit.canvas().is_some() {
+        return None;
+    }
+    let original =
+        crate::plus_stamp::shown_picture(&edit.source, edit.width, edit.height, edit.turns)?;
+    edit.commit_writing();
+    edit.photo_as_object(original)?;
+    topmost(edit, at)
+}
+
 /// ZFPlus: the Move tool. A click picks the topmost mark under the pointer
 /// (or none), a drag moves it, the corner handle resizes it, and a
 /// double-click on text opens it to be changed. Each finished move is one
@@ -1620,9 +1636,9 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         ]
     };
     let topmost = |edit: &PictureEdit, at: Pos2| {
-        edit.marks
-            .iter()
-            .rposition(|mark| mark.hits(unit(at), size, REACH))
+        edit.marks.iter().rposition(|mark| {
+            mark.grid != crate::model::CANVAS_GROUND && mark.hits(unit(at), size, REACH)
+        })
     };
     let mut handling = ui
         .ctx()
@@ -1882,8 +1898,17 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
             ui.ctx()
                 .data_mut(|data| data.insert_temp(writing_id().with("new"), true));
         } else if area.clicked() {
-            let picked = area.interact_pointer_pos().and_then(|at| topmost(edit, at));
+            let picked = area
+                .interact_pointer_pos()
+                .and_then(|at| topmost(edit, at).or_else(|| photo_picked(edit, at, &topmost)));
             edit.select(picked);
+        }
+        // ZFPlus: the photo itself is picked by a drag on it too.
+        if area.drag_started()
+            && let Some(at) = area.interact_pointer_pos()
+            && topmost(edit, at).is_none()
+        {
+            photo_picked(edit, at, &topmost);
         }
         if area.drag_started()
             && let Some(at) = area.interact_pointer_pos().and_then(|at| topmost(edit, at))

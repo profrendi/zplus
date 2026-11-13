@@ -35,6 +35,7 @@ impl Worker {
             PlusRequest::SetStatusPrivacy { audience, people } => {
                 self.set_status_privacy(audience, people)
             }
+            PlusRequest::ReplyStatus { id, text } => self.plus_reply_status(id, text),
             PlusRequest::LoadCommunities => self.load_communities(),
             PlusRequest::CreateCommunity { name, description } => {
                 self.plus_task(move |client| async move {
@@ -438,7 +439,11 @@ impl Worker {
                     .user_jid
                     .iter()
                     .filter_map(|jid| jid.parse::<Jid>().ok())
-                    .map(|jid| self.canonical(&jid))
+                    // The picker lists saved contacts by number.
+                    .map(|jid| match self.lid_to_pn.get(jid.user.as_str()) {
+                        Some(pn) if jid.server == "lid" => format!("{pn}@s.whatsapp.net"),
+                        _ => self.canonical(&jid),
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -493,6 +498,129 @@ impl Worker {
             let _ = events.send(Event::Plus(PlusAnswer::StatusPrivacy(audience, shown)));
             waker.wake();
             Ok("Status privacy saved".to_owned())
+        });
+    }
+
+    /// ZFPlus: a reply to a status, sent to its sender's chat quoting the
+    /// update the way WhatsApp's own reply bar does, and filed there.
+    fn plus_reply_status(&mut self, id: String, text: String) {
+        use whatsapp_rust::prelude::MessageField;
+        let text = text.trim().to_owned();
+        if text.is_empty() {
+            return;
+        }
+        let entry = self.archive.plus_status_entry(&id).ok().flatten();
+        let Some((sender, raw)) = entry else {
+            self.emit(Event::Error("That status is no longer here.".to_owned()));
+            return;
+        };
+        let Ok(quoted) = wa::Message::decode_from_slice(&raw) else {
+            return;
+        };
+        let (Some(client), Some(jid)) = (self.connected_client(), Self::jid_of(&sender)) else {
+            self.emit(Event::Error(
+                "Connect to WhatsApp to reply to a status.".to_owned(),
+            ));
+            return;
+        };
+        let mut context = wa::ContextInfo::default();
+        context.stanza_id = Some(id);
+        context.participant = Some(jid.to_string());
+        context.remote_jid = Some("status@broadcast".to_owned());
+        context.quoted_message = MessageField::some(quoted);
+        let mut message = outgoing_text(text.clone(), Some(context), &[]);
+        let chat = sender;
+        let expiration = self.apply_ephemeral(&chat, &mut message);
+        let shown = self.quoted_of(&message);
+        let message_id = client.generate_message_id().into_string();
+        let row = Message {
+            id: message_id.clone(),
+            chat: chat.clone(),
+            sender: self.me(),
+            sender_name: None,
+            from_me: true,
+            timestamp: crate::util::now(),
+            content: Content::text(text),
+            status: Delivery::Pending,
+            delivered_at: None,
+            read_at: None,
+            quoted: shown,
+            reactions: Vec::new(),
+            history_order: None,
+            edited: false,
+            mentions: Vec::new(),
+            forwarded: false,
+            thumbnail: None,
+        };
+        self.store_message(row, Some(message.encode_to_vec()), None);
+        tokio::spawn(send_outgoing(
+            client,
+            self.commands.clone(),
+            chat,
+            jid,
+            message_id,
+            message,
+            expiration,
+            None,
+        ));
+        self.emit(Event::Plus(PlusAnswer::Done(Ok("Reply sent".to_owned()))));
+    }
+
+    /// ZFPlus: once a run, asks the phone for the statuses of the last day
+    /// that came before the oldest kept here (those from before Status was
+    /// kept), the way an older-messages request asks for a chat's.
+    pub(super) fn plus_ask_older_statuses(&mut self) {
+        if self.plus_statuses_asked {
+            return;
+        }
+        let Some(client) = self.connected_client() else {
+            return;
+        };
+        self.plus_statuses_asked = true;
+        let day_ago = crate::util::now() - 24 * 60 * 60;
+        let Some((id, sender, timestamp)) = self.archive.plus_oldest_status().ok().flatten() else {
+            return;
+        };
+        if timestamp <= day_ago + 30 * 60 {
+            return;
+        }
+        let from_me = sender == self.me();
+        let Ok(jid) = "status@broadcast".parse::<Jid>() else {
+            return;
+        };
+        tokio::spawn(async move {
+            if client
+                .fetch_message_history(&jid, &id, from_me, timestamp, 50)
+                .await
+                .is_err()
+            {
+                log::info!("older statuses were not asked for");
+            }
+        });
+    }
+
+    /// ZFPlus: once, reads the account's status settings again from
+    /// WhatsApp (whose statuses are muted, and Status privacy with its
+    /// lists), as an archive from before they were kept never had them.
+    pub(super) fn plus_recover_status_settings(&mut self) {
+        const DONE: &str = "plus_status_settings_recovered";
+        if matches!(self.archive.meta(DONE), Ok(Some(_))) {
+            return;
+        }
+        let Some(client) = self.connected_client() else {
+            return;
+        };
+        let _ = self.archive.set_meta(DONE, "1");
+        tokio::spawn(async move {
+            if let Err(error) = client
+                .resync_app_state(
+                    [whatsapp_rust::WAPatchName::RegularHigh],
+                    whatsapp_rust::AppStateResyncMode::Snapshot,
+                )
+                .await
+            {
+                log::info!("status settings were not read again: {error}");
+            }
         });
     }
 
@@ -567,22 +695,44 @@ impl Worker {
                     .map_err(|error| error.to_string())?;
                 let mut communities = Vec::new();
                 for overview in overviews {
-                    let groups = client
+                    let subgroups = client
                         .community()
                         .get_subgroups(&overview.id)
                         .await
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    let announcements = subgroups
+                        .iter()
+                        .find(|group| group.is_default_sub_group)
+                        .map(|group| group.id.to_string());
+                    let groups = subgroups
                         .into_iter()
                         .map(|group| {
                             let id = group.id.to_string();
-                            let inside = joined.contains(&id);
-                            (id, group.subject, inside)
+                            let inside = joined.contains(&id) || group.is_default_sub_group;
+                            let name = if group.is_default_sub_group {
+                                "Announcements".to_owned()
+                            } else {
+                                group.subject
+                            };
+                            (id, name, inside)
                         })
                         .collect();
+                    // Its description and size, as Community info shows.
+                    let metadata = client.groups().fetch_metadata(&overview.id).await.ok();
+                    remember_community(&overview.id.to_string());
                     communities.push(CommunityInfo {
                         id: overview.id.to_string(),
                         name: overview.subject.unwrap_or_else(|| "Community".to_owned()),
                         groups,
+                        announcements,
+                        description: metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.description.clone())
+                            .unwrap_or_default(),
+                        members: metadata
+                            .as_ref()
+                            .map(|metadata| metadata.participants.len())
+                            .filter(|count| *count > 0),
                     });
                 }
                 Ok(communities)
@@ -671,6 +821,28 @@ fn catalog_item(product: &whatsapp_rust::features::Product) -> CatalogItem {
         }),
         link: product.url.clone(),
     }
+}
+
+/// ZFPlus: the communities known to be ones, whose pictures are asked for by
+/// the community route.
+static COMMUNITIES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_community(id: &str) {
+    let mut known = COMMUNITIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !known.iter().any(|kept| kept == id) {
+        known.push(id.to_owned());
+    }
+}
+
+/// ZFPlus: whether `id` is a community (its parent group).
+pub(super) fn is_community(id: &str) -> bool {
+    COMMUNITIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .any(|kept| kept == id)
 }
 
 /// ZFPlus: statuses a history chunk carried, from the thread that unpacked

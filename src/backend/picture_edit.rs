@@ -144,6 +144,17 @@ fn turned_and_cropped(
     if turns & crate::model::PICTURE_MIRRORED != 0 {
         image::imageops::flip_horizontal_in_place(&mut picture);
     }
+    // ZFPlus: a canvas (a grid or free canvas) takes the photo's place;
+    // the photo is one of the pictures drawn on it.
+    if let Some(ground) = marks
+        .iter()
+        .find(|mark| mark.grid == crate::model::CANVAS_GROUND)
+        .map(|mark| mark.fill.unwrap_or([255, 255, 255, 255]))
+    {
+        for pixel in picture.pixels_mut() {
+            *pixel = image::Rgba(ground);
+        }
+    }
     draw_marks(&mut picture, marks);
     let (width, height) = picture.dimensions();
     let crop = crop.clamped(width, height);

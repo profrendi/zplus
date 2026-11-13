@@ -143,20 +143,8 @@ fn label_chips(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         let chip_hint = chip.on_hover_text("Right-click to edit this list and its chats");
         let _ = chip_hint;
     }
-    let locale = app.locale;
-    if theme::icon_button(
-        ui,
-        Icon::Plus,
-        15.0,
-        palette.secondary,
-        palette.text,
-        &gettext(locale, "Manage lists"),
-    )
-    .tab_stop(Stop::ManageLabels)
-    .clicked()
-    {
-        app.actions.push(Action::ShowDialog(Dialog::Labels));
-    }
+    // ZFPlus: lists are made and managed from the ⋯ beside them, so no
+    // plus of their own.
     // ZFPlus: New group, New list and Select chats, beside the lists.
     let more = theme::icon_button(
         ui,
@@ -294,11 +282,32 @@ fn edit_list(app: &mut App, ui: &mut egui::Ui, palette: &Palette, id: &str) {
         }
     });
     ui.add_space(10.0);
-    let on_list: Vec<(String, String)> = app
+    let set = |app: &mut App, chat: &str, on: bool| {
+        let mut labels = app
+            .chats
+            .iter()
+            .find(|found| found.id == chat)
+            .map(|found| found.labels.clone())
+            .unwrap_or_default();
+        if on {
+            if !labels.contains(&label.id) {
+                labels.push(label.id.clone());
+            }
+        } else {
+            labels.retain(|worn| *worn != label.id);
+        }
+        app.actions.push(Action::SetChatLabels {
+            chat: chat.to_owned(),
+            labels,
+        });
+    };
+    // ZFPlus: who is on the list, and saved contacts with WhatsApp and
+    // groups to add, in large rows as WhatsApp's picker has them.
+    let on_list: Vec<String> = app
         .chats
         .iter()
         .filter(|chat| !chat.locked && chat.labels.contains(&label.id))
-        .map(|chat| (chat.id.clone(), app.chat_title(chat)))
+        .map(|chat| chat.id.clone())
         .collect();
     theme::text(
         ui,
@@ -306,115 +315,43 @@ fn edit_list(app: &mut App, ui: &mut egui::Ui, palette: &Palette, id: &str) {
         theme::semibold(13.5),
         palette.text,
     );
-    let set = |app: &mut App, chat: &str, on: bool| {
-        if let Some(found) = app.chats.iter().find(|found| found.id == chat) {
-            let mut labels = found.labels.clone();
-            if on {
-                if !labels.contains(&label.id) {
-                    labels.push(label.id.clone());
-                }
-            } else {
-                labels.retain(|worn| *worn != label.id);
-            }
-            app.actions.push(Action::SetChatLabels {
-                chat: chat.to_owned(),
-                labels,
-            });
-        }
-    };
-    egui::ScrollArea::vertical()
-        .id_salt("list-edit-included")
-        .max_height(170.0)
-        .auto_shrink([false, true])
-        .show_rows(ui, 40.0, on_list.len(), |ui, range| {
-            for (chat, title) in &on_list[range] {
-                let (rect, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
-                let picture = app.avatar(chat);
-                let face = Rect::from_center_size(
-                    pos2(rect.left() + 18.0, rect.center().y),
-                    egui::Vec2::splat(30.0),
-                );
-                widgets::paint_avatar(ui, palette, face, title, chat, picture.as_deref());
-                let line = widgets::line(
-                    ui,
-                    title,
-                    theme::regular(13.5),
-                    palette.text,
-                    (rect.width() - 90.0).max(40.0),
-                    1,
-                );
-                line.paint(
-                    ui,
-                    pos2(rect.left() + 42.0, rect.center().y - line.size().y / 2.0),
-                    palette.text,
-                );
-                let cross = Rect::from_center_size(
-                    pos2(rect.right() - 16.0, rect.center().y),
-                    egui::Vec2::splat(22.0),
-                );
-                let remove = ui.interact(
-                    cross,
-                    egui::Id::new(("list-edit-remove", chat)),
-                    Sense::click(),
-                );
-                theme::paint_icon(
-                    ui,
-                    Icon::X,
-                    cross.shrink(4.0),
-                    14.0,
-                    if remove.hovered() {
-                        palette.danger
-                    } else {
-                        palette.secondary
-                    },
-                );
-                if remove.on_hover_text("Remove from the list").clicked() {
-                    set(app, chat, false);
-                }
-            }
-        });
-    ui.add_space(8.0);
+    ui.add_space(2.0);
     theme::text(
         ui,
         "Add people or groups",
-        theme::semibold(13.5),
-        palette.text,
+        theme::regular(12.5),
+        palette.secondary,
     );
-    let search_id = egui::Id::new("lists-chat-search");
-    let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
-    ui.add(
-        egui::TextEdit::singleline(&mut search)
-            .hint_text("Search name or number")
-            .desired_width(f32::INFINITY),
+    ui.add_space(4.0);
+    let mut people: Vec<(String, String)> = on_list
+        .iter()
+        .map(|id| (id.clone(), app.display_name(id)))
+        .collect();
+    let saved = super::plus_pages::saved_people(app);
+    people.extend(
+        saved
+            .iter()
+            .filter(|(id, _)| !on_list.contains(id))
+            .cloned(),
     );
-    let needle = crate::util::search_key(search.trim());
-    let mut rows: Vec<(String, String)> = app
+    let mut groups: Vec<(String, String)> = app
         .chats
         .iter()
-        .filter(|chat| {
-            !chat.locked && !chat.id.ends_with("@newsletter") && !chat.labels.contains(&label.id)
-        })
+        .filter(|chat| !chat.locked && chat.id.ends_with("@g.us") && !on_list.contains(&chat.id))
         .map(|chat| (chat.id.clone(), app.chat_title(chat)))
-        .filter(|(_, name)| {
-            needle.is_empty()
-                || crate::util::search_matches(&crate::util::search_key(name), &needle)
-        })
         .collect();
-    rows.sort_by(|a, b| a.1.cmp(&b.1));
-    egui::ScrollArea::vertical()
-        .id_salt("lists-chats")
-        .max_height(170.0)
-        .auto_shrink([false, true])
-        .show_rows(ui, 24.0, rows.len(), |ui, range| {
-            for (chat, title) in &rows[range] {
-                let mut ticked = false;
-                if ui.checkbox(&mut ticked, title).changed() && ticked {
-                    set(app, chat, true);
-                }
-            }
-        });
-    ui.data_mut(|data| data.insert_temp(search_id, search));
+    groups.sort_by_key(|(_, name)| name.to_lowercase());
+    people.extend(groups);
+    let mut picked = on_list.clone();
+    // The panel's height, less the name, colours and buttons around.
+    let room = (ui.ctx().content_rect().height() - 360.0).max(240.0);
+    super::plus_people::picker(ui, app, "list-edit", &people, &mut picked, room);
+    for chat in picked.iter().filter(|chat| !on_list.contains(chat)) {
+        set(app, chat, true);
+    }
+    for chat in on_list.iter().filter(|chat| !picked.contains(chat)) {
+        set(app, chat, false);
+    }
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         let typed = name.trim().to_owned();

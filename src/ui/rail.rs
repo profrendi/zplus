@@ -347,10 +347,10 @@ const METER: f32 = 92.0;
 /// ZFPlus: the app's own memory and CPU, as Task Manager counts them, with
 /// the last minute of each drawn under it. It is redrawn when its numbers
 /// move while it shows (`plus_memory::start_sampler`), and Settings →
-/// Diagnostics turns it off. A click opens Feature check, which says what holds the memory.
+/// Diagnostics turns it off.
 fn usage_meter(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, METER), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, METER), Sense::hover());
     // The sampler wakes the window when the numbers move, while this shows.
     crate::plus_memory::meter_drawn();
     let recent = crate::plus_memory::recent();
@@ -417,18 +417,10 @@ fn usage_meter(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         recent.iter().map(|(_, cpu)| *cpu).collect(),
         10.0,
     );
-    let hint = format!(
-        "{}: {memory:.0} MB, CPU {cpu:.1}%. Click for what holds it.",
-        crate::channel::NAME
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &hint));
-    if response
-        .on_hover_text(hint.as_str())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-    {
-        app.actions.push(Action::ShowMemory);
-    }
+    // ZFPlus: only a reading; a click no longer leaves for Diagnostics.
+    let hint = format!("{}: {memory:.0} MB, CPU {cpu:.1}%", crate::channel::NAME);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &hint));
+    let _ = response.on_hover_text(hint.as_str());
 }
 
 /// ZFPlus: turns Private Mode (blur, invisible, and the rest of its

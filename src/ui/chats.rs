@@ -28,6 +28,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         header(app, ui);
         body(app, ui);
     });
+    // ZFPlus: where the list is, for Lists to open over it.
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            super::plus_panel::list_rect_id(),
+            (response.response.rect, pass),
+        )
+    });
     let width = response.response.rect.width();
     if (width - app.settings.sidebar_width).abs() > 1.0 {
         app.settings.sidebar_width = width;
@@ -760,6 +768,7 @@ fn select_bar(app: &mut App, ui: &mut egui::Ui) {
         return;
     };
     let palette = app.palette;
+    let mut pending: Vec<Action> = Vec::new();
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         theme::text(
@@ -786,9 +795,44 @@ fn select_bar(app: &mut App, ui: &mut egui::Ui) {
         {
             each(Action::MarkUnread);
         }
-        if ui.add_enabled(any, egui::Button::new("Mute")).clicked() {
-            each(|chat| Action::SetMuted(chat, Some(0)));
-        }
+        // ZFPlus: "Mute selected chat for..." with WhatsApp's three choices.
+        let mute = ui.add_enabled(any, egui::Button::new("Mute…"));
+        egui::Popup::menu(&mute)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(240.0);
+                theme::text(
+                    ui,
+                    "Mute selected chat for...",
+                    theme::semibold(15.0),
+                    palette.text,
+                );
+                ui.add_space(8.0);
+                let choice_id = egui::Id::new("select-mute-choice");
+                let mut choice: u8 = ui.data(|data| data.get_temp(choice_id)).unwrap_or(0);
+                for (at, label) in ["8 hours", "1 week", "Always"].into_iter().enumerate() {
+                    ui.radio_value(&mut choice, at as u8, label);
+                }
+                ui.data_mut(|data| data.insert_temp(choice_id, choice));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
+                        ui.close();
+                    }
+                    if theme::pill_button(ui, &palette, "Mute", true).clicked() {
+                        let now = crate::util::now();
+                        let until = match choice {
+                            0 => now + 8 * 3600,
+                            1 => now + 7 * 86_400,
+                            _ => 0,
+                        };
+                        for chat in &picked {
+                            pending.push(Action::SetMuted(chat.clone(), Some(until)));
+                        }
+                        ui.close();
+                    }
+                });
+            });
         if ui.add_enabled(any, egui::Button::new("Unmute")).clicked() {
             each(|chat| Action::SetMuted(chat, None));
         }
@@ -815,6 +859,7 @@ fn select_bar(app: &mut App, ui: &mut egui::Ui) {
             app.chat_select = None;
         }
     });
+    app.actions.extend(pending);
 }
 
 /// Stable id for a starred row, so its menu can be addressed by the demo,

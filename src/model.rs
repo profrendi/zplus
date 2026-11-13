@@ -2878,6 +2878,12 @@ pub struct CommunityInfo {
     pub name: String,
     /// Each group: its id, its name, and whether we are in it.
     pub groups: Vec<(ChatId, String, bool)>,
+    /// The community's announcements group, which every member is in.
+    pub announcements: Option<ChatId>,
+    /// What the community says about itself.
+    pub description: String,
+    /// How many people are in it, when WhatsApp said.
+    pub members: Option<usize>,
 }
 
 /// ZFPlus: one product of a business catalogue.
@@ -2913,6 +2919,11 @@ pub enum PlusRequest {
     SetStatusPrivacy {
         audience: StatusAudience,
         people: Vec<ChatId>,
+    },
+    /// Answers a status in its sender's chat, quoting it, as WhatsApp does.
+    ReplyStatus {
+        id: String,
+        text: String,
     },
     LoadCommunities,
     CreateCommunity {
@@ -2952,6 +2963,8 @@ pub enum PlusAnswer {
 /// ZFPlus: an empty grid box's fill and outline, which tell it from a
 /// rectangle someone drew.
 pub const GRID_SLOT_FILL: [u8; 4] = [226, 228, 232, 255];
+/// ZFPlus: `Mark::grid` for the canvas a grid or free canvas lies on.
+pub const CANVAS_GROUND: u8 = 4;
 pub const GRID_SLOT_LINE: [u8; 4] = [180, 184, 190, 255];
 
 /// ZFPlus: the editor's grids, for collages and comparisons.
@@ -3492,16 +3505,7 @@ impl PictureEdit {
         // colour is picked, so the photo never shows behind its boxes: the
         // photo is one of the pictures on it, moved and sized like them.
         {
-            let ground = self.grid_ground.unwrap_or([255, 255, 255, 255]);
-            marks.push(Mark {
-                tool: MarkTool::Rectangle,
-                points: vec![[area[0], area[1]], [area[2], area[3]]],
-                color: ground,
-                width: 0.002,
-                fill: Some(ground),
-                grid: 1,
-                ..Mark::default()
-            });
+            marks.push(self.canvas_ground(area));
         }
         let slot_line = if self.grid_lines {
             GRID_SLOT_LINE
@@ -3519,6 +3523,15 @@ impl PictureEdit {
             let picture = match (&original, index) {
                 (Some(image), 0) => Some((std::sync::Arc::clone(image), 2)),
                 _ => kept.pop().map(|image| (image, 3)),
+            };
+            // On a free canvas the photo starts smaller, in the middle, with
+            // the canvas round it to move it on.
+            let slot = if layout == GridLayout::Free {
+                let (cx, cy) = ((slot[0] + slot[2]) / 2.0, (slot[1] + slot[3]) / 2.0);
+                let (hx, hy) = ((slot[2] - slot[0]) * 0.33, (slot[3] - slot[1]) * 0.33);
+                [cx - hx, cy - hy, cx + hx, cy + hy]
+            } else {
+                slot
             };
             match picture {
                 Some((image, part)) => {
@@ -3553,34 +3566,63 @@ impl PictureEdit {
         self.selected = first_empty.map(|at| base + at);
     }
 
-    /// ZFPlus: crops what is shown to the pictures, text and drawings on
-    /// it, so a grid or canvas ends where its pictures do.
-    pub fn fit_to_content(&mut self) {
-        let mut bounds: Option<[f32; 4]> = None;
-        for mark in self.marks.iter().filter(|mark| mark.grid != 1) {
-            let [left, top, right, bottom] = mark.bounds();
-            bounds = Some(match bounds {
-                None => [left, top, right, bottom],
-                Some([l, t, r, b]) => [l.min(left), t.min(top), r.max(right), b.max(bottom)],
-            });
+    /// ZFPlus: the canvas a grid or free canvas lies on, filling `area`:
+    /// white unless a colour is picked. The photo is not drawn under it.
+    fn canvas_ground(&self, area: [f32; 4]) -> Mark {
+        let ground = self.grid_ground.unwrap_or([255, 255, 255, 255]);
+        Mark {
+            tool: MarkTool::Rectangle,
+            points: vec![[area[0], area[1]], [area[2], area[3]]],
+            color: ground,
+            width: 0.002,
+            fill: Some(ground),
+            grid: CANVAS_GROUND,
+            ..Mark::default()
         }
-        let Some([left, top, right, bottom]) = bounds else {
-            return;
-        };
+    }
+
+    /// ZFPlus: the canvas's colour, when the picture is a canvas (a grid
+    /// or a free canvas) rather than the photo with marks on it.
+    pub fn canvas(&self) -> Option<[u8; 4]> {
+        self.marks
+            .iter()
+            .find(|mark| mark.grid == CANVAS_GROUND)
+            .map(|mark| mark.fill.unwrap_or([255, 255, 255, 255]))
+    }
+
+    /// ZFPlus: the photo becomes a picture to move and size like any other,
+    /// on a canvas of what is shown, at first exactly where it was; what it
+    /// leaves when made smaller is the canvas, never the photo again.
+    pub fn photo_as_object(&mut self, original: StampImage) -> Option<usize> {
+        if self.canvas().is_some() {
+            return None;
+        }
         let (wide, tall) = self.displayed_size();
         let (wide_f, tall_f) = (wide.max(1) as f32, tall.max(1) as f32);
-        let x = (left.clamp(0.0, 1.0) * wide_f).floor() as u32;
-        let y = (top.clamp(0.0, 1.0) * tall_f).floor() as u32;
-        let right = (right.clamp(0.0, 1.0) * wide_f).ceil() as u32;
-        let bottom = (bottom.clamp(0.0, 1.0) * tall_f).ceil() as u32;
-        if right > x + 8 && bottom > y + 8 {
-            self.crop = PictureCrop {
-                x,
-                y,
-                width: right - x,
-                height: bottom - y,
-            };
-        }
+        let crop = self.crop;
+        let area = [
+            crop.x as f32 / wide_f,
+            crop.y as f32 / tall_f,
+            (crop.x + crop.width) as f32 / wide_f,
+            (crop.y + crop.height) as f32 / tall_f,
+        ];
+        let ground = self.canvas_ground(area);
+        let photo = Mark {
+            tool: MarkTool::Stamp,
+            points: vec![[0.0, 0.0], [1.0, 1.0]],
+            stamp: Some(Stamp {
+                image: std::sync::Arc::new(original),
+                text: None,
+            }),
+            grid: 2,
+            ..Mark::default()
+        };
+        self.change(|marks| {
+            marks.insert(0, photo);
+            marks.insert(0, ground);
+        });
+        self.selected = Some(1);
+        self.selected
     }
 
     /// ZFPlus: a copy of the mark at `at`, a little aside, picked: what a
@@ -3588,7 +3630,7 @@ impl PictureEdit {
     pub fn duplicate(&mut self, at: usize, offset: [f32; 2]) -> Option<usize> {
         let mut copy = self.marks.get(at)?.moved(offset);
         // A copy is a picture of its own, not part of the grid.
-        if copy.grid != 1 {
+        if copy.grid != 1 && copy.grid != CANVAS_GROUND {
             copy.grid = 0;
         }
         self.change(|marks| marks.push(copy));
@@ -3599,7 +3641,7 @@ impl PictureEdit {
     /// ZFPlus: puts a mark copied before on the picture, a little aside.
     pub fn paste_mark(&mut self, mark: &Mark) {
         let mut copy = mark.moved([0.03, 0.03]);
-        if copy.grid != 1 {
+        if copy.grid != 1 && copy.grid != CANVAS_GROUND {
             copy.grid = 0;
         }
         self.commit_writing();
@@ -5509,10 +5551,23 @@ mod tests {
         let copy = edit.duplicate(at, [0.05, 0.05]).unwrap();
         assert_eq!(edit.marks[copy].grid, 0);
         assert_eq!(edit.selected, Some(copy));
-        // Fitting crops what is shown to the pictures, not the canvas.
-        let before = edit.crop;
-        edit.fit_to_content();
-        assert!(edit.crop.width < before.width);
+        // The canvas is white, and the photo is never drawn beneath it.
+        assert_eq!(edit.canvas(), Some([255, 255, 255, 255]));
+        // Without a grid, the photo becomes a picture where it was, on a
+        // canvas, once.
+        edit.remove_grid();
+        assert_eq!(edit.canvas(), None);
+        let photo = StampImage {
+            width: 8,
+            height: 6,
+            rgba: vec![9; 8 * 6 * 4],
+        };
+        let at = edit
+            .photo_as_object(photo.clone())
+            .expect("the photo is picked");
+        assert_eq!(edit.marks[at].bounds(), [0.0, 0.0, 1.0, 1.0]);
+        assert!(edit.canvas().is_some());
+        assert_eq!(edit.photo_as_object(photo), None);
     }
 
     /// ZFPlus: a stroke drawn almost straight becomes a straight line; a

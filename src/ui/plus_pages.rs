@@ -11,7 +11,8 @@ use egui::{Color32, Vec2};
 
 /// The page's height, the same however much it holds.
 fn page_height(ui: &egui::Ui) -> f32 {
-    (ui.ctx().content_rect().height() - 140.0).clamp(300.0, 820.0)
+    // ZFPlus: pages fill the window, so they take all of its height.
+    ui.available_height().max(200.0)
 }
 
 /// Whether the page was opened this frame (not drawn the frame before), to
@@ -59,18 +60,35 @@ fn clear_field(ui: &egui::Ui, id: &str) {
     ui.data_mut(|data| data.remove::<String>(egui::Id::new(("plus-field", id))));
 }
 
+// The pages' picture textures, the last few only, so looking through many
+// statuses does not hold every picture in memory.
+thread_local! {
+    static KEPT: std::cell::RefCell<std::collections::VecDeque<(String, egui::TextureHandle)>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// ZFPlus: lets the pages' pictures go once no page that shows them is
+/// open, so they hold no memory while the chats are in use.
+pub(crate) fn release_textures(app: &App) {
+    let open = matches!(
+        app.dialog,
+        Some(Dialog::Status | Dialog::Channels | Dialog::Communities | Dialog::BusinessTools)
+    );
+    if !open {
+        KEPT.with(|kept| {
+            if !kept.borrow().is_empty() {
+                kept.borrow_mut().clear();
+            }
+        });
+    }
+}
+
 /// A texture for `bytes` (a picture file's contents), made once per key.
-/// ZFPlus: only the last few are kept, so looking through many statuses
-/// does not hold every picture in memory.
-fn picture_texture(
+pub(crate) fn picture_texture(
     ui: &egui::Ui,
     key: &str,
     bytes: impl FnOnce() -> Option<Vec<u8>>,
 ) -> Option<egui::TextureHandle> {
-    thread_local! {
-        static KEPT: std::cell::RefCell<std::collections::VecDeque<(String, egui::TextureHandle)>> =
-            const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
-    }
     if let Some(texture) = KEPT.with(|kept| {
         kept.borrow()
             .iter()
@@ -90,7 +108,7 @@ fn picture_texture(
     );
     KEPT.with(|kept| {
         let mut kept = kept.borrow_mut();
-        if kept.len() >= 4 {
+        if kept.len() >= 3 {
             kept.pop_front();
         }
         kept.push_back((key.to_owned(), texture.clone()));
@@ -104,7 +122,7 @@ fn show_picture(ui: &mut egui::Ui, texture: &egui::TextureHandle, room: Vec2) {
     ui.add(egui::Image::new(texture).fit_to_exact_size(size * scale));
 }
 
-const STATUS_COLORS: [[u8; 4]; 8] = [
+pub(crate) const STATUS_COLORS: [[u8; 4]; 8] = [
     [0, 128, 105, 255],
     [84, 101, 255, 255],
     [255, 138, 140, 255],
@@ -116,7 +134,7 @@ const STATUS_COLORS: [[u8; 4]; 8] = [
 ];
 
 /// "Today at 10:36", or the day and time for an older one.
-fn when(timestamp: i64) -> String {
+pub(crate) fn when(timestamp: i64) -> String {
     let zone = jiff::tz::TimeZone::system();
     let Ok(at) = jiff::Timestamp::from_second(timestamp) else {
         return String::new();
@@ -140,7 +158,7 @@ fn panes(
 ) {
     let height = page_height(ui);
     let width = ui.available_width();
-    let list = (width * 0.4).clamp(260.0, 360.0);
+    let list = (width * 0.34).clamp(300.0, 440.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             Vec2::new(list, height),
@@ -224,7 +242,7 @@ fn placeholder(ui: &mut egui::Ui, app: &App, icon: Icon, title: &str, line: &str
 
 /// What Status's right pane shows.
 #[derive(Clone, Debug, Default, PartialEq)]
-enum StatusView {
+pub(crate) enum StatusView {
     #[default]
     Nothing,
     /// Someone's updates, one at a time, from `index` (0 the oldest).
@@ -243,7 +261,7 @@ enum StatusView {
 }
 
 /// How long a status shows before the next, as WhatsApp plays them.
-fn status_seconds(post: &StatusPost) -> f64 {
+pub(crate) fn status_seconds(post: &StatusPost) -> f64 {
     match post.kind {
         StatusKind::Video => f64::from(post.seconds.clamp(1, 60)),
         StatusKind::Text => (5.0 + post.text.chars().count() as f64 / 40.0).min(12.0),
@@ -324,7 +342,14 @@ pub fn status(app: &mut App, ui: &mut egui::Ui) {
                 StatusView::Compose(photo) => status_composer(ui, app, photo, &mut view),
                 StatusView::Privacy => status_privacy(ui, app, &mut view),
                 StatusView::Viewing { .. } => {
-                    status_viewer(ui, app, &senders, &order, &mut view, now);
+                    // The update plays over the whole window.
+                    placeholder(
+                        ui,
+                        app,
+                        Icon::CircleDashed,
+                        "Viewing a status",
+                        "Space pauses, the arrow keys step, Escape closes.",
+                    );
                 }
                 StatusView::Nothing => {
                     placeholder(
@@ -364,7 +389,10 @@ pub fn status(app: &mut App, ui: &mut egui::Ui) {
             }
         },
     );
-    let view = view.into_inner();
+    let mut view = view.into_inner();
+    if matches!(view, StatusView::Viewing { .. }) {
+        super::plus_status::stage(app, ui.ctx(), &senders, &mut view, now);
+    }
     ui.data_mut(|data| data.insert_temp(view_id, view));
 }
 
@@ -487,12 +515,7 @@ fn status_list(
     match mine {
         Some((sender, _)) => {
             if row.clicked() {
-                *view = StatusView::Viewing {
-                    sender: sender.clone(),
-                    index: 0,
-                    started: now,
-                    paused: None,
-                };
+                *view = super::plus_status::open(ui, sender, 0, vec![sender.clone()], now);
             }
         }
         None => {
@@ -507,7 +530,11 @@ fn status_list(
         ui.add_space(2.0);
     };
     let unseen = |posts: &Vec<StatusPost>| posts.iter().any(|post| !post.seen);
-    let row_of = |ui: &mut egui::Ui, app: &mut App, sender: &str, view: &mut StatusView| {
+    let row_of = |ui: &mut egui::Ui,
+                  app: &mut App,
+                  sender: &str,
+                  view: &mut StatusView,
+                  queue: &[&String]| {
         let Some((_, posts)) = senders.iter().find(|(who, _)| who == sender) else {
             return;
         };
@@ -534,14 +561,11 @@ fn status_list(
         )
         .clicked()
         {
-            // The first one not seen yet, oldest first.
-            let first = posts.iter().rev().position(|post| !post.seen).unwrap_or(0);
-            *view = StatusView::Viewing {
-                sender: sender.to_owned(),
-                index: first,
-                started: now,
-                paused: None,
-            };
+            // The first one not seen yet, oldest first; playing on goes
+            // through the rest of the list as it stands now.
+            let first = super::plus_status::first_unseen(posts);
+            let queue = queue.iter().map(|who| (*who).clone()).collect();
+            *view = super::plus_status::open(ui, sender, first, queue, now);
         }
     };
     let find = |sender: &String| senders.iter().find(|(who, _)| who == sender);
@@ -566,16 +590,18 @@ fn status_list(
             palette.dim,
         );
     }
+    // Recent, then Viewed, play on as one run.
+    let run: Vec<&String> = recent.iter().chain(viewed.iter()).copied().collect();
     if !recent.is_empty() {
         section(ui, "Recent");
-        for sender in recent {
-            row_of(ui, app, sender, view);
+        for sender in &recent {
+            row_of(ui, app, sender, view, &run);
         }
     }
     if !viewed.is_empty() {
         section(ui, "Viewed");
-        for sender in viewed {
-            row_of(ui, app, sender, view);
+        for sender in &viewed {
+            row_of(ui, app, sender, view, &run);
         }
     }
     if !muted.is_empty() {
@@ -603,375 +629,8 @@ fn status_list(
         }
         ui.data_mut(|data| data.insert_temp(open_id, open));
         if open {
-            for sender in muted {
-                row_of(ui, app, sender, view);
-            }
-        }
-    }
-}
-
-/// One status at full size, playing: a segment per update filling as it
-/// shows, who and when, pause and sound, the update itself, and saving it
-/// as sent or sharpened larger. The next update, then the next person's,
-/// follows on its own.
-fn status_viewer(
-    ui: &mut egui::Ui,
-    app: &mut App,
-    senders: &[(String, Vec<StatusPost>)],
-    order: &[String],
-    view: &mut StatusView,
-    now: f64,
-) {
-    let palette = app.palette;
-    let StatusView::Viewing {
-        sender,
-        index,
-        started,
-        paused,
-    } = view.clone()
-    else {
-        return;
-    };
-    let Some((_, posts)) = senders.iter().find(|(who, _)| *who == sender) else {
-        *view = StatusView::Nothing;
-        return;
-    };
-    let count = posts.len();
-    let index = index.min(count - 1);
-    let post = posts[count - 1 - index].clone();
-    // Seen here, and only here: the sender is not told.
-    if !post.seen {
-        app.actions
-            .push(Action::Plus(PlusRequest::StatusSeen(post.id.clone())));
-        for kept in app.statuses.iter_mut().filter(|kept| kept.id == post.id) {
-            kept.seen = true;
-        }
-    }
-    let key = format!("{}{}", crate::app::STATUS_VIDEO, post.id);
-    // Another update's video stops as this one shows.
-    if app
-        .video
-        .message()
-        .is_some_and(|playing| playing.starts_with(crate::app::STATUS_VIDEO) && playing != key)
-    {
-        app.video.stop();
-    }
-    // Photos and videos are fetched as they come up, at full quality.
-    if matches!(post.kind, StatusKind::Image | StatusKind::Video)
-        && !app.status_media.contains_key(&post.id)
-    {
-        app.actions
-            .push(Action::Plus(PlusRequest::DownloadStatus(post.id.clone())));
-        app.status_media.insert(post.id.clone(), Err(String::new()));
-    }
-    let fetched = app
-        .status_media
-        .get(&post.id)
-        .and_then(|result| result.as_ref().ok())
-        .cloned();
-    let failed = app
-        .status_media
-        .get(&post.id)
-        .is_some_and(|result| matches!(result, Err(error) if !error.is_empty()));
-    // How far along this update is, 0 to 1.
-    let video = (post.kind == StatusKind::Video)
-        .then(|| app.video.status(&key))
-        .flatten();
-    // A video starts once; when the player lets it go, it has ended (or
-    // went to the system player).
-    let began_id = egui::Id::new("status-video-began");
-    let begun = ui.data(|data| data.get_temp::<String>(began_id)).as_deref() == Some(key.as_str());
-    if let (Some(path), true) = (&fetched, post.kind == StatusKind::Video) {
-        app.video.saw(&key);
-        if app.video.message() != Some(key.as_str()) && paused.is_none() && !begun {
-            app.play_status_video(&key, path);
-            ui.data_mut(|data| data.insert_temp(began_id, key.clone()));
-        }
-    }
-    let video_done = post.kind == StatusKind::Video && begun && video.is_none();
-    let waiting = match post.kind {
-        StatusKind::Image => fetched.is_none() && !failed,
-        StatusKind::Video => video.is_none() && !failed && !begun,
-        _ => false,
-    };
-    let progress = match &video {
-        Some(state) if !state.total.is_zero() => state.fraction() as f64,
-        _ if waiting => 0.0,
-        _ => ((paused.unwrap_or(now) - started) / status_seconds(&post)).clamp(0.0, 1.0),
-    };
-    // A picture still on its way does not use up its time.
-    let started = if waiting && paused.is_none() {
-        now
-    } else {
-        started
-    };
-    let ended = video_done
-        || match &video {
-            Some(state) if !state.total.is_zero() => {
-                state.position + std::time::Duration::from_millis(150) >= state.total
-            }
-            _ => progress >= 1.0 && !waiting,
-        };
-    let width = ui.available_width() - 24.0;
-    let (bar, _) = ui.allocate_exact_size(Vec2::new(width, 4.0), egui::Sense::hover());
-    let gap = 4.0;
-    let piece = ((bar.width() - gap * (count as f32 - 1.0)) / count as f32).max(2.0);
-    for at in 0..count {
-        let left = bar.left() + at as f32 * (piece + gap);
-        let rect = egui::Rect::from_min_size(egui::pos2(left, bar.top()), Vec2::new(piece, 3.0));
-        ui.painter().rect_filled(rect, 1.5, palette.dim);
-        let filled = match at.cmp(&index) {
-            std::cmp::Ordering::Less => 1.0,
-            std::cmp::Ordering::Equal => progress as f32,
-            std::cmp::Ordering::Greater => 0.0,
-        };
-        if filled > 0.0 {
-            let mut done = rect;
-            done.set_width(piece * filled);
-            ui.painter().rect_filled(done, 1.5, palette.text);
-        }
-    }
-    ui.add_space(8.0);
-    let mut next: Option<StatusView> = None;
-    let advance = |index: usize| -> StatusView {
-        if index + 1 < count {
-            return StatusView::Viewing {
-                sender: sender.clone(),
-                index: index + 1,
-                started: now,
-                paused: None,
-            };
-        }
-        // The next person in the list, from their first update not seen.
-        let after = order
-            .iter()
-            .position(|who| *who == sender)
-            .map_or(0, |at| at + 1);
-        match order.get(after) {
-            Some(who) if !posts[0].mine => {
-                let first = senders
-                    .iter()
-                    .find(|(found, _)| found == who)
-                    .and_then(|(_, posts)| posts.iter().rev().position(|post| !post.seen))
-                    .unwrap_or(0);
-                StatusView::Viewing {
-                    sender: who.clone(),
-                    index: first,
-                    started: now,
-                    paused: None,
-                }
-            }
-            _ => StatusView::Nothing,
-        }
-    };
-    ui.horizontal(|ui| {
-        let name = if post.mine {
-            "My status".to_owned()
-        } else {
-            app.display_name(&sender)
-        };
-        let picture = app.avatar(&sender);
-        let (face, _) = ui.allocate_exact_size(Vec2::splat(36.0), egui::Sense::hover());
-        super::widgets::paint_avatar(ui, &palette, face, &name, &sender, picture.as_deref());
-        ui.vertical(|ui| {
-            let room = (ui.available_width() - 120.0).max(60.0);
-            let title = super::widgets::line(ui, &name, theme::medium(14.5), palette.text, room, 1);
-            let (spot, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
-            title.paint(ui, spot.min, palette.text);
-            theme::text(
-                ui,
-                when(post.timestamp),
-                theme::regular(12.0),
-                palette.secondary,
-            );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::icon_button(ui, Icon::X, 18.0, palette.secondary, palette.text, "Close")
-                .clicked()
-            {
-                next = Some(StatusView::Nothing);
-            }
-            if post.kind == StatusKind::Video
-                && theme::icon_button(
-                    ui,
-                    if app.video.muted() {
-                        Icon::VolumeX
-                    } else {
-                        Icon::Volume2
-                    },
-                    18.0,
-                    palette.secondary,
-                    palette.text,
-                    "Sound",
-                )
-                .clicked()
-            {
-                app.actions.push(Action::ToggleVideoSound);
-            }
-            let (icon, tip) = if paused.is_some() {
-                (Icon::Play, "Play")
-            } else {
-                (Icon::Pause, "Pause")
-            };
-            if theme::icon_button(ui, icon, 18.0, palette.secondary, palette.text, tip).clicked() {
-                if let (Some(path), true) = (&fetched, post.kind == StatusKind::Video)
-                    && app.video.message() == Some(key.as_str())
-                {
-                    app.play_status_video(&key, path);
-                }
-                next = Some(StatusView::Viewing {
-                    sender: sender.clone(),
-                    index,
-                    // Resuming carries on from where it stopped.
-                    started: match paused {
-                        Some(at) => started + (now - at),
-                        None => started,
-                    },
-                    paused: if paused.is_some() { None } else { Some(now) },
-                });
-            }
-        });
-    });
-    ui.add_space(8.0);
-    let room = Vec2::new(width, (ui.available_height() - 80.0).max(120.0));
-    let arrows = ui.input(|input| {
-        (
-            input.key_pressed(egui::Key::ArrowLeft),
-            input.key_pressed(egui::Key::ArrowRight),
-        )
-    });
-    ui.horizontal(|ui| {
-        if ui
-            .add_enabled(
-                index > 0,
-                egui::Button::new(egui::RichText::new("‹").size(28.0)).frame(false),
-            )
-            .clicked()
-            || (arrows.0 && index > 0)
-        {
-            next = Some(StatusView::Viewing {
-                sender: sender.clone(),
-                index: index - 1,
-                started: now,
-                paused: None,
-            });
-        }
-        ui.allocate_ui_with_layout(
-            Vec2::new(room.x - 80.0, room.y),
-            egui::Layout::top_down(egui::Align::Center),
-            |ui| match post.kind {
-                StatusKind::Text | StatusKind::Other => {
-                    let [r, g, b, _] = post.background.unwrap_or(STATUS_COLORS[0]);
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(r, g, b))
-                        .corner_radius(10.0)
-                        .inner_margin(28.0)
-                        .show(ui, |ui| {
-                            ui.set_min_size(Vec2::new(
-                                (room.x - 140.0).max(200.0),
-                                (room.y - 60.0).max(160.0),
-                            ));
-                            ui.vertical_centered(|ui| {
-                                ui.add_space(((room.y - 160.0) / 2.0).max(0.0));
-                                ui.label(
-                                    egui::RichText::new(&post.text)
-                                        .size(24.0)
-                                        .color(Color32::WHITE),
-                                );
-                            });
-                        });
-                }
-                StatusKind::Image | StatusKind::Video => {
-                    let frame = video.as_ref().and_then(|state| state.frame.clone());
-                    let shown = match (&fetched, post.kind, frame) {
-                        (_, StatusKind::Video, Some(frame)) => Some(frame),
-                        (Some(path), StatusKind::Image, _) => {
-                            let path = path.clone();
-                            picture_texture(ui, &post.id, move || std::fs::read(path).ok())
-                        }
-                        _ => post.thumbnail.as_ref().and_then(|bytes| {
-                            let bytes = bytes.clone();
-                            picture_texture(ui, &format!("{}-preview", post.id), move || {
-                                Some(bytes.to_vec())
-                            })
-                        }),
-                    };
-                    if let Some(texture) = shown {
-                        show_picture(ui, &texture, Vec2::new(room.x - 100.0, room.y - 40.0));
-                    }
-                    if waiting {
-                        theme::spinner(ui, 18.0, palette.accent);
-                    }
-                    if !post.text.is_empty() {
-                        theme::paragraph(ui, &post.text, theme::regular(14.0), palette.text);
-                    }
-                }
-            },
-        );
-        let can_go_on = index + 1 < count || !posts[0].mine;
-        if ui
-            .add_enabled(
-                can_go_on,
-                egui::Button::new(egui::RichText::new("›").size(28.0)).frame(false),
-            )
-            .clicked()
-            || (arrows.1 && can_go_on)
-        {
-            next = Some(advance(index));
-        }
-    });
-    if matches!(post.kind, StatusKind::Image | StatusKind::Video) {
-        ui.horizontal(|ui| {
-            ui.add_space((ui.available_width() / 2.0 - 220.0).max(0.0));
-            if let Some(path) = &fetched {
-                if theme::soft_button(ui, &palette, Some(Icon::Download), "Save original", false)
-                    .on_hover_text("As sent, not compressed again")
-                    .clicked()
-                {
-                    save_as(path.clone(), None);
-                }
-                if post.kind == StatusKind::Image
-                    && theme::soft_button(
-                        ui,
-                        &palette,
-                        Some(Icon::Sparkles),
-                        "Save sharper (2×)",
-                        false,
-                    )
-                    .on_hover_text("Twice as large, resampled and sharpened")
-                    .clicked()
-                {
-                    save_as(path.clone(), Some(2));
-                }
-                if theme::soft_button(ui, &palette, Some(Icon::ExternalLink), "Open", false)
-                    .clicked()
-                {
-                    app.actions.push(Action::OpenFile(path.clone()));
-                }
-            } else if failed {
-                theme::text(
-                    ui,
-                    "WhatsApp could not send this one; try again later.",
-                    theme::regular(12.5),
-                    palette.dim,
-                );
-            }
-        });
-    }
-    match next {
-        Some(next) => *view = next,
-        None if ended && paused.is_none() => *view = advance(index),
-        None => {
-            *view = StatusView::Viewing {
-                sender: sender.clone(),
-                index,
-                started,
-                paused,
-            };
-            // The bar fills smoothly enough at a dozen frames a second.
-            if paused.is_none() {
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(80));
+            for sender in &muted {
+                row_of(ui, app, sender, view, &muted);
             }
         }
     }
@@ -1241,7 +900,7 @@ fn status_privacy(ui: &mut egui::Ui, app: &mut App, view: &mut StatusView) {
     });
     ui.add_space(12.0);
     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-        ui.set_max_width(520.0);
+        ui.set_max_width(560.0);
         theme::text(
             ui,
             "Who can see my statuses on WhatsApp",
@@ -1288,40 +947,36 @@ fn status_privacy(ui: &mut egui::Ui, app: &mut App, view: &mut StatusView) {
             ui.add_space(6.0);
         }
         if draft.0 != StatusAudience::Contacts {
+            // Saved contacts with WhatsApp, as the phone offers; those
+            // picked stand at the top.
             ui.add_space(4.0);
-            let search_id = egui::Id::new("status-privacy-search");
-            let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
-            ui.add(
-                egui::TextEdit::singleline(&mut search)
-                    .hint_text("Search contacts")
-                    .desired_width(f32::INFINITY),
+            theme::text(
+                ui,
+                if draft.0 == StatusAudience::Except {
+                    "Hide my status from"
+                } else {
+                    "Share my status with"
+                },
+                theme::medium(13.0),
+                palette.secondary,
             );
-            let needle = crate::util::search_key(search.trim());
+            ui.add_space(4.0);
             let people = saved_people(app);
-            let shown: Vec<&(String, String)> = people
-                .iter()
-                .filter(|(_, name)| {
-                    needle.is_empty()
-                        || crate::util::search_matches(&crate::util::search_key(name), &needle)
-                })
-                .collect();
-            egui::ScrollArea::vertical()
-                .id_salt("status-privacy-people")
-                .max_height((ui.available_height() - 60.0).max(120.0))
-                .auto_shrink([false, true])
-                .show_rows(ui, 24.0, shown.len(), |ui, range| {
-                    for (id, name) in &shown[range] {
-                        let mut on = draft.1.contains(id);
-                        if ui.checkbox(&mut on, name.as_str()).changed() {
-                            if on {
-                                draft.1.push(id.clone());
-                            } else {
-                                draft.1.retain(|kept| kept != id);
-                            }
-                        }
-                    }
-                });
-            ui.data_mut(|data| data.insert_temp(search_id, search));
+            let room = (ui.available_height() - 70.0).max(160.0);
+            super::plus_people::picker(ui, app, "status-privacy", &people, &mut draft.1, room);
+            ui.add_space(4.0);
+            let count = draft.1.len();
+            theme::text(
+                ui,
+                &match (draft.0, count) {
+                    (StatusAudience::Except, 1) => "1 contact excluded".to_owned(),
+                    (StatusAudience::Except, n) => format!("{n} contacts excluded"),
+                    (_, 1) => "1 contact included".to_owned(),
+                    (_, n) => format!("{n} contacts included"),
+                },
+                theme::regular(12.5),
+                palette.secondary,
+            );
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -1352,7 +1007,7 @@ fn status_privacy(ui: &mut egui::Ui, app: &mut App, view: &mut StatusView) {
 
 /// The saved contacts with WhatsApp numbers, by name, kept until the
 /// contacts change.
-fn saved_people(app: &App) -> std::rc::Rc<Vec<(String, String)>> {
+pub(crate) fn saved_people(app: &App) -> std::rc::Rc<Vec<(String, String)>> {
     type People = std::rc::Rc<Vec<(String, String)>>;
     thread_local! {
         static KEPT: std::cell::RefCell<Option<(usize, People)>> =
@@ -1567,49 +1222,38 @@ pub fn communities(app: &mut App, ui: &mut egui::Ui) {
                 );
             }
             Some(Ok(communities)) => {
+                let picked: Option<String> =
+                    ui.data(|data| data.get_temp(super::plus_community::picked_id()));
                 for community in communities {
-                    person_line(ui, app, &community.id, &community.name, "", None, false);
+                    let lit = picked.as_deref() == Some(community.id.as_str());
+                    if person_line(ui, app, &community.id, &community.name, "", None, lit).clicked()
+                    {
+                        ui.data_mut(|data| {
+                            data.insert_temp(
+                                super::plus_community::picked_id(),
+                                community.id.clone(),
+                            )
+                        });
+                    }
                     let open = expanded.contains(&community.id);
                     let shown = if open {
                         community.groups.len()
                     } else {
                         community.groups.len().min(3)
                     };
-                    for (group, name, joined) in community.groups.iter().take(shown) {
-                        let (second, unread) = app
-                            .chat(group)
-                            .map(|chat| {
-                                (
-                                    chat.last
-                                        .as_ref()
-                                        .map(|last| last.summary.clone())
-                                        .unwrap_or_default(),
-                                    chat.unread,
-                                )
-                            })
-                            .unwrap_or_default();
-                        let second = if !*joined {
-                            "Not joined · click to join".to_owned()
-                        } else if unread > 0 {
-                            format!("{second}  ({unread} new)")
-                        } else {
-                            second
-                        };
-                        ui.indent(group, |ui| {
-                            if person_line(ui, app, group, name, &second, None, false).clicked() {
-                                if *joined {
-                                    app.actions.push(Action::CloseDialog);
-                                    app.actions.push(Action::OpenChat(group.clone()));
-                                } else {
-                                    app.actions.push(Action::Plus(
-                                        PlusRequest::JoinCommunityGroup {
-                                            community: community.id.clone(),
-                                            group: group.clone(),
-                                        },
-                                    ));
-                                }
-                            }
-                        });
+                    let ordered = super::plus_community::ordered(&community);
+                    for (group, name, joined) in ordered.iter().take(shown) {
+                        let announcements =
+                            community.announcements.as_deref() == Some(group.as_str());
+                        super::plus_community::group_row(
+                            ui,
+                            app,
+                            &community.id,
+                            group,
+                            name,
+                            *joined,
+                            announcements,
+                        );
                     }
                     if community.groups.len() > 3 {
                         let label = if open { "Show less" } else { "View all" };
@@ -1632,6 +1276,36 @@ pub fn communities(app: &mut App, ui: &mut egui::Ui) {
             }
         },
         |ui, app| {
+            // A picked community, as Community info shows it.
+            let picked: Option<String> =
+                ui.data(|data| data.get_temp(super::plus_community::picked_id()));
+            let shown = match (&picked, &app.communities) {
+                (Some(id), Some(Ok(communities))) => {
+                    communities.iter().find(|found| found.id == *id).cloned()
+                }
+                _ => None,
+            };
+            if let Some(community) = shown {
+                ui.horizontal(|ui| {
+                    if theme::icon_button(
+                        ui,
+                        Icon::X,
+                        18.0,
+                        palette.secondary,
+                        palette.text,
+                        "Close community info",
+                    )
+                    .clicked()
+                    {
+                        ui.data_mut(|data| {
+                            data.remove::<String>(super::plus_community::picked_id())
+                        });
+                    }
+                    theme::text(ui, "Community info", theme::semibold(16.0), palette.text);
+                });
+                super::plus_community::info(app, ui, &community);
+                return;
+            }
             placeholder(
                 ui,
                 app,

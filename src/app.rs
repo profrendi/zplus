@@ -2655,7 +2655,24 @@ impl App {
                 }
                 self.status_media.insert(id, result);
             }
-            PlusAnswer::Communities(communities) => self.communities = Some(communities),
+            PlusAnswer::Communities(communities) => {
+                // A community's picture is asked for by its own route, now
+                // that it is known to be one: ask again.
+                if let Ok(found) = &communities {
+                    let account = self.account_mut();
+                    for community in found {
+                        if account
+                            .avatars
+                            .get(&community.id)
+                            .is_some_and(Option::is_none)
+                        {
+                            account.avatars.remove(&community.id);
+                            account.avatar_requests.remove(&community.id);
+                        }
+                    }
+                }
+                self.communities = Some(communities);
+            }
             PlusAnswer::Catalog(catalog) => self.catalog = Some(catalog),
             PlusAnswer::Done(Ok(said)) => self.toast(said),
             PlusAnswer::Done(Err(error)) => self.toast_error(error),

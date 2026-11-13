@@ -68,11 +68,14 @@ pub struct PlusSettings {
     /// Settings > Diagnostics: record CPU and frame times to the
     /// diagnostics folder (`crate::prof`). Off unless turned on.
     pub diagnostics: bool,
+    /// How strong Private Mode's blur is, 1 (light) to 10 (nothing shows).
+    pub blur_level: u8,
 }
 
 impl Default for PlusSettings {
     fn default() -> Self {
         Self {
+            blur_level: 6,
             private_mode: false,
             show_eye_button: true,
             eye_on: true,
@@ -547,6 +550,7 @@ struct BlurGl {
     u_texel: Option<glow::UniformLocation>,
     u_direction: Option<glow::UniformLocation>,
     u_sigma: Option<glow::UniformLocation>,
+    u_feather: Option<glow::UniformLocation>,
     u_masked: Option<glow::UniformLocation>,
     u_size: Option<glow::UniformLocation>,
     u_radius: Option<glow::UniformLocation>,
@@ -616,6 +620,19 @@ pub fn blur(
     shape: Shape,
     fill: Color32,
 ) {
+    blur_with(ui, palette, rect, shape, fill, 1.0);
+}
+
+/// `blur`, `strength` times as strong: a bubble's photo needs more than a
+/// line of text.
+pub fn blur_with(
+    ui: &egui::Ui,
+    palette: &crate::theme::Palette,
+    rect: Rect,
+    shape: Shape,
+    fill: Color32,
+    strength: f32,
+) {
     let visible = rect
         .intersect(ui.clip_rect())
         .intersect(ui.ctx().content_rect());
@@ -640,12 +657,16 @@ pub fn blur(
     let full = rect.size() * pixels_per_point;
     // A small area cannot hold a wide blur: keep it within a third of the
     // shorter side, so a name's line still blurs into its own colours.
-    let sigma = (BLUR_SIGMA * pixels_per_point)
-        .min(full.x.min(full.y) / 3.0)
+    // ZFPlus: as strong as Settings asks, and soft enough at the edge that
+    // it follows the shape beneath rather than showing a box.
+    let level = f32::from(get().blur_level.clamp(1, 10)) / 6.0;
+    let sigma = (BLUR_SIGMA * level * strength * pixels_per_point)
+        .min(full.x.min(full.y) * 0.75)
         .max(1.0);
+    let feather = (sigma * 0.9).clamp(1.0, 18.0 * pixels_per_point);
     let callback = egui_glow::CallbackFn::new(move |info, painter| {
         // SAFETY: GL calls on the painting thread, inside egui_glow's paint.
-        unsafe { paint_blur(&info, painter, corner, offset, full, sigma) };
+        unsafe { paint_blur(&info, painter, corner, offset, full, sigma, feather) };
     });
     ui.painter().add(egui::Shape::Callback(egui::PaintCallback {
         rect: visible,
@@ -664,6 +685,7 @@ unsafe fn paint_blur(
     offset: egui::Vec2,
     full: egui::Vec2,
     sigma: f32,
+    feather: f32,
 ) {
     let gl = painter.gl();
     let viewport = info.viewport_in_pixels();
@@ -767,6 +789,7 @@ unsafe fn paint_blur(
         );
         gl.uniform_2_f32(made.u_region.as_ref(), width as f32, height as f32);
         gl.uniform_1_f32(made.u_sigma.as_ref(), sigma);
+        gl.uniform_1_f32(made.u_feather.as_ref(), feather);
         // The shape in the copied area's pixels: where the full rectangle
         // starts, and its size. GL counts rows from the bottom.
         gl.uniform_4_f32(
@@ -857,6 +880,7 @@ unsafe fn make_blur(gl: &glow::Context, context: usize, window: u64) -> Result<B
          uniform vec2 u_texel;\n\
          uniform vec2 u_direction;\n\
          uniform float u_sigma;\n\
+         uniform float u_feather;\n\
          uniform float u_masked;\n\
          uniform vec4 u_size;\n\
          uniform float u_radius;\n\
@@ -886,7 +910,7 @@ unsafe fn make_blur(gl: &glow::Context, context: usize, window: u64) -> Result<B
            vec2 q = abs(px - half_size) - (half_size - vec2(r));\n\
            float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n\
            vec4 original = {sample}(u_original, clamp(uv, lo, hi));\n\
-           float inside = clamp(0.5 - d, 0.0, 1.0);\n\
+           float inside = clamp(0.5 - d / max(u_feather, 1.0), 0.0, 1.0);\n\
            FRAG = vec4(mix(original.rgb, blurred, inside), 1.0);\n\
          }}\n"
     );
@@ -947,6 +971,7 @@ unsafe fn make_blur(gl: &glow::Context, context: usize, window: u64) -> Result<B
             u_texel: gl.get_uniform_location(program, "u_texel"),
             u_direction: gl.get_uniform_location(program, "u_direction"),
             u_sigma: gl.get_uniform_location(program, "u_sigma"),
+            u_feather: gl.get_uniform_location(program, "u_feather"),
             u_masked: gl.get_uniform_location(program, "u_masked"),
             u_size: gl.get_uniform_location(program, "u_size"),
             u_radius: gl.get_uniform_location(program, "u_radius"),
@@ -973,8 +998,8 @@ pub fn blur_text(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, fil
         blur(
             ui,
             palette,
-            rect.expand2(vec2(4.0, 3.0)),
-            Shape::Rounded(6.0),
+            rect.expand2(vec2(7.0, 5.0)),
+            Shape::Rounded(10.0),
             fill,
         );
     }
@@ -990,7 +1015,7 @@ pub fn blur_bubble(ui: &egui::Ui, palette: &crate::theme::Palette, rect: Rect, o
         } else {
             palette.bubble_in
         };
-        blur(ui, palette, rect, Shape::Rounded(8.0), fill);
+        blur_with(ui, palette, rect, Shape::Rounded(10.0), fill, 2.2);
     }
 }
 

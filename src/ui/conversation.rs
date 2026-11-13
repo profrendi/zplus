@@ -495,10 +495,12 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                 let extra = room.right + caption_gap(room.right);
                 // ZFPlus: Pin and Mark read/unread in the header.
                 let plus = crate::plus::get();
-                // ZFPlus: and Add to list, always.
+                // ZFPlus: and Add to list, always, and a community's groups.
+                let in_community = super::plus_community::of(app, &chat.id).is_some();
                 let plus_buttons = f32::from(u8::from(plus.pin_button()))
                     + f32::from(u8::from(plus.mark_unread_button()))
-                    + 1.0;
+                    + 1.0
+                    + if in_community { 1.4 } else { 0.0 };
                 let buttons = if narrow { 3.0 } else { 2.0 } + call_buttons + plus_buttons;
                 // In a narrow pane, or on vibrant glass, which takes more room,
                 // Search and the call buttons go into More rather than push
@@ -925,6 +927,13 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                                 ui.set_min_width(220.0);
                                 super::labels::list_ticks(app, ui, &chat_now, &palette);
                             });
+                    }
+                    // ZFPlus: the community's picture, opening its groups.
+                    if in_community {
+                        if palette.vibrant() {
+                            ui.add_space(BUTTON_GAP);
+                        }
+                        super::plus_community::header_button(app, ui, &palette, &chat.id);
                     }
                     if plus.mark_unread_button() {
                         let unread = chat.looks_unread();

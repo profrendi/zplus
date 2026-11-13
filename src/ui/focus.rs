@@ -57,7 +57,6 @@ pub enum Stop {
     Channels,
     /// One chip in the label row, by its position among the labels.
     Label(u8),
-    ManageLabels,
 }
 
 #[derive(Clone, Copy, Debug)]
