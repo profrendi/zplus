@@ -11264,8 +11264,11 @@ mod tests {
             render(&mut app, &ctx);
         }
         let texts = painted_texts(&mut app, &ctx);
-        assert!(texts.iter().any(|text| text == "WA"), "{texts:?}");
-        assert!(texts.iter().any(|text| text == "NON WA"), "{texts:?}");
+        assert!(texts.iter().any(|text| text == "SAVE · WA"), "{texts:?}");
+        assert!(
+            texts.iter().any(|text| text == "SAVE · NON WA"),
+            "{texts:?}"
+        );
         press_labelled(
             &mut app,
             &ctx,

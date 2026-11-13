@@ -2531,6 +2531,71 @@ pub struct TextStyle {
     pub underline: bool,
     pub strike: bool,
     pub look: TextLook,
+    pub align: TextAlign,
+    pub list: TextList,
+}
+
+/// ZFPlus: how lines of text line up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+    Justify,
+}
+
+/// ZFPlus: lines as a list: bullets, numbers, or numbers by level (a line
+/// starting with a tab or two spaces per level goes one deeper).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextList {
+    #[default]
+    None,
+    Bullets,
+    Numbers,
+    Multilevel,
+}
+
+impl TextList {
+    /// The lines of `text` with their bullets or numbers in front.
+    pub fn apply(self, text: &str) -> String {
+        if self == TextList::None {
+            return text.to_owned();
+        }
+        let mut counters = [0u32; 6];
+        text.lines()
+            .map(|line| {
+                if line.trim().is_empty() {
+                    return String::new();
+                }
+                let spaces: usize = line
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .map(|c| if c == '\t' { 2 } else { 1 })
+                    .sum();
+                let level = (spaces / 2).min(5);
+                let words = line.trim_start();
+                counters[level] += 1;
+                for deeper in counters.iter_mut().skip(level + 1) {
+                    *deeper = 0;
+                }
+                let indent = "    ".repeat(level);
+                let mark = match self {
+                    TextList::Bullets => ["•", "◦", "▪"][level % 3].to_owned(),
+                    TextList::Numbers => format!("{}.", counters[level]),
+                    _ => {
+                        let parts: Vec<String> = counters[..=level]
+                            .iter()
+                            .map(|count| count.max(&1).to_string())
+                            .collect();
+                        format!("{}.", parts.join("."))
+                    }
+                };
+                format!("{indent}{mark} {words}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 impl Default for TextStyle {
@@ -2542,6 +2607,8 @@ impl Default for TextStyle {
             underline: false,
             strike: false,
             look: TextLook::default(),
+            align: TextAlign::Center,
+            list: TextList::None,
         }
     }
 }
@@ -2757,6 +2824,9 @@ pub struct Mark {
     pub angle: f32,
     /// ZFPlus: whether a placed picture is mirrored left to right.
     pub flipped: bool,
+    /// ZFPlus: what part of a grid it is: 0 none, 1 its ground or an empty
+    /// box, 2 the photo itself in the first box, 3 a picture put in a box.
+    pub grid: u8,
 }
 
 /// ZFPlus: one status update of the last day.
@@ -3059,6 +3129,27 @@ impl Mark {
         }
     }
 
+    /// ZFPlus: an upright mark stretched `across` times as wide and `down`
+    /// times as tall from its top left, so a picture or text can take any
+    /// shape.
+    pub fn stretched(&self, across: f32, down: f32) -> Self {
+        let [left, top, _, _] = self.bounds();
+        let (across, down) = (across.max(0.05), down.max(0.05));
+        Self {
+            points: self
+                .points
+                .iter()
+                .map(|&[x, y]| [left + (x - left) * across, top + (y - top) * down])
+                .collect(),
+            width: if self.stamp.is_some() {
+                self.width
+            } else {
+                (self.width * across.min(down)).clamp(0.001, 0.08)
+            },
+            ..self.clone()
+        }
+    }
+
     /// Whether `at` touches the mark, within `reach` (both in points of the
     /// picture as it is shown, `size` being its size there).
     pub fn hits(&self, at: [f32; 2], size: [f32; 2], reach: f32) -> bool {
@@ -3323,6 +3414,19 @@ impl PictureEdit {
         // The gap, the same on screen across and down.
         let gap_px = crop.width.min(crop.height) as f32 * 0.02;
         let gap = [gap_px / wide_f, gap_px / tall_f];
+        // A grid there before gives way, and the pictures put in its boxes
+        // move into the new one, in order.
+        let mut kept: Vec<std::sync::Arc<StampImage>> = self
+            .marks
+            .iter()
+            .filter(|mark| mark.grid == 3)
+            .filter_map(|mark| {
+                mark.stamp
+                    .as_ref()
+                    .map(|stamp| std::sync::Arc::clone(&stamp.image))
+            })
+            .collect();
+        kept.reverse();
         let mut marks = Vec::new();
         if let Some(ground) = self.grid_ground {
             marks.push(Mark {
@@ -3331,41 +3435,67 @@ impl PictureEdit {
                 color: ground,
                 width: 0.002,
                 fill: Some(ground),
+                grid: 1,
                 ..Mark::default()
             });
         }
-        let ground_marks = marks.len();
         let slot_line = if self.grid_lines {
             GRID_SLOT_LINE
         } else {
             GRID_SLOT_FILL
         };
         let original = original.map(std::sync::Arc::new);
+        let mut first_empty = None;
         for (index, cell) in layout.cells().iter().enumerate() {
             let left = area[0] + (area[2] - area[0]) * cell[0] + gap[0];
             let top = area[1] + (area[3] - area[1]) * cell[1] + gap[1];
             let right = area[0] + (area[2] - area[0]) * cell[2] - gap[0];
             let bottom = area[1] + (area[3] - area[1]) * cell[3] - gap[1];
             let slot = [left, top, right.max(left + 0.01), bottom.max(top + 0.01)];
-            match (&original, index) {
-                (Some(image), 0) => {
-                    marks.push(self.fitted_picture(std::sync::Arc::clone(image), slot))
+            let picture = match (&original, index) {
+                (Some(image), 0) => Some((std::sync::Arc::clone(image), 2)),
+                _ => kept.pop().map(|image| (image, 3)),
+            };
+            match picture {
+                Some((image, part)) => {
+                    let mut mark = self.fitted_picture(image, slot);
+                    mark.grid = part;
+                    marks.push(mark);
                 }
-                _ => marks.push(Mark {
-                    tool: MarkTool::Rectangle,
-                    points: vec![[slot[0], slot[1]], [slot[2], slot[3]]],
-                    color: slot_line,
-                    width: 0.003,
-                    fill: Some(GRID_SLOT_FILL),
-                    ..Mark::default()
-                }),
+                None => {
+                    first_empty.get_or_insert(marks.len());
+                    marks.push(Mark {
+                        tool: MarkTool::Rectangle,
+                        points: vec![[slot[0], slot[1]], [slot[2], slot[3]]],
+                        color: slot_line,
+                        width: 0.003,
+                        fill: Some(GRID_SLOT_FILL),
+                        grid: 1,
+                        ..Mark::default()
+                    });
+                }
             }
         }
-        let first_slot = ground_marks + usize::from(original.is_some());
-        self.change(|existing| existing.extend(marks));
-        let base = self.marks.len() - layout.cells().len() - ground_marks;
+        self.change(|existing| {
+            existing.retain(|mark| mark.grid == 0);
+            existing.extend(marks);
+        });
+        let base = self
+            .marks
+            .iter()
+            .position(|mark| mark.grid != 0)
+            .unwrap_or(0);
         self.tool = MarkTool::Select;
-        self.selected = (base + first_slot < self.marks.len()).then_some(base + first_slot);
+        self.selected = first_empty.map(|at| base + at);
+    }
+
+    /// ZFPlus: takes the grid away, its boxes and what is in them, so the
+    /// photo shows as it was.
+    pub fn remove_grid(&mut self) {
+        if self.marks.iter().any(|mark| mark.grid != 0) {
+            self.change(|marks| marks.retain(|mark| mark.grid == 0));
+            self.selected = None;
+        }
     }
 
     /// ZFPlus: a picture fitted whole inside `slot` (left, top, right,
@@ -3391,9 +3521,7 @@ impl PictureEdit {
     /// ZFPlus: whether the mark at `at` is an empty grid box.
     pub fn is_grid_slot(&self, at: usize) -> bool {
         self.marks.get(at).is_some_and(|mark| {
-            mark.tool == MarkTool::Rectangle
-                && mark.fill == Some(GRID_SLOT_FILL)
-                && mark.angle == 0.0
+            mark.grid == 1 && mark.tool == MarkTool::Rectangle && mark.fill == Some(GRID_SLOT_FILL)
         })
     }
 
@@ -3403,8 +3531,9 @@ impl PictureEdit {
         match self.selected.filter(|at| self.is_grid_slot(*at)) {
             Some(at) => {
                 let [left, top, right, bottom] = self.marks[at].bounds();
-                let mark =
+                let mut mark =
                     self.fitted_picture(std::sync::Arc::new(image), [left, top, right, bottom]);
+                mark.grid = 3;
                 self.change(|marks| marks[at] = mark);
                 self.selected = Some(at);
                 self.tool = MarkTool::Select;
@@ -5101,6 +5230,27 @@ mod tests {
         edit.insert_picture(photo);
         assert_eq!(edit.marks.len(), 4);
         assert_eq!(GridLayout::NineSquare.cells().len(), 9);
+        // Another grid takes the place of the first: the picture put in a
+        // box moves over, nothing is doubled, and no grid leaves the photo.
+        let free = edit.marks.len();
+        edit.apply_grid(
+            GridLayout::ThreeAcross,
+            Some(StampImage {
+                width: 8,
+                height: 6,
+                rgba: vec![255; 8 * 6 * 4],
+            }),
+        );
+        assert_eq!(edit.marks.iter().filter(|mark| mark.grid == 2).count(), 1);
+        assert_eq!(edit.marks.iter().filter(|mark| mark.grid == 3).count(), 1);
+        assert_eq!(
+            edit.marks.iter().filter(|mark| mark.grid == 0).count(),
+            1,
+            "the free picture stays"
+        );
+        assert!(edit.marks.len() <= free + 3);
+        edit.remove_grid();
+        assert!(edit.marks.iter().all(|mark| mark.grid == 0));
     }
 
     /// ZFPlus: a stroke drawn almost straight becomes a straight line; a

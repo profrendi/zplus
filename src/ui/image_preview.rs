@@ -468,7 +468,23 @@ fn header(
                         .clicked()
                         {
                             actions.push(Action::CloseImagePreview);
-                            actions.push(Action::SaveAttachmentAs { path, name });
+                            actions.push(Action::SaveAttachmentAs {
+                                path: path.clone(),
+                                name,
+                            });
+                        }
+                        // ZFPlus: twice as large, resampled and sharpened.
+                        if theme::icon_button(
+                            ui,
+                            Icon::Sparkles,
+                            18.0,
+                            palette.secondary,
+                            palette.text,
+                            "Save sharper (2×)",
+                        )
+                        .clicked()
+                        {
+                            super::plus_pages::save_as(path, Some(2));
                         }
                     }
                     // Not here yet: fetch it, and return to the chat with it.

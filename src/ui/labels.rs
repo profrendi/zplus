@@ -131,11 +131,17 @@ fn label_chips(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
             .tab_stop(Stop::Label(u8::try_from(index).unwrap_or(u8::MAX)));
         ui.ctx()
             .data_mut(|data| data.insert_temp(chip_id(&id), chip.rect));
-        if chip.clicked() {
+        // ZFPlus: a right click edits the list and its chats.
+        if chip.secondary_clicked() {
+            ui.data_mut(|data| data.insert_temp(editing_id(), id.clone()));
+            app.actions.push(Action::ShowDialog(Dialog::Labels));
+        } else if chip.clicked() {
             // A second click on the active chip returns to every chat, the
             // way the other chips behave.
             pick = Some((!selected).then_some(id));
         }
+        let chip_hint = chip.on_hover_text("Right-click to edit this list and its chats");
+        let _ = chip_hint;
     }
     let locale = app.locale;
     if theme::icon_button(
@@ -151,9 +157,142 @@ fn label_chips(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     {
         app.actions.push(Action::ShowDialog(Dialog::Labels));
     }
+    // ZFPlus: New group, New list and Select chats, beside the lists.
+    let more = theme::icon_button(
+        ui,
+        Icon::Ellipsis,
+        15.0,
+        palette.secondary,
+        palette.text,
+        "More",
+    );
+    egui::Popup::menu(&more).show(|ui| {
+        ui.set_min_width(180.0);
+        if widgets::menu_item(ui, palette, Some(Icon::Users), "New group") {
+            app.actions.push(Action::StartNewGroup);
+        }
+        if widgets::menu_item(ui, palette, Some(Icon::Tag), "New list") {
+            app.actions.push(Action::ShowDialog(Dialog::Labels));
+        }
+        if widgets::menu_item(ui, palette, Some(Icon::Check), "Select chats") {
+            app.chat_select = Some(Default::default());
+        }
+    });
     if let Some(label) = pick {
         app.actions.push(Action::SelectLabel(label));
     }
+}
+
+/// ZFPlus: the id under which the list manager keeps the list whose chats
+/// are being picked.
+pub fn editing_id() -> egui::Id {
+    egui::Id::new("lists-editing-chats")
+}
+
+/// ZFPlus: every list with a tick for whether `chat` is on it, then New
+/// list and Manage lists: the header's Add to list.
+pub fn list_ticks(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palette) {
+    let mut current = chat.labels.clone();
+    let mut changed = false;
+    for label in app.labels.clone() {
+        let mut on = current.contains(&label.id);
+        ui.horizontal(|ui| {
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(dot.center(), 5.0, color_of(palette, &label.color_hex));
+            if ui.checkbox(&mut on, &label.name).changed() {
+                changed = true;
+                if on {
+                    current.push(label.id.clone());
+                } else {
+                    current.retain(|id| *id != label.id);
+                }
+            }
+        });
+    }
+    if changed {
+        app.actions.push(Action::SetChatLabels {
+            chat: chat.id.clone(),
+            labels: current,
+        });
+    }
+    ui.separator();
+    if widgets::menu_item(ui, palette, Some(Icon::Plus), "New list") {
+        app.actions.push(Action::ShowDialog(Dialog::Labels));
+    }
+    if widgets::menu_item(ui, palette, Some(Icon::Tag), "Manage lists") {
+        app.actions.push(Action::ShowDialog(Dialog::Labels));
+    }
+}
+
+/// ZFPlus: the chats on the list being edited, each with a tick, searched
+/// by name: WhatsApp's "Included".
+fn chats_of_list(app: &mut App, ui: &mut egui::Ui, palette: &Palette, id: &str) {
+    let Some(label) = app.labels.iter().find(|label| label.id == id).cloned() else {
+        return;
+    };
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        theme::text(
+            ui,
+            format!("Chats on {}", label.name),
+            theme::semibold(14.0),
+            palette.text,
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("Done").clicked() {
+                ui.data_mut(|data| data.remove::<String>(editing_id()));
+            }
+        });
+    });
+    let search_id = egui::Id::new("lists-chat-search");
+    let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
+    ui.add(
+        egui::TextEdit::singleline(&mut search)
+            .hint_text("Add people or groups: search")
+            .desired_width(f32::INFINITY),
+    );
+    let needle = crate::util::search_key(search.trim());
+    let mut rows: Vec<(String, String, bool, Vec<String>)> = app
+        .chats
+        .iter()
+        .filter(|chat| !chat.locked && !chat.id.ends_with("@newsletter"))
+        .map(|chat| {
+            (
+                chat.id.clone(),
+                app.chat_title(chat),
+                chat.labels.contains(&label.id),
+                chat.labels.clone(),
+            )
+        })
+        .filter(|(_, name, ..)| {
+            needle.is_empty()
+                || crate::util::search_matches(&crate::util::search_key(name), &needle)
+        })
+        .collect();
+    // Those on the list first, then by name.
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    egui::ScrollArea::vertical()
+        .id_salt("lists-chats")
+        .max_height(260.0)
+        .show_rows(ui, 24.0, rows.len(), |ui, range| {
+            for (chat, name, on, labels) in &rows[range] {
+                let mut ticked = *on;
+                if ui.checkbox(&mut ticked, name).changed() {
+                    let mut labels = labels.clone();
+                    if ticked {
+                        labels.push(label.id.clone());
+                    } else {
+                        labels.retain(|id| *id != label.id);
+                    }
+                    app.actions.push(Action::SetChatLabels {
+                        chat: chat.clone(),
+                        labels,
+                    });
+                }
+            }
+        });
+    ui.data_mut(|data| data.insert_temp(search_id, search));
 }
 
 /// The labels a chat wears, as a submenu of the chat's context menu.
@@ -266,6 +405,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
                     .font(theme::regular(14.0)),
             );
             if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                created(ui, app);
                 create(app);
             }
             swatches(app, ui, palette);
@@ -279,6 +419,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
                 )
                 .clicked()
             {
+                created(ui, app);
                 create(app);
             }
         });
@@ -464,6 +605,37 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     if let Some(id) = delete {
         app.actions.push(Action::DeleteLabel(id));
     }
+    // ZFPlus: picking each list's chats, as WhatsApp's Included; a list
+    // just made opens for it.
+    let pending_id = egui::Id::new("lists-created-name");
+    if let Some(name) = ui.data(|data| data.get_temp::<String>(pending_id))
+        && let Some(label) = app.labels.iter().find(|label| label.name == name)
+    {
+        let id = label.id.clone();
+        ui.data_mut(|data| {
+            data.insert_temp(editing_id(), id);
+            data.remove::<String>(pending_id);
+        });
+    }
+    if !app.labels.is_empty() {
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            theme::text(
+                ui,
+                "Chats on a list:",
+                theme::regular(12.5),
+                palette.secondary,
+            );
+            for label in app.labels.clone() {
+                if ui.small_button(&label.name).clicked() {
+                    ui.data_mut(|data| data.insert_temp(editing_id(), label.id.clone()));
+                }
+            }
+        });
+    }
+    if let Some(id) = ui.data(|data| data.get_temp::<String>(editing_id())) {
+        chats_of_list(app, ui, palette, &id);
+    }
 }
 
 /// Stable id for the field that renames one label.
@@ -472,6 +644,15 @@ fn rename_field_id(id: &str) -> egui::Id {
 }
 
 /// Sends the label the create row describes.
+/// ZFPlus: remembers a list being made, so its chats are offered once it
+/// arrives.
+fn created(ui: &egui::Ui, app: &App) {
+    let name = app.label_name.trim().to_owned();
+    if !name.is_empty() {
+        ui.data_mut(|data| data.insert_temp(egui::Id::new("lists-created-name"), name));
+    }
+}
+
 fn create(app: &mut App) {
     let name = app.label_name.trim().to_owned();
     if name.is_empty() {

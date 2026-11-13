@@ -156,6 +156,8 @@ pub struct Account {
     pub business_info: Option<crate::model::BusinessInfo>,
     /// ZFPlus: this account's WhatsApp username, without the `@`.
     pub username: Option<String>,
+    /// ZFPlus: the chats ticked in the list's select mode, when it is on.
+    pub chat_select: Option<std::collections::BTreeSet<String>>,
     /// ZFPlus: the status updates of the last day, newest first.
     pub statuses: Vec<crate::model::StatusPost>,
     /// ZFPlus: status photos and videos fetched, or why not.
@@ -289,6 +291,7 @@ impl Account {
             registered_asked: std::collections::HashSet::new(),
             business_info: None,
             username: None,
+            chat_select: None,
             statuses: Vec::new(),
             status_media: std::collections::HashMap::new(),
             communities: None,

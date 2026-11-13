@@ -541,6 +541,47 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
     // ZFPlus: numbers WhatsApp has not been asked about are asked now, so a
     // contact without WhatsApp drops out.
     ask_registered(app, &contact_choices(app, &needle));
+    // ZFPlus: everyone, saved contacts with WhatsApp, or numbers with
+    // WhatsApp not saved, with how many of each.
+    let filter_id = egui::Id::new("new-chat-saved");
+    let mut filter: u8 = ui.data(|data| data.get_temp(filter_id)).unwrap_or(0);
+    SAVED_FILTER.with(|cell| cell.set(0));
+    let everyone = contact_choices(app, "");
+    let saved = everyone
+        .iter()
+        .filter(|contact| is_saved(app, &contact.id))
+        .count();
+    ui.horizontal_wrapped(|ui| {
+        for (index, label, count) in [
+            (0u8, "All", everyone.len()),
+            (1, "SAVE WA", saved),
+            (2, "NON SAVE WA", everyone.len() - saved),
+        ] {
+            // Clicked, not a focus stop: Tab goes from the search to the list.
+            let text = ui.painter().layout_no_wrap(
+                format!("{label} {count}"),
+                theme::regular(12.5),
+                if filter == index {
+                    palette.text
+                } else {
+                    palette.secondary
+                },
+            );
+            let (rect, response) =
+                ui.allocate_exact_size(text.size() + egui::vec2(16.0, 8.0), egui::Sense::CLICK);
+            if filter == index {
+                ui.painter()
+                    .rect_filled(rect, rect.height() / 2.0, palette.surface_hover);
+            }
+            ui.painter()
+                .galley(rect.min + egui::vec2(8.0, 4.0), text, palette.text);
+            if response.clicked() {
+                filter = index;
+            }
+        }
+    });
+    ui.data_mut(|data| data.insert_temp(filter_id, filter));
+    SAVED_FILTER.with(|cell| cell.set(filter));
     let contacts = contact_choices(app, &needle);
     let offer_self = app.offers_self(&needle);
     if let Some(contact) = contacts
@@ -603,6 +644,39 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
                 });
             }
         });
+
+    // ZFPlus: New call and New group see everyone.
+    SAVED_FILTER.with(|cell| cell.set(0));
+    // ZFPlus: the same height however few people a search leaves: the
+    // list's room is kept below it.
+    // Searching or filtering keeps the height the full list had.
+    let tall_id = egui::Id::new("new-chat-full-height");
+    if needle.is_empty() && filter == 0 {
+        ui.data_mut(|data| data.insert_temp(tall_id, list_height));
+    } else if let Some(tall) = ui.data(|data| data.get_temp::<f32>(tall_id)) {
+        ui.add_space((tall - list_height).max(0.0));
+    }
+}
+
+thread_local! {
+    /// ZFPlus: New chat's filter while it draws: 0 everyone, 1 saved
+    /// contacts with WhatsApp, 2 numbers with WhatsApp not saved.
+    static SAVED_FILTER: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// ZFPlus: whether a person is saved in the phone's contacts (has a name
+/// of our own for them), not only known by the name they gave WhatsApp.
+pub(super) fn is_saved(app: &App, id: &str) -> bool {
+    app.contacts.get(id).is_some_and(|contact| {
+        contact
+            .full_name
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty())
+            || contact
+                .first_name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+    })
 }
 
 /// The people New chat and New call offer, by name: the contacts and the
@@ -614,7 +688,7 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
 /// it is kept until the contacts, the chats or the search change, and at
 /// most two seconds (a renamed contact shows then).
 pub(super) fn contact_choices(app: &App, needle: &str) -> Choices {
-    type Key = (String, usize, usize, usize, Option<String>);
+    type Key = (String, usize, usize, usize, Option<String>, u8);
     type Cached = Option<(
         Key,
         std::time::Instant,
@@ -629,6 +703,7 @@ pub(super) fn contact_choices(app: &App, needle: &str) -> Choices {
         app.chats.len(),
         app.registered.len(),
         app.me.clone(),
+        SAVED_FILTER.with(std::cell::Cell::get),
     );
     let cached = CACHE.with(|cache| {
         cache.borrow().as_ref().and_then(|(cached_key, at, list)| {
@@ -686,6 +761,10 @@ fn build_contact_choices(app: &App, needle: &str) -> Vec<crate::model::Contact> 
             || app.chat(&contact.id).is_some_and(|chat| chat.locked)
             || !seen.insert(contact.id.clone())
         {
+            continue;
+        }
+        let saved = SAVED_FILTER.with(std::cell::Cell::get);
+        if saved != 0 && is_saved(app, &contact.id) != (saved == 1) {
             continue;
         }
         let key = crate::util::search_key(&app.display_name(&contact.id));

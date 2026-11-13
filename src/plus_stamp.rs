@@ -393,9 +393,10 @@ pub fn render_text(text: &MarkText) -> StampImage {
     let line_height = (ascent - descent + leading).max(TEXT_PX);
     let advances = font.as_ref().map(|font| font.glyph_metrics(size, location));
     let charmap = font.as_ref().map(|font| font.charmap());
+    // Bullets or numbers in front, when a list.
+    let listed = text.style.list.apply(&text.text);
     // Each line as its pieces with their advances.
-    let lines: Vec<Vec<(Piece, f32)>> = text
-        .text
+    let lines: Vec<Vec<(Piece, f32)>> = listed
         .lines()
         .map(|line| {
             line.chars()
@@ -514,8 +515,28 @@ pub fn render_text(text: &MarkText) -> StampImage {
     };
     let mut emojis = Vec::new();
     let mut rules = Vec::new();
+    let widest = widths.iter().copied().fold(0.0f32, f32::max);
     for (row, (line, line_width)) in lines.iter().zip(&widths).enumerate() {
-        let mut x = (width as f32 - line_width) / 2.0;
+        // Where the line starts, and for justified text how much more
+        // each space takes so it reaches across, the last line excepted.
+        let left = (width as f32 - widest) / 2.0;
+        let spaces = line
+            .iter()
+            .filter(|(piece, _)| matches!(piece, Piece::Space))
+            .count();
+        let mut stretch = 0.0;
+        let mut x = match text.style.align {
+            crate::model::TextAlign::Left => left,
+            crate::model::TextAlign::Right => left + widest - line_width,
+            crate::model::TextAlign::Center => (width as f32 - line_width) / 2.0,
+            crate::model::TextAlign::Justify => {
+                if row + 1 < lines.len() && spaces > 0 {
+                    stretch = (widest - line_width) / spaces as f32;
+                }
+                left
+            }
+        };
+        let line_width = &(line_width + stretch * spaces as f32);
         let baseline = padding + line_height * row as f32 + ascent;
         // Underline and strikethrough, a line's width each.
         if *line_width > 0.0 {
@@ -550,7 +571,7 @@ pub fn render_text(text: &MarkText) -> StampImage {
                 Piece::Emoji(picture) => {
                     emojis.push((x, baseline - picture.height() as f32 * 0.85, picture));
                 }
-                Piece::Space => {}
+                Piece::Space => x += stretch,
             }
             x += advance;
         }

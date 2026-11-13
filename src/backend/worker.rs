@@ -14699,10 +14699,12 @@ async fn prepare_media(
         .await
         .map_err(|error| error.to_string())??;
         let (width, height) = (decoded.width(), decoded.height());
+        // ZFPlus: a JPEG goes as it is, never compressed again; another
+        // picture is encoded at a high quality, full size.
         let jpeg = if mime == "image/jpeg" {
             bytes
         } else {
-            encode_jpeg(&decoded, 88)?
+            encode_jpeg(&decoded, 95)?
         };
         let thumbnail = thumbnail_jpeg(&decoded);
         let upload = upload_media(client, jpeg.clone(), MediaType::Image, uploading).await?;

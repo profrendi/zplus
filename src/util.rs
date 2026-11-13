@@ -9,6 +9,27 @@ use crate::i18n::Locale;
 /// Accepts 7 to 15 ASCII digits, an optional leading plus, and balanced brackets.
 pub fn international_phone(input: &str) -> Option<String> {
     let input = input.trim();
+    // ZFPlus: a number written the local way (0812…, without a country
+    // code) takes the linked phone's country code, as the phone itself
+    // reads it.
+    if !input.starts_with('+') && input.starts_with('0') && !input.starts_with("00") {
+        let home = HOME_CODE.with(|code| code.borrow().clone());
+        if !home.is_empty() {
+            let local: String = input
+                .chars()
+                .filter(|c| !matches!(c, ' ' | '-' | '(' | ')' | '.'))
+                .collect();
+            if local.chars().all(|c| c.is_ascii_digit()) {
+                let rest = local.trim_start_matches('0');
+                let digits = format!("{home}{rest}");
+                return (7..=15).contains(&digits.len()).then_some(digits);
+            }
+        }
+    }
+    let input = input
+        .strip_prefix("00")
+        .filter(|_| !input.starts_with('+'))
+        .unwrap_or(input);
     let input = input.strip_prefix('+').unwrap_or(input);
     let mut digits = String::new();
     let mut bracket = false;
@@ -22,6 +43,17 @@ pub fn international_phone(input: &str) -> Option<String> {
         }
     }
     (!bracket && (7..=15).contains(&digits.len()) && !digits.starts_with('0')).then_some(digits)
+}
+
+thread_local! {
+    /// ZFPlus: the linked phone's country code, for numbers written without
+    /// one. Kept by the thread that draws the window, which reads them.
+    static HOME_CODE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// ZFPlus: sets the country code local numbers take, from our own number.
+pub fn set_home_code(code: &str) {
+    HOME_CODE.with(|home| code.clone_into(&mut home.borrow_mut()));
 }
 
 /// File-loader identifier for a native path. egui requires a slash after
@@ -1550,5 +1582,24 @@ mod international_phone_tests {
         ] {
             assert!(super::international_phone(input).is_none(), "{input}");
         }
+    }
+}
+
+#[cfg(test)]
+mod home_code_tests {
+    /// ZFPlus: 0812… is read with the linked phone's country code.
+    #[test]
+    fn local_numbers_take_the_home_code() {
+        super::set_home_code("62");
+        assert_eq!(
+            super::international_phone("0812-3456-7890").as_deref(),
+            Some("6281234567890")
+        );
+        assert_eq!(
+            super::international_phone("+44 20 7946 0958").as_deref(),
+            Some("442079460958")
+        );
+        super::set_home_code("");
+        assert_eq!(super::international_phone("0812345678"), None);
     }
 }

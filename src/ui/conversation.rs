@@ -493,8 +493,10 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                 let extra = room.right + caption_gap(room.right);
                 // ZFPlus: Pin and Mark read/unread in the header.
                 let plus = crate::plus::get();
+                // ZFPlus: and Add to list, always.
                 let plus_buttons = f32::from(u8::from(plus.pin_button()))
-                    + f32::from(u8::from(plus.mark_unread_button()));
+                    + f32::from(u8::from(plus.mark_unread_button()))
+                    + 1.0;
                 let buttons = if narrow { 3.0 } else { 2.0 } + call_buttons + plus_buttons;
                 // In a narrow pane, or on vibrant glass, which takes more room,
                 // Search and the call buttons go into More rather than push
@@ -885,6 +887,42 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                                 app.actions.push(Action::CloseChat);
                             }
                         });
+                    // ZFPlus: Add to list, as WhatsApp Web has it beside
+                    // Search: the lists with this chat ticked, and making
+                    // or changing lists.
+                    {
+                        if palette.vibrant() {
+                            ui.add_space(BUTTON_GAP);
+                        }
+                        let glass_shape = ui.painter().add(egui::Shape::Noop);
+                        let on_lists = chat
+                            .labels
+                            .iter()
+                            .any(|id| app.labels.iter().any(|label| label.id == *id));
+                        let button = theme::icon_button(
+                            ui,
+                            Icon::Tag,
+                            18.0,
+                            if on_lists {
+                                palette.accent
+                            } else {
+                                palette.secondary
+                            },
+                            palette.text,
+                            "Add to list",
+                        );
+                        if palette.vibrant() {
+                            ui.painter()
+                                .set(glass_shape, glass_button(&palette, button.rect));
+                        }
+                        let chat_now = chat.clone();
+                        egui::Popup::menu(&button)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_min_width(220.0);
+                                super::labels::list_ticks(app, ui, &chat_now, &palette);
+                            });
+                    }
                     if plus.mark_unread_button() {
                         let unread = chat.looks_unread();
                         if palette.vibrant() {

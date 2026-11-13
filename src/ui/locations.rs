@@ -261,13 +261,26 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
             })
             .then_some(true)
     };
-    // All, only WhatsApp, or only numbers without WhatsApp.
+    // All, or one of four kinds: saved or not, with WhatsApp or not.
     let filter_id = egui::Id::new("share-contact-filter");
     let mut filter: u8 = ui.ctx().data(|data| data.get_temp(filter_id)).unwrap_or(0);
     let answers: Vec<Option<bool>> = people
         .iter()
         .map(|(_, number)| on_whatsapp(app, number))
         .collect();
+    // ZFPlus: saved in the phone's contacts or not, as well as WhatsApp or
+    // not: four kinds.
+    let saved: Vec<bool> = people
+        .iter()
+        .map(|(_, number)| super::dialogs::is_saved(app, &format!("{number}@s.whatsapp.net")))
+        .collect();
+    let kind_count = |save: bool, wa: bool| {
+        answers
+            .iter()
+            .zip(&saved)
+            .filter(|(answer, is)| **is == save && **answer == Some(wa))
+            .count()
+    };
     let with = answers
         .iter()
         .filter(|answer| **answer == Some(true))
@@ -280,8 +293,10 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
     ui.horizontal_wrapped(|ui| {
         for (index, label, count) in [
             (0u8, "All", people.len()),
-            (1, "WA", with),
-            (2, "NON WA", without),
+            (3, "SAVE WA", kind_count(true, true)),
+            (4, "SAVE NON WA", kind_count(true, false)),
+            (5, "NON SAVE WA", kind_count(false, true)),
+            (6, "NON SAVE NON WA", kind_count(false, false)),
         ] {
             if widgets::filter_chip(ui, &palette, label, count, filter == index).clicked() {
                 filter = index;
@@ -298,7 +313,7 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
             );
         }
     });
-    if filter == 2 && without == 0 && waiting == 0 {
+    if matches!(filter, 4 | 6) && without == 0 && waiting == 0 {
         theme::paragraph(
             ui,
             "WhatsApp says every contact here has WhatsApp. This computer knows only the contacts your phone shares with it.",
@@ -309,17 +324,19 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
     ui.add_space(4.0);
     let people: Vec<(String, String)> = people
         .into_iter()
-        .zip(answers)
-        .filter(|(_, answer)| match filter {
-            1 => *answer == Some(true),
-            2 => *answer == Some(false),
+        .zip(answers.iter().copied().zip(saved.iter().copied()))
+        .filter(|(_, (answer, saved))| match filter {
+            3 => *saved && *answer == Some(true),
+            4 => *saved && *answer == Some(false),
+            5 => !*saved && *answer == Some(true),
+            6 => !*saved && *answer == Some(false),
             _ => true,
         })
         .map(|(person, _)| person)
         .collect();
     let rows: Vec<(Option<&'static str>, String, String)> = me
         .into_iter()
-        .filter(|_| filter != 2)
+        .filter(|_| matches!(filter, 0 | 3))
         .map(|(name, number)| (Some("You"), name, number))
         .chain(
             people
@@ -412,10 +429,32 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
                     palette.secondary,
                 );
                 // WhatsApp, or not: a small pill at the row's end.
+                let saved = super::dialogs::is_saved(app, &jid);
                 let (word, color) = match on_whatsapp(app, number) {
-                    Some(true) => ("WA", palette.accent),
-                    Some(false) => ("NON WA", palette.danger),
-                    None => ("…", palette.dim),
+                    Some(true) => (
+                        if saved {
+                            "SAVE · WA"
+                        } else {
+                            "NON SAVE · WA"
+                        },
+                        palette.accent,
+                    ),
+                    Some(false) => (
+                        if saved {
+                            "SAVE · NON WA"
+                        } else {
+                            "NON SAVE · NON WA"
+                        },
+                        palette.danger,
+                    ),
+                    None => (
+                        if saved {
+                            "SAVE · …"
+                        } else {
+                            "NON SAVE · …"
+                        },
+                        palette.dim,
+                    ),
                 };
                 let pill = painter.layout_no_wrap(word.to_owned(), theme::semibold(10.0), color);
                 let pill_rect = egui::Rect::from_min_size(

@@ -1178,7 +1178,7 @@ fn plus_sections() -> Vec<Section> {
         ),
         Tick(
             "Restore deleted messages",
-            "When someone deletes a message for everyone, keep it here, marked as deleted.",
+            "When someone deletes a message for everyone, it stays in the chat here, marked Deleted, with its words or photo. Only messages this computer received before they were deleted; your own deletions still go.",
             |p| &mut p.restore_deleted,
         ),
     ];
@@ -1190,7 +1190,7 @@ fn plus_sections() -> Vec<Section> {
         ),
         Tick(
             "Notify about online activities",
-            "A notification when a contact from your recent chats comes online.",
+            "A notification when a contact from your recent chats comes online (at most once in five minutes each). WhatsApp only says so for people who share their online status.",
             |p| &mut p.notify_online,
         ),
         Tick(
@@ -1200,7 +1200,7 @@ fn plus_sections() -> Vec<Section> {
         ),
         Tick(
             "Prevent chats list jumping on message submission",
-            "A chat you send to keeps its place until someone answers.",
+            "A chat you send to stays where it is in the list instead of jumping to the top, until someone answers.",
             |p| &mut p.prevent_list_jump,
         ),
         Tick(

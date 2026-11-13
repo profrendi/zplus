@@ -740,6 +740,52 @@ fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
         });
     }
     labels::chip_row(app, ui, &palette);
+    select_bar(app, ui);
+}
+
+/// ZFPlus: while chats are being selected, how many are, and what to do
+/// with them all: mark read or unread, mute, archive, or stop selecting.
+fn select_bar(app: &mut App, ui: &mut egui::Ui) {
+    let Some(picked) = app.chat_select.clone() else {
+        return;
+    };
+    let palette = app.palette;
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        theme::text(
+            ui,
+            format!("{} selected", picked.len()),
+            theme::semibold(13.0),
+            palette.text,
+        );
+        let any = !picked.is_empty();
+        let mut each = |action: fn(String) -> Action| {
+            for chat in &picked {
+                app.actions.push(action(chat.clone()));
+            }
+        };
+        if ui
+            .add_enabled(any, egui::Button::new("Mark read"))
+            .clicked()
+        {
+            each(Action::MarkRead);
+        }
+        if ui
+            .add_enabled(any, egui::Button::new("Mark unread"))
+            .clicked()
+        {
+            each(Action::MarkUnread);
+        }
+        if ui.add_enabled(any, egui::Button::new("Mute")).clicked() {
+            each(|chat| Action::SetMuted(chat, Some(0)));
+        }
+        if ui.add_enabled(any, egui::Button::new("Archive")).clicked() {
+            each(|chat| Action::SetArchived(chat, true));
+        }
+        if ui.button("Clear selected").clicked() {
+            app.chat_select = None;
+        }
+    });
 }
 
 /// Stable id for a starred row, so its menu can be addressed by the demo,
@@ -2015,7 +2061,36 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
     if let Some((area, prefix, full)) = full_preview {
         full_preview_tooltip(app, ui, &chat.id, area, &prefix, &full);
     }
-    if response.clicked() {
+    // ZFPlus: in select mode a row is ticked, not opened.
+    if let Some(picked) = app.chat_select.as_mut() {
+        let on = picked.contains(&chat.id);
+        let tick =
+            Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(14.0, 14.0));
+        ui.painter()
+            .rect_filled(tick, 3.0, if on { palette.accent } else { palette.surface });
+        ui.painter().rect_stroke(
+            tick,
+            3.0,
+            egui::Stroke::new(1.0, palette.secondary),
+            egui::StrokeKind::Inside,
+        );
+        if on {
+            ui.painter().text(
+                tick.center(),
+                egui::Align2::CENTER_CENTER,
+                "✓",
+                theme::bold(11.0),
+                palette.window,
+            );
+        }
+        if response.clicked() {
+            if on {
+                picked.remove(&chat.id);
+            } else {
+                picked.insert(chat.id.clone());
+            }
+        }
+    } else if response.clicked() {
         app.actions.push(Action::OpenChat(chat.id.clone()));
     }
     let menu_palette = palette;

@@ -696,8 +696,24 @@ impl Settings {
                     settings
                 }
                 Err(_error) => {
-                    log::warn!("settings file is unreadable, using defaults");
-                    Self::default()
+                    // ZFPlus: one field a newer or older version wrote
+                    // differently must not cost every setting (and the app
+                    // lock with them): the fields that still read are kept.
+                    let _ = std::fs::copy(path, path.with_extension("json.unreadable"));
+                    match Self::salvage(&contents) {
+                        Some(mut settings) => {
+                            log::warn!(
+                                "settings file partly unreadable; the readable settings are kept"
+                            );
+                            settings.migrate();
+                            settings.fold_legacy_media_pause();
+                            settings
+                        }
+                        None => {
+                            log::warn!("settings file is unreadable, using defaults");
+                            Self::default()
+                        }
+                    }
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
@@ -706,6 +722,16 @@ impl Settings {
                 Self::default()
             }
         }
+    }
+
+    /// ZFPlus: the settings from a file that does not read whole, field by
+    /// field: each one that reads is kept, the rest take their defaults.
+    /// Nested settings (such as Enhancements) are salvaged the same way.
+    fn salvage(contents: &str) -> Option<Self> {
+        let written: serde_json::Value = serde_json::from_str(contents).ok()?;
+        let mut merged = serde_json::to_value(Self::default()).ok()?;
+        salvage_into::<Self>(&mut merged, &written, &[]);
+        serde_json::from_value(merged).ok()
     }
 
     /// Replaces the settings file whole, never leaving it half written.
@@ -884,8 +910,13 @@ impl AccountSettings {
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|error| {
-                log::warn!("account settings are unreadable, using the defaults: {error}");
-                Self::default()
+                log::warn!("account settings partly unreadable, keeping what reads: {error}");
+                let written: Option<serde_json::Value> = serde_json::from_str(&contents).ok();
+                let mut merged = serde_json::to_value(Self::default()).unwrap_or_default();
+                if let Some(written) = written {
+                    salvage_into::<Self>(&mut merged, &written, &[]);
+                }
+                serde_json::from_value(merged).unwrap_or_default()
             }),
             Err(_) => Self::default(),
         }
@@ -1511,5 +1542,76 @@ mod giphy_tests {
             assert_eq!(limit.applies(false), direct, "{limit:?} for direct chats");
             assert_eq!(limit.applies(true), group, "{limit:?} for groups");
         }
+    }
+}
+
+/// ZFPlus: copies each field of `written` into `merged` (the defaults) if
+/// `T` still reads with it, going into objects field by field, so one
+/// field that no longer reads leaves only itself at its default.
+fn salvage_into<T: serde::de::DeserializeOwned>(
+    merged: &mut serde_json::Value,
+    written: &serde_json::Value,
+    path: &[String],
+) {
+    let serde_json::Value::Object(fields) = written else {
+        return;
+    };
+    for (key, value) in fields {
+        let mut at = path.to_vec();
+        at.push(key.clone());
+        let Some(slot) = pointer_mut(merged, &at) else {
+            continue;
+        };
+        let before = slot.clone();
+        *slot = value.clone();
+        if serde_json::from_value::<T>(merged.clone()).is_ok() {
+            continue;
+        }
+        // The whole field does not read: put the default back and try its
+        // own fields, when it has any.
+        if let Some(slot) = pointer_mut(merged, &at) {
+            *slot = before;
+        }
+        if value.is_object() {
+            salvage_into::<T>(merged, value, &at);
+        }
+    }
+}
+
+fn pointer_mut<'a>(
+    value: &'a mut serde_json::Value,
+    path: &[String],
+) -> Option<&'a mut serde_json::Value> {
+    path.iter()
+        .try_fold(value, |value, key| value.as_object_mut()?.get_mut(key))
+}
+
+#[cfg(test)]
+mod salvage_tests {
+    /// ZFPlus: a field that no longer reads keeps only itself at its
+    /// default; the app lock and the rest stay.
+    #[test]
+    fn one_bad_field_keeps_the_others() {
+        let mut good = serde_json::to_value(super::Settings::default()).unwrap();
+        let object = good.as_object_mut().unwrap();
+        let key = object
+            .iter()
+            .find(|(_, value)| value.is_boolean())
+            .map(|(key, _)| key.clone())
+            .unwrap();
+        let flipped = !object[&key].as_bool().unwrap();
+        object.insert(key.clone(), serde_json::Value::Bool(flipped));
+        let bool_key = key;
+        let number = object
+            .iter()
+            .find(|(key, value)| value.is_number() && **key != bool_key)
+            .map(|(key, _)| key.clone())
+            .unwrap();
+        object.insert(number, serde_json::Value::String("not a number".into()));
+        let text = serde_json::to_string(&good).unwrap();
+        assert!(serde_json::from_str::<super::Settings>(&text).is_err());
+        let salvaged = super::Settings::salvage(&text).expect("salvaged");
+        let back = serde_json::to_value(salvaged).unwrap();
+        assert_eq!(back[&bool_key], serde_json::Value::Bool(flipped));
     }
 }

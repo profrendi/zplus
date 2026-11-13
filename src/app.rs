@@ -4115,6 +4115,16 @@ impl App {
                 name,
                 about,
             } => {
+                // ZFPlus: local numbers (0812…) take our country's code.
+                if let Some(number) = crate::model::phone_of(&id) {
+                    let code = crate::ui::plus_new_chat::COUNTRIES
+                        .iter()
+                        .map(|(_, _, code)| *code)
+                        .filter(|code| !code.is_empty() && number.starts_with(code))
+                        .max_by_key(|code| code.len())
+                        .unwrap_or_default();
+                    crate::util::set_home_code(code);
+                }
                 self.me = Some(id);
                 self.me_lid = lid;
                 self.me_name = name;
@@ -9538,6 +9548,17 @@ impl App {
                 height,
                 rgba,
             } => {
+                // ZFPlus: in the photo editor a pasted picture goes into the
+                // photo, into a picked grid box or free to move.
+                if let Some(edit) = self.picture_edit.as_mut() {
+                    edit.commit_writing();
+                    edit.insert_picture(crate::model::StampImage {
+                        width: width as u32,
+                        height: height as u32,
+                        rgba,
+                    });
+                    return;
+                }
                 // Stage the files so the user can add a caption.
                 if self.open_chat.is_some() {
                     self.stage(Pending::Picture {

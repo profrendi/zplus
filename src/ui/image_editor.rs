@@ -72,8 +72,8 @@ enum Change {
     Style(TextStyle),
     /// ZFPlus: a picture inserted from a file.
     Insert(StampImage),
-    /// ZFPlus: lays a grid over the picture.
-    Grid(GridLayout),
+    /// ZFPlus: lays a grid over the picture, or with `None` takes it away.
+    Grid(Option<GridLayout>),
     /// ZFPlus: opens the picked text to change its words.
     EditText,
 }
@@ -130,6 +130,9 @@ struct Handling {
     offset: [f32; 2],
     /// Or grown by this much, when the corner handle is dragged.
     grow: Option<f32>,
+    /// ZFPlus: and down by this much, when it is grown freely: an upright
+    /// mark's corner stretches it either way; Shift keeps its proportions.
+    grow_y: Option<f32>,
     /// ZFPlus: or turned by this many degrees, when the round handle above
     /// it is dragged.
     turn: Option<f32>,
@@ -617,24 +620,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             change = Some(Change::Tool(tool));
                         }
                     }
-                    // ZFPlus: word art, a picture from a file, and grids.
+                    // ZFPlus: a picture from a file, and grids.
                     ui.add_space(8.0);
-                    if theme::icon_button(
-                        ui,
-                        Icon::Sparkles,
-                        20.0,
-                        palette.secondary,
-                        palette.text,
-                        "Word art: click the picture to write",
-                    )
-                    .clicked()
-                    {
-                        change = Some(Change::Tool(MarkTool::Text));
-                        if edit.art == WordArt::Plain {
-                            edit.art = WordArt::Outline;
-                            edit.text_style.look = WordArt::Outline.look(edit.color);
-                        }
-                    }
                     if theme::icon_button(
                         ui,
                         Icon::ImagePlus,
@@ -677,17 +664,25 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 {
                                     edit.grid_ground = Some([255, 255, 255, 255]);
                                 }
-                                if let Some(Some(ground)) =
-                                    more_colors(ui, palette, "grid-ground", edit.grid_ground, false)
-                                {
+                                if let Some(Some(ground)) = inline_colors(
+                                    ui,
+                                    palette,
+                                    "Colour",
+                                    "grid-ground",
+                                    edit.grid_ground,
+                                    false,
+                                ) {
                                     edit.grid_ground = Some(ground);
                                 }
                             });
                             ui.checkbox(&mut edit.grid_lines, "Outline the boxes");
                             ui.separator();
+                            if ui.button("No grid").clicked() {
+                                change = Some(Change::Grid(None));
+                            }
                             for layout in GridLayout::ALL {
                                 if ui.button(layout.name()).clicked() {
-                                    change = Some(Change::Grid(layout));
+                                    change = Some(Change::Grid(Some(layout)));
                                 }
                             }
                         });
@@ -813,6 +808,30 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     {
         change = Some(Change::Insert(image));
     }
+    // ZFPlus: pasted words become text on the picture, in a box when the
+    // text box is on, while nothing is being written.
+    if change.is_none()
+        && edit.writing.is_none()
+        && let Some(words) = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Paste(words) if !words.trim().is_empty() => Some(words.clone()),
+                _ => None,
+            })
+        })
+    {
+        let crop = edit.crop;
+        let (wide, tall) = edit.displayed_size();
+        edit.writing = Some(Writing {
+            text: words,
+            center: [
+                (crop.x as f32 + crop.width as f32 / 2.0) / wide.max(1) as f32,
+                (crop.y as f32 + crop.height as f32 / 2.0) / tall.max(1) as f32,
+            ],
+            replaces: None,
+        });
+        edit.commit_writing();
+        edit.tool = MarkTool::Select;
+    }
     let restyle = edit.tool == MarkTool::Select && edit.selected.is_some();
     match change {
         Some(Change::Reset) => edit = edit.reset(),
@@ -883,7 +902,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             edit.commit_writing();
             edit.insert_picture(image);
         }
-        Some(Change::Grid(layout)) => {
+        Some(Change::Grid(None)) => edit.remove_grid(),
+        Some(Change::Grid(Some(layout))) => {
             edit.commit_writing();
             let original =
                 crate::plus_stamp::shown_picture(&edit.source, edit.width, edit.height, edit.turns);
@@ -985,76 +1005,110 @@ fn more_colors(
         .id(egui::Id::new(salt))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
-            let cell = |ui: &mut egui::Ui, rgb: [u8; 3]| -> bool {
-                let rgba = [rgb[0], rgb[1], rgb[2], 255];
-                let (rect, response) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
-                ui.painter()
-                    .rect_filled(rect, 2.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-                let line = if current == Some(rgba) {
-                    egui::Stroke::new(2.0, palette.accent)
-                } else {
-                    egui::Stroke::new(1.0, palette.outline)
-                };
-                ui.painter()
-                    .rect_stroke(rect, 2.0, line, egui::StrokeKind::Inside);
-                response.clicked()
-            };
-            ui.label("Theme colours");
-            ui.horizontal(|ui| {
-                for base in THEME_COLORS {
-                    if cell(ui, base) {
-                        chosen = Some(Some([base[0], base[1], base[2], 255]));
-                    }
-                }
-            });
-            for row in 0..5 {
-                ui.horizontal(|ui| {
-                    for base in THEME_COLORS {
-                        let rgb = shades(base)[row];
-                        if cell(ui, rgb) {
-                            chosen = Some(Some([rgb[0], rgb[1], rgb[2], 255]));
-                        }
-                    }
-                });
-            }
-            ui.add_space(4.0);
-            ui.label("Standard colours");
-            ui.horizontal(|ui| {
-                for rgb in STANDARD_COLORS {
-                    if cell(ui, rgb) {
-                        chosen = Some(Some([rgb[0], rgb[1], rgb[2], 255]));
-                    }
-                }
-            });
-            if allow_none && ui.button("No colour").clicked() {
-                chosen = Some(None);
-            }
-            ui.add_space(4.0);
-            let id = egui::Id::new(salt).with("custom");
-            let mut custom: Color32 = ui.data(|data| data.get_temp(id)).unwrap_or_else(|| {
-                current.map_or(Color32::from_rgb(68, 114, 196), |c| {
-                    Color32::from_rgb(c[0], c[1], c[2])
-                })
-            });
-            egui::CollapsingHeader::new("More colours…")
-                .id_salt(id.with("open"))
-                .show(ui, |ui| {
-                    egui::color_picker::color_picker_color32(
-                        ui,
-                        &mut custom,
-                        egui::color_picker::Alpha::Opaque,
-                    );
-                    if ui.button("Use this colour").clicked() {
-                        chosen = Some(Some([custom.r(), custom.g(), custom.b(), 255]));
-                    }
-                });
-            ui.data_mut(|data| data.insert_temp(id, custom));
+            chosen = palette_body(ui, palette, salt, current, allow_none);
         });
     if chosen.is_some() {
         egui::Popup::close_id(ui.ctx(), egui::Id::new(salt));
     }
     chosen
+}
+
+/// ZFPlus: Office's palette itself: theme colours with their tints and
+/// shades, standard colours, no colour when `allow_none`, and any colour
+/// from a picker. Drawn in a popup, or in place inside another popup, where
+/// a second popup would close the first.
+fn palette_body(
+    ui: &mut egui::Ui,
+    palette: theme::Palette,
+    salt: &str,
+    current: Option<[u8; 4]>,
+    allow_none: bool,
+) -> Option<Option<[u8; 4]>> {
+    let mut chosen = None;
+    ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+    let cell = |ui: &mut egui::Ui, rgb: [u8; 3]| -> bool {
+        let rgba = [rgb[0], rgb[1], rgb[2], 255];
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+        ui.painter()
+            .rect_filled(rect, 2.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        let line = if current == Some(rgba) {
+            egui::Stroke::new(2.0, palette.accent)
+        } else {
+            egui::Stroke::new(1.0, palette.outline)
+        };
+        ui.painter()
+            .rect_stroke(rect, 2.0, line, egui::StrokeKind::Inside);
+        response.clicked()
+    };
+    ui.label("Theme colours");
+    ui.horizontal(|ui| {
+        for base in THEME_COLORS {
+            if cell(ui, base) {
+                chosen = Some(Some([base[0], base[1], base[2], 255]));
+            }
+        }
+    });
+    for row in 0..5 {
+        ui.horizontal(|ui| {
+            for base in THEME_COLORS {
+                let rgb = shades(base)[row];
+                if cell(ui, rgb) {
+                    chosen = Some(Some([rgb[0], rgb[1], rgb[2], 255]));
+                }
+            }
+        });
+    }
+    ui.add_space(4.0);
+    ui.label("Standard colours");
+    ui.horizontal(|ui| {
+        for rgb in STANDARD_COLORS {
+            if cell(ui, rgb) {
+                chosen = Some(Some([rgb[0], rgb[1], rgb[2], 255]));
+            }
+        }
+    });
+    if allow_none && ui.button("No colour").clicked() {
+        chosen = Some(None);
+    }
+    ui.add_space(4.0);
+    let id = egui::Id::new(salt).with("custom");
+    let mut custom: Color32 = ui.data(|data| data.get_temp(id)).unwrap_or_else(|| {
+        current.map_or(Color32::from_rgb(68, 114, 196), |c| {
+            Color32::from_rgb(c[0], c[1], c[2])
+        })
+    });
+    egui::CollapsingHeader::new("More colours…")
+        .id_salt(id.with("open"))
+        .show(ui, |ui| {
+            egui::color_picker::color_picker_color32(
+                ui,
+                &mut custom,
+                egui::color_picker::Alpha::Opaque,
+            );
+            if ui.button("Use this colour").clicked() {
+                chosen = Some(Some([custom.r(), custom.g(), custom.b(), 255]));
+            }
+        });
+    ui.data_mut(|data| data.insert_temp(id, custom));
+    chosen
+}
+
+/// ZFPlus: the palette folded under `label`, for use inside a popup.
+fn inline_colors(
+    ui: &mut egui::Ui,
+    palette: theme::Palette,
+    label: &str,
+    salt: &str,
+    current: Option<[u8; 4]>,
+    allow_none: bool,
+) -> Option<Option<[u8; 4]>> {
+    egui::CollapsingHeader::new(label)
+        .id_salt(egui::Id::new(salt).with("inline"))
+        .show(ui, |ui| {
+            palette_body(ui, palette, salt, current, allow_none)
+        })
+        .body_returned
+        .flatten()
 }
 
 /// ZFPlus: the text format menu: typeface, size, bold, italic, underline,
@@ -1074,29 +1128,51 @@ fn text_format(ui: &mut egui::Ui, palette: theme::Palette, edit: &PictureEdit) -
         .show(|ui| {
             ui.set_min_width(300.0);
             let mut style = edit.text_style;
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("editor-font")
-                    .selected_text(edit.font.name())
-                    .width(140.0)
-                    .height(320.0)
-                    .show_ui(ui, |ui| {
-                        for font in MarkFont::ALL {
-                            if ui
-                                .selectable_label(edit.font == font, font.name())
-                                .clicked()
-                            {
-                                change = Some(Change::Font(font));
-                            }
+            // Lists in place: a drop-down inside this menu would close it.
+            ui.label("Font");
+            egui::Grid::new("editor-fonts")
+                .num_columns(3)
+                .show(ui, |ui| {
+                    for (at, font) in MarkFont::ALL.into_iter().enumerate() {
+                        if ui
+                            .selectable_label(edit.font == font, font.name())
+                            .clicked()
+                        {
+                            change = Some(Change::Font(font));
                         }
-                    });
-                egui::ComboBox::from_id_salt("editor-size")
-                    .selected_text(style.size.to_string())
-                    .width(64.0)
-                    .show_ui(ui, |ui| {
-                        for size in TEXT_SIZES {
-                            ui.selectable_value(&mut style.size, size, size.to_string());
+                        if at % 3 == 2 {
+                            ui.end_row();
                         }
-                    });
+                    }
+                });
+            ui.label("Size");
+            ui.horizontal_wrapped(|ui| {
+                for size in TEXT_SIZES {
+                    ui.selectable_value(&mut style.size, size, size.to_string());
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                use crate::model::{TextAlign, TextList};
+                for (align, name) in [
+                    (TextAlign::Left, "Left"),
+                    (TextAlign::Center, "Centre"),
+                    (TextAlign::Right, "Right"),
+                    (TextAlign::Justify, "Justify"),
+                ] {
+                    ui.selectable_value(&mut style.align, align, name);
+                }
+                ui.separator();
+                for (list, name) in [
+                    (TextList::None, "No list"),
+                    (TextList::Bullets, "• Bullets"),
+                    (TextList::Numbers, "1. Numbers"),
+                    (TextList::Multilevel, "1.1 Multilevel"),
+                ] {
+                    ui.selectable_value(&mut style.list, list, name)
+                        .on_hover_text(
+                            "Start a line with a tab or two spaces to go a level deeper",
+                        );
+                }
             });
             ui.horizontal(|ui| {
                 ui.toggle_value(&mut style.bold, egui::RichText::new("B").strong())
@@ -1154,7 +1230,9 @@ fn text_format(ui: &mut egui::Ui, palette: theme::Palette, edit: &PictureEdit) -
                 } else {
                     "Other"
                 });
-                if let Some(Some(color)) = more_colors(ui, palette, "text-fill", current, false) {
+                if let Some(Some(color)) =
+                    inline_colors(ui, palette, "Fill colour", "text-fill", current, false)
+                {
                     look.fill = match look.fill {
                         TextFill::Gradient(_) => TextFill::Gradient(color),
                         _ => TextFill::Color(color),
@@ -1170,8 +1248,14 @@ fn text_format(ui: &mut egui::Ui, palette: theme::Palette, edit: &PictureEdit) -
                 {
                     look.outline = None;
                 }
-                if let Some(outline) = more_colors(ui, palette, "text-outline", look.outline, true)
-                {
+                if let Some(outline) = inline_colors(
+                    ui,
+                    palette,
+                    "Outline colour",
+                    "text-outline",
+                    look.outline,
+                    true,
+                ) {
                     look.outline = outline;
                     if look.outline_width == 0 {
                         look.outline_width = 3;
@@ -1197,7 +1281,7 @@ fn text_format(ui: &mut egui::Ui, palette: theme::Palette, edit: &PictureEdit) -
                 }
                 if glowing
                     && let Some(Some(glow)) =
-                        more_colors(ui, palette, "text-glow", look.glow, false)
+                        inline_colors(ui, palette, "Glow colour", "text-glow", look.glow, false)
                 {
                     look.glow = Some(glow);
                 }
@@ -1220,9 +1304,10 @@ fn handled(mark: &Mark, handling: Handling) -> Mark {
     if let Some(turn) = handling.turn {
         return mark.rotated(turn);
     }
-    match handling.grow {
-        Some(grow) => mark.scaled(grow),
-        None => mark.moved(handling.offset),
+    match (handling.grow, handling.grow_y) {
+        (Some(grow), Some(down)) => mark.stretched(grow, down),
+        (Some(grow), None) => mark.scaled(grow),
+        _ => mark.moved(handling.offset),
     }
 }
 
@@ -1295,6 +1380,7 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
                 at,
                 offset: [0.0; 2],
                 grow: None,
+                grow_y: None,
                 turn: Some(0.0),
             });
             ui.ctx().data_mut(|data| {
@@ -1337,6 +1423,7 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
                 at,
                 offset: [0.0; 2],
                 grow: Some(1.0),
+                grow_y: None,
                 turn: None,
             });
         }
@@ -1353,9 +1440,20 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
             let span = vec2(x, y);
             let reach = span.length().max(1.0);
             let delta = corner.drag_delta();
-            let along = (delta.x * span.x + delta.y * span.y) / reach;
-            let grow = current.grow.unwrap_or(1.0) + along / reach;
-            current.grow = Some(grow.clamp(0.1, 10.0));
+            let keep = ui.input(|input| input.modifiers.shift);
+            if mark.angle == 0.0 && !keep {
+                // Free: width and height each follow the pointer.
+                let across = current.grow.unwrap_or(1.0) + delta.x / span.x.abs().max(1.0);
+                let down = current.grow_y.unwrap_or(current.grow.unwrap_or(1.0))
+                    + delta.y / span.y.abs().max(1.0);
+                current.grow = Some(across.clamp(0.05, 20.0));
+                current.grow_y = Some(down.clamp(0.05, 20.0));
+            } else {
+                let along = (delta.x * span.x + delta.y * span.y) / reach;
+                let grow = current.grow.unwrap_or(1.0) + along / reach;
+                current.grow = Some(grow.clamp(0.1, 10.0));
+                current.grow_y = None;
+            }
         }
         if corner.drag_stopped()
             && let Some(done) = handling.take()
@@ -1363,7 +1461,10 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         {
             edit.change(|marks| {
                 if let Some(mark) = marks.get_mut(done.at) {
-                    *mark = mark.scaled(grow);
+                    *mark = match done.grow_y {
+                        Some(down) => mark.stretched(grow, down),
+                        None => mark.scaled(grow),
+                    };
                 }
             });
         }
@@ -1400,6 +1501,7 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
                 at,
                 offset: [0.0; 2],
                 grow: None,
+                grow_y: None,
                 turn: None,
             });
         }
