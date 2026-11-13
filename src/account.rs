@@ -156,6 +156,14 @@ pub struct Account {
     pub business_info: Option<crate::model::BusinessInfo>,
     /// ZFPlus: this account's WhatsApp username, without the `@`.
     pub username: Option<String>,
+    /// ZFPlus: the status updates of the last day, newest first.
+    pub statuses: Vec<crate::model::StatusPost>,
+    /// ZFPlus: status photos and videos fetched, or why not.
+    pub status_media: std::collections::HashMap<String, Result<std::path::PathBuf, String>>,
+    /// ZFPlus: the communities, once asked.
+    pub communities: Option<Result<Vec<crate::model::CommunityInfo>, String>>,
+    /// ZFPlus: this business's catalogue, once asked.
+    pub catalog: Option<Result<Vec<crate::model::CatalogItem>, String>>,
     /// ZFPlus: the last business category search and what it found.
     pub category_search: Option<CategorySearch>,
     /// The call entries the Calls page lists, newest first, once read.
@@ -281,6 +289,10 @@ impl Account {
             registered_asked: std::collections::HashSet::new(),
             business_info: None,
             username: None,
+            statuses: Vec::new(),
+            status_media: std::collections::HashMap::new(),
+            communities: None,
+            catalog: None,
             category_search: None,
             call_log: Vec::new(),
             call_log_loaded: false,

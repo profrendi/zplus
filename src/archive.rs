@@ -68,6 +68,9 @@ pub struct Archive {
 
 pub type Result<T> = std::result::Result<T, rusqlite::Error>;
 
+/// ZFPlus: a kept status update: id, sender, time, and WhatsApp's message.
+pub type KeptStatus = (String, String, i64, Vec<u8>);
+
 /// Marks an archived photo whose clip is known as a motion photo. Only the
 /// photo's own sender can give it a clip.
 const MARK_MOTION: &str = "UPDATE messages SET content = json_set(content, '$.motion', json('{}'))
@@ -2839,6 +2842,74 @@ impl Archive {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    fn plus_status_table(&self) -> Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plus_statuses (
+                id TEXT PRIMARY KEY,
+                sender TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                raw BLOB NOT NULL
+            )",
+        )
+    }
+
+    /// ZFPlus: keeps a status update as WhatsApp sent it, and lets those
+    /// older than a day go.
+    pub fn plus_add_status(
+        &self,
+        id: &str,
+        sender: &str,
+        timestamp: i64,
+        raw: &[u8],
+    ) -> Result<()> {
+        self.plus_status_table()?;
+        self.connection.execute(
+            "INSERT OR REPLACE INTO plus_statuses (id, sender, timestamp, raw) VALUES (?1, ?2, ?3, ?4)",
+            params![id, sender, timestamp, raw],
+        )?;
+        self.connection.execute(
+            "DELETE FROM plus_statuses WHERE timestamp < ?1",
+            params![crate::util::now() - 24 * 60 * 60],
+        )?;
+        Ok(())
+    }
+
+    /// ZFPlus: forgets a status its sender deleted.
+    pub fn plus_drop_status(&self, id: &str) -> Result<()> {
+        self.plus_status_table()?;
+        self.connection
+            .execute("DELETE FROM plus_statuses WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// ZFPlus: the status updates of the last day, newest first, as (id,
+    /// sender, timestamp, raw).
+    pub fn plus_statuses(&self) -> Result<Vec<KeptStatus>> {
+        self.plus_status_table()?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, sender, timestamp, raw FROM plus_statuses
+             WHERE timestamp >= ?1 ORDER BY timestamp DESC LIMIT 400",
+        )?;
+        let rows = statement
+            .query_map(params![crate::util::now() - 24 * 60 * 60], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// ZFPlus: one status update as WhatsApp sent it.
+    pub fn plus_status_raw(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        self.plus_status_table()?;
+        self.connection
+            .query_row(
+                "SELECT raw FROM plus_statuses WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
     }
 
     /// Replaces an edited body and its mention metadata in one write.

@@ -19,7 +19,7 @@ use super::widgets;
 use crate::app::{App, Pending};
 use crate::model::{
     Action, CropEdge, GridLayout, MARK_COLORS, Mark, MarkFont, MarkStroke, MarkTool, PictureCrop,
-    PictureEdit, PictureSource, StampImage, WordArt, Writing,
+    PictureEdit, PictureSource, StampImage, TEXT_SIZES, TextFill, TextStyle, WordArt, Writing,
 };
 use crate::theme::{self, Icon};
 
@@ -67,6 +67,9 @@ enum Change {
     MirrorPicture(bool),
     /// ZFPlus: the word art style of new or picked text.
     Art(WordArt),
+    /// ZFPlus: the size, emphasis, fill, outline and effects of new or
+    /// picked text.
+    Style(TextStyle),
     /// ZFPlus: a picture inserted from a file.
     Insert(StampImage),
     /// ZFPlus: lays a grid over the picture.
@@ -472,6 +475,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             change = Some(Change::Color(color));
                         }
                     }
+                    // ZFPlus: every colour, as Office's palette offers them.
+                    if let Some(Some(color)) =
+                        more_colors(ui, palette, "editor-colors", Some(edit.color), false)
+                    {
+                        change = Some(Change::Color(color));
+                    }
                     if has_width {
                         ui.add_space(8.0);
                         for stroke in MarkStroke::ALL {
@@ -512,16 +521,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 change = Some(Change::Fill(Some(color)));
                             }
                         }
+                        if let Some(fill) =
+                            more_colors(ui, palette, "editor-fills", edit.fill, true)
+                        {
+                            change = Some(Change::Fill(fill));
+                        }
                     }
                     if is_text {
                         ui.add_space(8.0);
-                        for font in MarkFont::ALL {
-                            let name = crate::i18n::gettext(locale, font.name());
-                            let response =
-                                theme::pill_button(ui, &palette, &name, edit.font == font);
-                            if response.clicked() {
-                                change = Some(Change::Font(font));
-                            }
+                        if let Some(next) = text_format(ui, palette, &edit) {
+                            change = Some(next);
                         }
                         let boxed = crate::i18n::gettext(locale, "Text box");
                         let color = if edit.text_box {
@@ -534,18 +543,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         {
                             change = Some(Change::TextBox(!edit.text_box));
                         }
-                        // ZFPlus: word art, for new text and the picked one.
-                        ui.add_space(6.0);
-                        egui::ComboBox::from_id_salt("word-art")
-                            .selected_text(format!("Word art: {}", edit.art.name()))
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for art in WordArt::ALL {
-                                    if ui.selectable_label(edit.art == art, art.name()).clicked() {
-                                        change = Some(Change::Art(art));
-                                    }
-                                }
-                            });
                         if picked.is_some_and(|mark| {
                             mark.stamp
                                 .as_ref()
@@ -635,6 +632,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         change = Some(Change::Tool(MarkTool::Text));
                         if edit.art == WordArt::Plain {
                             edit.art = WordArt::Outline;
+                            edit.text_style.look = WordArt::Outline.look(edit.color);
                         }
                     }
                     if theme::icon_button(
@@ -657,14 +655,42 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         palette.text,
                         "Grid: put pictures side by side",
                     );
-                    egui::Popup::menu(&grid).show(|ui| {
-                        ui.set_min_width(170.0);
-                        for layout in GridLayout::ALL {
-                            if ui.button(layout.name()).clicked() {
-                                change = Some(Change::Grid(layout));
+                    egui::Popup::menu(&grid)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.set_min_width(190.0);
+                            // ZFPlus: the grid's ground and lines, then its shape.
+                            ui.label("Background");
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .selectable_label(edit.grid_ground.is_none(), "None")
+                                    .clicked()
+                                {
+                                    edit.grid_ground = None;
+                                }
+                                if ui
+                                    .selectable_label(
+                                        edit.grid_ground == Some([255, 255, 255, 255]),
+                                        "White",
+                                    )
+                                    .clicked()
+                                {
+                                    edit.grid_ground = Some([255, 255, 255, 255]);
+                                }
+                                if let Some(Some(ground)) =
+                                    more_colors(ui, palette, "grid-ground", edit.grid_ground, false)
+                                {
+                                    edit.grid_ground = Some(ground);
+                                }
+                            });
+                            ui.checkbox(&mut edit.grid_lines, "Outline the boxes");
+                            ui.separator();
+                            for layout in GridLayout::ALL {
+                                if ui.button(layout.name()).clicked() {
+                                    change = Some(Change::Grid(layout));
+                                }
                             }
-                        }
-                    });
+                        });
                 },
             );
             ui.scope_builder(
@@ -840,8 +866,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Some(Change::Rotate(degrees)) => edit.rotate_selected(degrees),
         Some(Change::Mirror(vertical)) => edit.mirror_selected(vertical),
         Some(Change::MirrorPicture(vertical)) => edit = edit.mirrored(vertical),
+        Some(Change::Style(style)) => {
+            edit.text_style = style;
+            if restyle {
+                edit.restyle_selected();
+            }
+        }
         Some(Change::Art(art)) => {
             edit.art = art;
+            edit.text_style.look = art.look(edit.color);
             if restyle {
                 edit.restyle_selected();
             }
@@ -880,6 +913,300 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
     app.picture_edit = Some(edit);
     app.actions.extend(actions);
+}
+
+/// ZFPlus: Office's theme colours, then its standard colours.
+const THEME_COLORS: [[u8; 3]; 10] = [
+    [255, 255, 255],
+    [0, 0, 0],
+    [231, 230, 230],
+    [68, 84, 106],
+    [68, 114, 196],
+    [237, 125, 49],
+    [165, 165, 165],
+    [255, 192, 0],
+    [91, 155, 213],
+    [112, 173, 71],
+];
+const STANDARD_COLORS: [[u8; 3]; 10] = [
+    [192, 0, 0],
+    [255, 0, 0],
+    [255, 192, 0],
+    [255, 255, 0],
+    [146, 208, 80],
+    [0, 176, 80],
+    [0, 176, 240],
+    [0, 112, 192],
+    [0, 32, 96],
+    [112, 48, 160],
+];
+
+/// A theme colour's tints and shades, lightest first, as Office lists them
+/// under it.
+fn shades(base: [u8; 3]) -> [[u8; 3]; 5] {
+    let mix = |toward: f32, share: f32| {
+        base.map(|channel| {
+            (f32::from(channel) + (toward - f32::from(channel)) * share).round() as u8
+        })
+    };
+    match base {
+        [255, 255, 255] => [0.05, 0.15, 0.25, 0.35, 0.5].map(|share| mix(0.0, share)),
+        [0, 0, 0] => [0.5, 0.35, 0.25, 0.15, 0.05].map(|share| mix(255.0, share)),
+        _ => [
+            mix(255.0, 0.8),
+            mix(255.0, 0.6),
+            mix(255.0, 0.4),
+            mix(0.0, 0.25),
+            mix(0.0, 0.5),
+        ],
+    }
+}
+
+/// ZFPlus: a "more colours" button whose palette is Office's: theme colours
+/// with their tints and shades, standard colours, no colour when
+/// `allow_none`, and any colour from a picker. `Some` once one is chosen.
+fn more_colors(
+    ui: &mut egui::Ui,
+    palette: theme::Palette,
+    salt: &str,
+    current: Option<[u8; 4]>,
+    allow_none: bool,
+) -> Option<Option<[u8; 4]>> {
+    let button = theme::icon_button(
+        ui,
+        Icon::ChevronDown,
+        16.0,
+        palette.secondary,
+        palette.text,
+        "More colours",
+    );
+    let mut chosen = None;
+    egui::Popup::menu(&button)
+        .id(egui::Id::new(salt))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+            let cell = |ui: &mut egui::Ui, rgb: [u8; 3]| -> bool {
+                let rgba = [rgb[0], rgb[1], rgb[2], 255];
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+                ui.painter()
+                    .rect_filled(rect, 2.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                let line = if current == Some(rgba) {
+                    egui::Stroke::new(2.0, palette.accent)
+                } else {
+                    egui::Stroke::new(1.0, palette.outline)
+                };
+                ui.painter()
+                    .rect_stroke(rect, 2.0, line, egui::StrokeKind::Inside);
+                response.clicked()
+            };
+            ui.label("Theme colours");
+            ui.horizontal(|ui| {
+                for base in THEME_COLORS {
+                    if cell(ui, base) {
+                        chosen = Some(Some([base[0], base[1], base[2], 255]));
+                    }
+                }
+            });
+            for row in 0..5 {
+                ui.horizontal(|ui| {
+                    for base in THEME_COLORS {
+                        let rgb = shades(base)[row];
+                        if cell(ui, rgb) {
+                            chosen = Some(Some([rgb[0], rgb[1], rgb[2], 255]));
+                        }
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            ui.label("Standard colours");
+            ui.horizontal(|ui| {
+                for rgb in STANDARD_COLORS {
+                    if cell(ui, rgb) {
+                        chosen = Some(Some([rgb[0], rgb[1], rgb[2], 255]));
+                    }
+                }
+            });
+            if allow_none && ui.button("No colour").clicked() {
+                chosen = Some(None);
+            }
+            ui.add_space(4.0);
+            let id = egui::Id::new(salt).with("custom");
+            let mut custom: Color32 = ui.data(|data| data.get_temp(id)).unwrap_or_else(|| {
+                current.map_or(Color32::from_rgb(68, 114, 196), |c| {
+                    Color32::from_rgb(c[0], c[1], c[2])
+                })
+            });
+            egui::CollapsingHeader::new("More colours…")
+                .id_salt(id.with("open"))
+                .show(ui, |ui| {
+                    egui::color_picker::color_picker_color32(
+                        ui,
+                        &mut custom,
+                        egui::color_picker::Alpha::Opaque,
+                    );
+                    if ui.button("Use this colour").clicked() {
+                        chosen = Some(Some([custom.r(), custom.g(), custom.b(), 255]));
+                    }
+                });
+            ui.data_mut(|data| data.insert_temp(id, custom));
+        });
+    if chosen.is_some() {
+        egui::Popup::close_id(ui.ctx(), egui::Id::new(salt));
+    }
+    chosen
+}
+
+/// ZFPlus: the text format menu: typeface, size, bold, italic, underline,
+/// strikethrough, word art styles, and Text Fill, Text Outline and Text
+/// Effects, as Office has them.
+fn text_format(ui: &mut egui::Ui, palette: theme::Palette, edit: &PictureEdit) -> Option<Change> {
+    let mut change = None;
+    let button = theme::pill_button(
+        ui,
+        &palette,
+        &format!("Aa  {} {}", edit.font.name(), edit.text_style.size),
+        true,
+    );
+    egui::Popup::menu(&button)
+        .id(egui::Id::new("editor-text-format"))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(300.0);
+            let mut style = edit.text_style;
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("editor-font")
+                    .selected_text(edit.font.name())
+                    .width(140.0)
+                    .height(320.0)
+                    .show_ui(ui, |ui| {
+                        for font in MarkFont::ALL {
+                            if ui
+                                .selectable_label(edit.font == font, font.name())
+                                .clicked()
+                            {
+                                change = Some(Change::Font(font));
+                            }
+                        }
+                    });
+                egui::ComboBox::from_id_salt("editor-size")
+                    .selected_text(style.size.to_string())
+                    .width(64.0)
+                    .show_ui(ui, |ui| {
+                        for size in TEXT_SIZES {
+                            ui.selectable_value(&mut style.size, size, size.to_string());
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.toggle_value(&mut style.bold, egui::RichText::new("B").strong())
+                    .on_hover_text("Bold");
+                ui.toggle_value(&mut style.italic, egui::RichText::new("I").italics())
+                    .on_hover_text("Italic");
+                ui.toggle_value(&mut style.underline, egui::RichText::new("U").underline())
+                    .on_hover_text("Underline");
+                ui.toggle_value(&mut style.strike, egui::RichText::new("S").strikethrough())
+                    .on_hover_text("Strikethrough");
+            });
+            ui.separator();
+            ui.label("Word art styles");
+            ui.horizontal_wrapped(|ui| {
+                for art in WordArt::ALL {
+                    if ui.selectable_label(edit.art == art, art.name()).clicked() {
+                        change = Some(Change::Art(art));
+                    }
+                }
+            });
+            ui.separator();
+            ui.label("Text fill");
+            ui.horizontal_wrapped(|ui| {
+                let look = &mut style.look;
+                if ui
+                    .selectable_label(look.fill == TextFill::Solid, "Text colour")
+                    .clicked()
+                {
+                    look.fill = TextFill::Solid;
+                }
+                if ui
+                    .selectable_label(matches!(look.fill, TextFill::Gradient(_)), "Gradient")
+                    .clicked()
+                {
+                    look.fill = TextFill::Gradient([255, 255, 255, 255]);
+                }
+                if ui
+                    .selectable_label(look.fill == TextFill::Rainbow, "Rainbow")
+                    .clicked()
+                {
+                    look.fill = TextFill::Rainbow;
+                }
+                if ui
+                    .selectable_label(look.fill == TextFill::None, "No fill")
+                    .clicked()
+                {
+                    look.fill = TextFill::None;
+                }
+                let current = match look.fill {
+                    TextFill::Color(color) | TextFill::Gradient(color) => Some(color),
+                    _ => None,
+                };
+                ui.label(if matches!(look.fill, TextFill::Gradient(_)) {
+                    "to"
+                } else {
+                    "Other"
+                });
+                if let Some(Some(color)) = more_colors(ui, palette, "text-fill", current, false) {
+                    look.fill = match look.fill {
+                        TextFill::Gradient(_) => TextFill::Gradient(color),
+                        _ => TextFill::Color(color),
+                    };
+                }
+            });
+            ui.label("Text outline");
+            ui.horizontal_wrapped(|ui| {
+                let look = &mut style.look;
+                if ui
+                    .selectable_label(look.outline.is_none(), "No outline")
+                    .clicked()
+                {
+                    look.outline = None;
+                }
+                if let Some(outline) = more_colors(ui, palette, "text-outline", look.outline, true)
+                {
+                    look.outline = outline;
+                    if look.outline_width == 0 {
+                        look.outline_width = 3;
+                    }
+                }
+                let mut weight = look.outline_width.max(1);
+                if ui
+                    .add(egui::Slider::new(&mut weight, 1..=10).text("weight"))
+                    .changed()
+                {
+                    look.outline_width = weight;
+                }
+            });
+            ui.label("Text effects");
+            ui.horizontal_wrapped(|ui| {
+                let look = &mut style.look;
+                ui.checkbox(&mut look.shadow, "Shadow");
+                ui.checkbox(&mut look.reflection, "Reflection");
+                ui.checkbox(&mut look.extrude, "3D");
+                let mut glowing = look.glow.is_some();
+                if ui.checkbox(&mut glowing, "Glow").changed() {
+                    look.glow = glowing.then_some(edit.color);
+                }
+                if glowing
+                    && let Some(Some(glow)) =
+                        more_colors(ui, palette, "text-glow", look.glow, false)
+                {
+                    look.glow = Some(glow);
+                }
+            });
+            if style != edit.text_style && change.is_none() {
+                change = Some(Change::Style(style));
+            }
+        });
+    change
 }
 
 /// ZFPlus: wakes the window from another thread.

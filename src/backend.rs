@@ -243,6 +243,9 @@ pub enum Command {
     RefreshProfile,
     /// ZFPlus: searches WhatsApp's business categories.
     SearchBusinessCategories(String),
+    /// ZFPlus: a request of the Status, Channels, Communities or Business
+    /// tools page.
+    Plus(crate::model::PlusRequest),
     ReplyInteractive {
         chat: ChatId,
         message: String,
@@ -511,6 +514,11 @@ pub enum Command {
     /// Locks or unlocks a chat (the locked folder).
     SetLocked(ChatId, bool),
     /// Creates a label; the worker owns the clock for its id.
+    /// ZFPlus: WhatsApp's lists were read again (all of them when
+    /// `complete`).
+    ListsRecovered {
+        complete: bool,
+    },
     /// ZFPlus: a list made here reached WhatsApp under `synced`; file it
     /// under that id.
     ListAdopted {
@@ -1276,6 +1284,9 @@ pub enum Event {
     /// ZFPlus: this account's WhatsApp username, without the `@`; `None`
     /// when it has none.
     Username(Option<String>),
+    /// ZFPlus: an answer for the Status, Channels, Communities or Business
+    /// tools page.
+    Plus(crate::model::PlusAnswer),
     /// ZFPlus: business categories matching a search, as (id, name).
     BusinessCategories {
         query: String,

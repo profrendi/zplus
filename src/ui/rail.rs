@@ -203,6 +203,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
             } else {
                 0.0
             };
+        // ZFPlus: Status, Channels, Communities and, for a business,
+        // Business tools, under the destinations.
+        // A short window keeps what it had and shows those that fit.
+        let business = app.business == Some(true);
+        let room = ((ui.available_height() - minimum) / (PLATE + GAP)).max(0.0) as usize;
+        let pages = (3 + usize::from(business)).min(room);
+        let minimum = minimum + pages as f32 * (PLATE + GAP);
         let height = ui.available_height().max(minimum);
         egui::ScrollArea::vertical()
             .id_salt("navigation-rail")
@@ -215,6 +222,41 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                 ui.set_height(height);
                 for destination in top {
                     destination_button(app, ui, &palette, destination, CELL);
+                }
+                for (icon, label, salt, dialog) in [
+                    (
+                        Icon::CircleDashed,
+                        "Status",
+                        "plus-status",
+                        crate::model::Dialog::Status,
+                    ),
+                    (
+                        Icon::Radio,
+                        "Channels",
+                        "plus-channels",
+                        crate::model::Dialog::Channels,
+                    ),
+                    (
+                        Icon::Users,
+                        "Communities",
+                        "plus-communities",
+                        crate::model::Dialog::Communities,
+                    ),
+                    (
+                        Icon::Briefcase,
+                        "Business tools",
+                        "plus-business",
+                        crate::model::Dialog::BusinessTools,
+                    ),
+                ]
+                .into_iter()
+                .take(pages)
+                {
+                    let lit = app.dialog.as_ref() == Some(&dialog);
+                    plus_plate(app, ui, &palette, icon, label, lit, salt, move |app| {
+                        app.actions.push(Action::ShowDialog(dialog));
+                    });
+                    ui.add_space(GAP);
                 }
                 if hidden {
                     // A cell of its own under Calls: nothing above it moves

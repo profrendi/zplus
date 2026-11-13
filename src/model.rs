@@ -2315,6 +2315,12 @@ pub struct PictureEdit {
     pub text_box: bool,
     /// ZFPlus: the word art style new text takes.
     pub art: WordArt,
+    /// ZFPlus: the size, emphasis and look new text takes.
+    pub text_style: TextStyle,
+    /// ZFPlus: a grid's ground (none shows the photo between the boxes) and
+    /// whether its boxes are outlined.
+    pub grid_ground: Option<[u8; 4]>,
+    pub grid_lines: bool,
     /// ZFPlus: the mark picked with the Move tool, to move, resize, recolour
     /// or delete, by its place in `marks`.
     pub selected: Option<usize>,
@@ -2430,15 +2436,36 @@ pub enum MarkFont {
     Bold,
     Script,
     Mono,
+    // ZFPlus: more typefaces, as on most computers.
+    Calibri,
+    Cambria,
+    Verdana,
+    Tahoma,
+    Trebuchet,
+    Garamond,
+    Palatino,
+    Narrow,
+    Handwriting,
+    Display,
 }
 
 impl MarkFont {
-    pub const ALL: [MarkFont; 5] = [
+    pub const ALL: [MarkFont; 15] = [
         MarkFont::Sans,
         MarkFont::Serif,
         MarkFont::Bold,
         MarkFont::Script,
         MarkFont::Mono,
+        MarkFont::Calibri,
+        MarkFont::Cambria,
+        MarkFont::Verdana,
+        MarkFont::Tahoma,
+        MarkFont::Trebuchet,
+        MarkFont::Garamond,
+        MarkFont::Palatino,
+        MarkFont::Narrow,
+        MarkFont::Handwriting,
+        MarkFont::Display,
     ];
 
     pub fn name(self) -> &'static str {
@@ -2448,6 +2475,16 @@ impl MarkFont {
             MarkFont::Bold => "Bold",
             MarkFont::Script => "Script",
             MarkFont::Mono => "Mono",
+            MarkFont::Calibri => "Calibri",
+            MarkFont::Cambria => "Cambria",
+            MarkFont::Verdana => "Verdana",
+            MarkFont::Tahoma => "Tahoma",
+            MarkFont::Trebuchet => "Trebuchet",
+            MarkFont::Garamond => "Garamond",
+            MarkFont::Palatino => "Palatino",
+            MarkFont::Narrow => "Narrow",
+            MarkFont::Handwriting => "Handwriting",
+            MarkFont::Display => "Display",
         }
     }
 }
@@ -2479,6 +2516,64 @@ pub struct MarkText {
     pub boxed: bool,
     /// ZFPlus: the word art style its letters are drawn in.
     pub art: WordArt,
+    /// ZFPlus: size, bold, italic, underline, strikethrough, and the fill,
+    /// outline and effects of its letters.
+    pub style: TextStyle,
+}
+
+/// ZFPlus: how text is set, as a word processor offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextStyle {
+    /// In points; 28 is the editor's usual size.
+    pub size: u16,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    pub look: TextLook,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            size: TEXT_SIZE,
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            look: TextLook::default(),
+        }
+    }
+}
+
+/// ZFPlus: the text size the editor starts with, and the sizes it offers.
+pub const TEXT_SIZE: u16 = 28;
+pub const TEXT_SIZES: [u16; 14] = [8, 10, 12, 14, 18, 24, 28, 36, 48, 60, 72, 96, 120, 144];
+
+/// ZFPlus: how letters are filled: their own colour, a gradient to a
+/// second colour, the rainbow, or not at all (only the outline).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextFill {
+    #[default]
+    Solid,
+    /// Solid in a colour of its own, not the text's.
+    Color([u8; 4]),
+    Gradient([u8; 4]),
+    Rainbow,
+    None,
+}
+
+/// ZFPlus: Text Fill, Text Outline and Text Effects, as in Office.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TextLook {
+    pub fill: TextFill,
+    pub outline: Option<[u8; 4]>,
+    /// The outline's weight, 1 to 10.
+    pub outline_width: u8,
+    pub shadow: bool,
+    pub glow: Option<[u8; 4]>,
+    pub reflection: bool,
+    pub extrude: bool,
 }
 
 /// ZFPlus: word art: how a text's letters are drawn, in its colour.
@@ -2497,16 +2592,28 @@ pub enum WordArt {
     Neon,
     /// The colours of the rainbow across, outlined in white.
     Rainbow,
+    /// Only the outline.
+    Hollow,
+    /// A reflection under the words.
+    Mirror,
+    /// Gold, light to dark.
+    Gold,
+    /// Silver, light to dark.
+    Silver,
 }
 
 impl WordArt {
-    pub const ALL: [WordArt; 6] = [
+    pub const ALL: [WordArt; 10] = [
         WordArt::Plain,
         WordArt::Outline,
         WordArt::Gradient,
         WordArt::Extruded,
         WordArt::Neon,
         WordArt::Rainbow,
+        WordArt::Hollow,
+        WordArt::Mirror,
+        WordArt::Gold,
+        WordArt::Silver,
     ];
 
     pub fn name(self) -> &'static str {
@@ -2517,6 +2624,90 @@ impl WordArt {
             WordArt::Extruded => "3D",
             WordArt::Neon => "Neon",
             WordArt::Rainbow => "Rainbow",
+            WordArt::Hollow => "Hollow",
+            WordArt::Mirror => "Reflection",
+            WordArt::Gold => "Gold",
+            WordArt::Silver => "Silver",
+        }
+    }
+
+    /// The fill, outline and effects this style stands for, for text in
+    /// `color`.
+    pub fn look(self, color: [u8; 4]) -> TextLook {
+        let shade = |share: f32| -> [u8; 4] {
+            let blend = |channel: u8| (f32::from(channel) * (1.0 - share)).round() as u8;
+            [blend(color[0]), blend(color[1]), blend(color[2]), color[3]]
+        };
+        let bright =
+            0.299 * f32::from(color[0]) + 0.587 * f32::from(color[1]) + 0.114 * f32::from(color[2])
+                > 150.0;
+        let contrast = if bright {
+            [20, 20, 20, 255]
+        } else {
+            [255, 255, 255, 255]
+        };
+        let plain = TextLook {
+            outline_width: 3,
+            ..TextLook::default()
+        };
+        match self {
+            WordArt::Plain => plain,
+            WordArt::Outline => TextLook {
+                outline: Some(contrast),
+                outline_width: 8,
+                shadow: true,
+                ..plain
+            },
+            WordArt::Gradient => TextLook {
+                fill: TextFill::Gradient(shade(0.6)),
+                outline: Some(shade(0.75)),
+                outline_width: 4,
+                ..plain
+            },
+            WordArt::Extruded => TextLook {
+                outline: Some(shade(0.7)),
+                outline_width: 2,
+                extrude: true,
+                ..plain
+            },
+            WordArt::Neon => TextLook {
+                fill: TextFill::Color([255, 255, 255, 255]),
+                outline: Some(color),
+                outline_width: 3,
+                glow: Some(color),
+                ..plain
+            },
+            WordArt::Rainbow => TextLook {
+                fill: TextFill::Rainbow,
+                outline: Some([255, 255, 255, 255]),
+                outline_width: 6,
+                shadow: true,
+                ..plain
+            },
+            WordArt::Hollow => TextLook {
+                fill: TextFill::None,
+                outline: Some(color),
+                outline_width: 4,
+                ..plain
+            },
+            WordArt::Mirror => TextLook {
+                reflection: true,
+                ..plain
+            },
+            WordArt::Gold => TextLook {
+                fill: TextFill::Gradient([184, 134, 11, 255]),
+                outline: Some([120, 82, 6, 255]),
+                outline_width: 3,
+                shadow: true,
+                ..plain
+            },
+            WordArt::Silver => TextLook {
+                fill: TextFill::Gradient([120, 124, 130, 255]),
+                outline: Some([80, 84, 90, 255]),
+                outline_width: 3,
+                shadow: true,
+                ..plain
+            },
         }
     }
 }
@@ -2566,6 +2757,92 @@ pub struct Mark {
     pub angle: f32,
     /// ZFPlus: whether a placed picture is mirrored left to right.
     pub flipped: bool,
+}
+
+/// ZFPlus: one status update of the last day.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatusPost {
+    pub id: String,
+    pub sender: ChatId,
+    pub timestamp: i64,
+    pub kind: StatusKind,
+    /// Its words, or a photo's or video's caption.
+    pub text: String,
+    /// A text status's background.
+    pub background: Option<[u8; 4]>,
+    /// A photo's or video's small JPEG preview.
+    pub thumbnail: Option<std::sync::Arc<Vec<u8>>>,
+    pub mine: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusKind {
+    Text,
+    Image,
+    Video,
+    Other,
+}
+
+/// ZFPlus: a community and its groups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityInfo {
+    pub id: ChatId,
+    pub name: String,
+    /// Each group: its id, its name, and whether we are in it.
+    pub groups: Vec<(ChatId, String, bool)>,
+}
+
+/// ZFPlus: one product of a business catalogue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogItem {
+    pub name: String,
+    pub description: String,
+    pub price: Option<String>,
+    pub link: Option<String>,
+}
+
+/// ZFPlus: what the Status, Channels, Communities and Business tools pages
+/// ask WhatsApp for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlusRequest {
+    LoadStatuses,
+    DownloadStatus(String),
+    PostStatus {
+        text: String,
+        background: [u8; 4],
+        picture: Option<std::path::PathBuf>,
+    },
+    LoadCommunities,
+    CreateCommunity {
+        name: String,
+        description: String,
+    },
+    JoinCommunityGroup {
+        community: ChatId,
+        group: ChatId,
+    },
+    CreateChannel {
+        name: String,
+        description: String,
+    },
+    FollowChannel(String),
+    UnfollowChannel(ChatId),
+    LoadCatalog,
+}
+
+/// ZFPlus: what WhatsApp answered those pages.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlusAnswer {
+    Statuses(Vec<StatusPost>),
+    StatusMedia {
+        id: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    Communities(Result<Vec<CommunityInfo>, String>),
+    Catalog(Result<Vec<CatalogItem>, String>),
+    /// A request that changes something went through (with what to say)
+    /// or did not (with why).
+    Done(Result<String, String>),
 }
 
 /// ZFPlus: an empty grid box's fill and outline, which tell it from a
@@ -2987,6 +3264,9 @@ impl PictureEdit {
             font: MarkFont::default(),
             text_box: false,
             art: WordArt::Plain,
+            text_style: TextStyle::default(),
+            grid_ground: Some([255, 255, 255, 255]),
+            grid_lines: true,
             selected: None,
             writing: None,
         }
@@ -3043,14 +3323,23 @@ impl PictureEdit {
         // The gap, the same on screen across and down.
         let gap_px = crop.width.min(crop.height) as f32 * 0.02;
         let gap = [gap_px / wide_f, gap_px / tall_f];
-        let mut marks = vec![Mark {
-            tool: MarkTool::Rectangle,
-            points: vec![[area[0], area[1]], [area[2], area[3]]],
-            color: [255, 255, 255, 255],
-            width: 0.002,
-            fill: Some([255, 255, 255, 255]),
-            ..Mark::default()
-        }];
+        let mut marks = Vec::new();
+        if let Some(ground) = self.grid_ground {
+            marks.push(Mark {
+                tool: MarkTool::Rectangle,
+                points: vec![[area[0], area[1]], [area[2], area[3]]],
+                color: ground,
+                width: 0.002,
+                fill: Some(ground),
+                ..Mark::default()
+            });
+        }
+        let ground_marks = marks.len();
+        let slot_line = if self.grid_lines {
+            GRID_SLOT_LINE
+        } else {
+            GRID_SLOT_FILL
+        };
         let original = original.map(std::sync::Arc::new);
         for (index, cell) in layout.cells().iter().enumerate() {
             let left = area[0] + (area[2] - area[0]) * cell[0] + gap[0];
@@ -3065,16 +3354,16 @@ impl PictureEdit {
                 _ => marks.push(Mark {
                     tool: MarkTool::Rectangle,
                     points: vec![[slot[0], slot[1]], [slot[2], slot[3]]],
-                    color: GRID_SLOT_LINE,
+                    color: slot_line,
                     width: 0.003,
                     fill: Some(GRID_SLOT_FILL),
                     ..Mark::default()
                 }),
             }
         }
-        let first_slot = if original.is_some() { 2 } else { 1 };
+        let first_slot = ground_marks + usize::from(original.is_some());
         self.change(|existing| existing.extend(marks));
-        let base = self.marks.len() - layout.cells().len() - 1;
+        let base = self.marks.len() - layout.cells().len() - ground_marks;
         self.tool = MarkTool::Select;
         self.selected = (base + first_slot < self.marks.len()).then_some(base + first_slot);
     }
@@ -3196,6 +3485,7 @@ impl PictureEdit {
             fill: self.fill,
             boxed: self.text_box,
             art: self.art,
+            style: self.text_style,
         };
         let mark = self.text_mark(text, writing.center, old.as_ref());
         match writing.replaces {
@@ -3219,12 +3509,23 @@ impl PictureEdit {
         let short = wide.min(tall).max(1) as f32;
         let lines = text.text.lines().count().max(1) as f32;
         let fresh = TEXT_LINE_SHARE * short * lines / image.height.max(1) as f32;
-        // Picture pixels per pixel of the old text's picture keep its size.
+        let fresh = fresh * f32::from(text.style.size.max(1)) / f32::from(TEXT_SIZE);
+        // Picture pixels per pixel of the old text's picture keep its size,
+        // grown or shrunk as its point size changed.
         let scale = old
             .and_then(|old| {
                 let previous = old.stamp.as_ref()?;
                 let [left, _, right, _] = old.bounds();
-                Some((right - left) * wide as f32 / previous.image.width.max(1) as f32)
+                let was = previous
+                    .text
+                    .as_ref()
+                    .map_or(TEXT_SIZE, |text| text.style.size)
+                    .max(1);
+                Some(
+                    (right - left) * wide as f32 / previous.image.width.max(1) as f32
+                        * f32::from(text.style.size.max(1))
+                        / f32::from(was),
+                )
             })
             .unwrap_or(fresh);
         Mark {
@@ -3256,6 +3557,7 @@ impl PictureEdit {
                 fill: self.fill,
                 boxed: self.text_box,
                 art: self.art,
+                style: self.text_style,
                 ..text
             };
             let [left, top, right, bottom] = mark.bounds();
@@ -3296,6 +3598,7 @@ impl PictureEdit {
             self.font = text.font;
             self.text_box = text.boxed;
             self.art = text.art;
+            self.text_style = text.style;
         } else if mark.stamp.is_none() {
             self.color = mark.color;
             if mark.tool.is_shape() {
@@ -3660,6 +3963,14 @@ pub enum Dialog {
     ConfirmStartOver,
     /// ZFPlus: asks before removing the app from this computer.
     ConfirmUninstall,
+    /// ZFPlus: status updates, seen without telling their senders.
+    Status,
+    /// ZFPlus: channels followed, made, and followed by link.
+    Channels,
+    /// ZFPlus: communities and their groups.
+    Communities,
+    /// ZFPlus: a business account's tools.
+    BusinessTools,
     /// The stickers of a pack shared in a chat, with a button to add it.
     StickerPack,
     /// Crops a picture into a sticker.
@@ -3994,6 +4305,9 @@ pub enum Action {
     UpdateBusiness(BusinessEdit),
     /// ZFPlus: reads this account's own profile again.
     RefreshProfile,
+    /// ZFPlus: a request of the Status, Channels, Communities or Business
+    /// tools page.
+    Plus(PlusRequest),
     /// ZFPlus: forwards the one message to the one chat picked through its
     /// composer, to change it (and its picture) first.
     ForwardEdited,

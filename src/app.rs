@@ -2636,6 +2636,25 @@ impl App {
         }
     }
 
+    /// ZFPlus: files what WhatsApp answered the Status, Channels,
+    /// Communities and Business tools pages.
+    fn plus_answer(&mut self, answer: crate::model::PlusAnswer) {
+        use crate::model::PlusAnswer;
+        match answer {
+            PlusAnswer::Statuses(statuses) => self.statuses = statuses,
+            PlusAnswer::StatusMedia { id, result } => {
+                if let Err(error) = &result {
+                    self.toast_error(error.clone());
+                }
+                self.status_media.insert(id, result);
+            }
+            PlusAnswer::Communities(communities) => self.communities = Some(communities),
+            PlusAnswer::Catalog(catalog) => self.catalog = Some(catalog),
+            PlusAnswer::Done(Ok(said)) => self.toast(said),
+            PlusAnswer::Done(Err(error)) => self.toast_error(error),
+        }
+    }
+
     /// ZFPlus: forwards one message to one chat by way of its composer, to
     /// change it first: its words come quoted (`> `), so they stay apart
     /// from ours under them, and a photo opens in the picture editor. What
@@ -4961,6 +4980,7 @@ impl App {
             Event::Registered(answers) => self.registered.extend(answers),
             Event::BusinessInfo(info) => self.business_info = info,
             Event::Username(username) => self.username = username,
+            Event::Plus(answer) => self.plus_answer(answer),
             Event::BusinessCategories { query, results } => {
                 self.category_search = Some((query, results));
             }
@@ -8148,6 +8168,7 @@ impl App {
             }
             Action::UpdateBusiness(edit) => self.backend.send(Command::UpdateBusiness(edit)),
             Action::RefreshProfile => self.backend.send(Command::RefreshProfile),
+            Action::Plus(request) => self.backend.send(Command::Plus(request)),
             Action::ForwardEdited => self.forward_edited(ctx),
             Action::Uninstall { remove_data } => {
                 let folders = [

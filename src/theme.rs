@@ -921,6 +921,10 @@ fastframe_icons::icons! {
         Sparkles => "sparkles",
         ImagePlus => "image-plus",
         LayoutGrid => "layout-grid",
+        // ZFPlus: the Status, Channels and Business tools pages.
+        CircleDashed => "circle-dashed",
+        Radio => "radio",
+        Briefcase => "briefcase",
         ArrowLeft => lucide "arrow-left",
         Ban => "ban",
         Bell => "bell",

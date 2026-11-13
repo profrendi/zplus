@@ -49,6 +49,7 @@ mod device_store;
 mod disappearing;
 mod download_folders;
 mod early_events;
+mod plus_pages;
 use early_events::WaitingReaction;
 mod favorite_chats;
 mod group_admin;
@@ -812,6 +813,9 @@ async fn send_list_edit(
     action.name = Some(name.to_owned());
     action.color = Some(list_color_index(color_hex));
     action.deleted = Some(false);
+    // As WhatsApp Web sends a list people make: active, at the end.
+    action.is_active = Some(true);
+    action.order_index = list.parse::<i32>().ok();
     action.r#type = Some(wa::sync_action_value::label_edit_action::ListType::CUSTOM);
     let mut value = wa::SyncActionValue::default();
     value.label_edit_action = Some(action).into();
@@ -2851,6 +2855,38 @@ impl Worker {
             return;
         }
         self.emit_labels();
+    }
+
+    /// ZFPlus: an archive from before lists were synced never filed the
+    /// phone's lists, which arrived at pairing. WhatsApp's list collection
+    /// is read again once, from its snapshot, and the lists made here are
+    /// sent after it, so a list of the same name is merged, not doubled.
+    fn recover_lists(&mut self) {
+        const DONE: &str = "plus_lists_recovered";
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        if matches!(self.archive.meta(DONE), Ok(Some(_))) {
+            self.push_local_lists();
+            return;
+        }
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let result = client
+                .resync_app_state(
+                    [whatsapp_rust::WAPatchName::Regular],
+                    whatsapp_rust::AppStateResyncMode::Snapshot,
+                )
+                .await;
+            let complete = match result {
+                Ok(report) => report.all_synced(),
+                Err(error) => {
+                    log::info!("lists were not read again from WhatsApp: {error}");
+                    false
+                }
+            };
+            let _ = commands.send(Command::ListsRecovered { complete });
+        });
     }
 
     /// ZFPlus: sends the lists made here before they were synced, with
@@ -5357,7 +5393,7 @@ impl Worker {
                 // lists have arrived, so a name is merged, not doubled.
                 if !self.lists_pushed {
                     self.lists_pushed = true;
-                    self.push_local_lists();
+                    self.recover_lists();
                 }
             }
             E::ServerAck(ack) => self.server_ack(ack),
@@ -5876,6 +5912,8 @@ impl Worker {
     fn ingest(&mut self, message: &Arc<wa::Message>, info: &MessageInfo) {
         self.learn_source(&info.source);
         if info.source.chat.is_status_broadcast() {
+            // ZFPlus: kept for the Status page, never answered with a read.
+            self.plus_keep_status(message, info);
             return;
         }
         let Some(chat) = self.message_chat(info) else {
@@ -8187,6 +8225,7 @@ impl Worker {
                     }
                 });
             }
+            Command::Plus(request) => self.plus_request(request),
             Command::SearchBusinessCategories(query) => {
                 let Some(client) = self.client.clone() else {
                     self.emit(Event::BusinessCategories {
@@ -9763,6 +9802,14 @@ impl Worker {
                 });
             }
             Command::CreateLabel { name, color_hex } => self.create_label(name, color_hex),
+            Command::ListsRecovered { complete } => {
+                if complete {
+                    let _ = self.archive.set_meta("plus_lists_recovered", "1");
+                }
+                self.emit_labels();
+                self.emit_chats();
+                self.push_local_lists();
+            }
             Command::ListAdopted { local, synced } => {
                 match self.archive.adopt_label(&local, &synced) {
                     Ok(()) => {

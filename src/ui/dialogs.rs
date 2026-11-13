@@ -39,7 +39,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::ConfirmLeaveGroup(_) => 380.0,
                 Dialog::PairWithPhone => 380.0,
                 Dialog::NewContact => 380.0,
-                Dialog::NewChat => 420.0,
+                // ZFPlus: the Status, Channels, Communities and Business
+                // tools pages, large.
+                Dialog::Status | Dialog::Channels | Dialog::Communities | Dialog::BusinessTools => {
+                    let width = ui.ctx().content_rect().width();
+                    (width * 0.7)
+                        .clamp(480.0, 980.0)
+                        .min((width - 48.0).max(1.0))
+                }
+                // ZFPlus: a roomier New chat, wider and taller with the window.
+                Dialog::NewChat => {
+                    let width = ui.ctx().content_rect().width();
+                    (width * 0.45)
+                        .clamp(420.0, 640.0)
+                        .min((width - 48.0).max(1.0))
+                }
                 Dialog::UnlockLockedChats | Dialog::ConfirmLockChat(_) => 380.0,
                 Dialog::ConfirmDeleteChat(_)
                 | Dialog::JoinGroup
@@ -138,6 +152,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::JoinGroup => join_group(app, ui),
                 Dialog::ConfirmStartOver => confirm_start_over(app, ui),
                 Dialog::ConfirmUninstall => confirm_uninstall(app, ui),
+                Dialog::Status => super::plus_pages::status(app, ui),
+                Dialog::Channels => super::plus_pages::channels(app, ui),
+                Dialog::Communities => super::plus_pages::communities(app, ui),
+                Dialog::BusinessTools => super::plus_pages::business_tools(app, ui),
                 Dialog::StickerPack => sticker_pack(app, ui),
                 Dialog::StickerMaker => sticker_maker(app, ui),
                 Dialog::MessageInfo { chat, message } => {
@@ -547,7 +565,7 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
     let rows = 2 + listed;
     let spacing = ui.spacing().item_spacing.y;
     let content_height = rows as f32 * theme::ROW_HEIGHT + (rows - 1) as f32 * spacing;
-    let room = (ui.ctx().content_rect().height() - 280.0).clamp(100.0, 420.0);
+    let room = (ui.ctx().content_rect().height() - 220.0).clamp(100.0, 820.0);
     let list_height = content_height.min(room);
     egui::ScrollArea::vertical()
         .id_salt("new-chat-contacts")

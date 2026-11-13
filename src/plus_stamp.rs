@@ -18,7 +18,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{FontRef, MetadataProvider};
 
-use crate::model::{MarkFont, MarkText, StampImage, WordArt};
+use crate::model::{MarkFont, MarkText, StampImage, TextFill, TextLook};
 
 /// The size letters are drawn at, in pixels. The picture is scaled to the
 /// size it is given on the photo, so this only sets how sharp it stays.
@@ -181,6 +181,60 @@ fn candidates(font: MarkFont) -> &'static [&'static str] {
             "DejaVuSerif-Italic.ttf",
             "NotoSerif-Italic.ttf",
             "LiberationSerif-Italic.ttf",
+        ],
+        MarkFont::Calibri => &[
+            "calibri.ttf",
+            "Carlito-Regular.ttf",
+            "segoeui.ttf",
+            "DejaVuSans.ttf",
+        ],
+        MarkFont::Cambria => &[
+            "cambria.ttc",
+            "Caladea-Regular.ttf",
+            "georgia.ttf",
+            "DejaVuSerif.ttf",
+        ],
+        MarkFont::Verdana => &["verdana.ttf", "Verdana.ttf", "DejaVuSans.ttf"],
+        MarkFont::Tahoma => &["tahoma.ttf", "Tahoma.ttf", "DejaVuSans.ttf"],
+        MarkFont::Trebuchet => &[
+            "trebuc.ttf",
+            "Trebuchet MS.ttf",
+            "Ubuntu-R.ttf",
+            "DejaVuSans.ttf",
+        ],
+        MarkFont::Garamond => &[
+            "gara.ttf",
+            "EBGaramond-Regular.ttf",
+            "Garamond.ttf",
+            "times.ttf",
+            "DejaVuSerif.ttf",
+        ],
+        MarkFont::Palatino => &[
+            "pala.ttf",
+            "Palatino.ttc",
+            "P052-Roman.otf",
+            "URWPalladioL-Roma.ttf",
+            "DejaVuSerif.ttf",
+        ],
+        MarkFont::Narrow => &[
+            "arialn.ttf",
+            "bahnschrift.ttf",
+            "LiberationSansNarrow-Regular.ttf",
+            "DejaVuSansCondensed.ttf",
+        ],
+        MarkFont::Handwriting => &[
+            "inkfree.ttf",
+            "segoepr.ttf",
+            "comic.ttf",
+            "Chalkboard.ttc",
+            "DejaVuSans-Oblique.ttf",
+        ],
+        MarkFont::Display => &[
+            "bahnschrift.ttf",
+            "impact.ttf",
+            "Futura.ttc",
+            "Ubuntu-B.ttf",
+            "DejaVuSans-Bold.ttf",
         ],
         MarkFont::Mono => &[
             "consola.ttf",
@@ -392,7 +446,14 @@ pub fn render_text(text: &MarkText) -> StampImage {
     let padding = TEXT_PX * PADDING;
     let content = widths.iter().copied().fold(TEXT_PX * 0.5, f32::max);
     let width = (content + padding * 2.0).ceil() as u32;
-    let height = (line_height * lines.len() as f32 + padding * 2.0).ceil() as u32;
+    // A reflection needs room under the words.
+    let block = line_height * lines.len() as f32;
+    let reflection = if text.style.look.reflection {
+        block * 0.6
+    } else {
+        0.0
+    };
+    let height = (block + padding * 2.0 + reflection).ceil() as u32;
     let Some(mut pixmap) = Pixmap::new(width.max(1), height.max(1)) else {
         return StampImage {
             width: 1,
@@ -452,9 +513,30 @@ pub fn render_text(text: &MarkText) -> StampImage {
         origin: (0.0, 0.0),
     };
     let mut emojis = Vec::new();
+    let mut rules = Vec::new();
     for (row, (line, line_width)) in lines.iter().zip(&widths).enumerate() {
         let mut x = (width as f32 - line_width) / 2.0;
         let baseline = padding + line_height * row as f32 + ascent;
+        // Underline and strikethrough, a line's width each.
+        if *line_width > 0.0 {
+            let thickness = TEXT_PX * 0.06;
+            if text.style.underline {
+                rules.push(tiny_skia::Rect::from_xywh(
+                    x,
+                    baseline + TEXT_PX * 0.1,
+                    *line_width,
+                    thickness,
+                ));
+            }
+            if text.style.strike {
+                rules.push(tiny_skia::Rect::from_xywh(
+                    x,
+                    baseline - TEXT_PX * 0.3,
+                    *line_width,
+                    thickness,
+                ));
+            }
+        }
         for (piece, advance) in line {
             match piece {
                 Piece::Outline(glyph) => {
@@ -473,8 +555,33 @@ pub fn render_text(text: &MarkText) -> StampImage {
             x += advance;
         }
     }
-    if let Some(path) = pen.path.finish() {
-        draw_letters(&mut pixmap, &path, text.color, text.art);
+    // The rules join the letters' path, so fill, outline and effects take
+    // them too.
+    for rule in rules.into_iter().flatten() {
+        pen.path.push_rect(rule);
+    }
+    if let Some(mut path) = pen.path.finish() {
+        if text.style.italic {
+            // Leaning letters, about the middle so they stay inside.
+            let middle = height as f32 / 2.0;
+            if let Some(leaned) = path.clone().transform(Transform::from_row(
+                1.0,
+                0.0,
+                -0.21,
+                1.0,
+                0.21 * middle,
+                0.0,
+            )) {
+                path = leaned;
+            }
+        }
+        draw_letters(
+            &mut pixmap,
+            &path,
+            text.color,
+            &text.style.look,
+            text.style.bold,
+        );
     }
     for (x, y, picture) in emojis {
         if let Some(source) = pixmap_of(picture) {
@@ -491,95 +598,56 @@ pub fn render_text(text: &MarkText) -> StampImage {
     straight(&pixmap)
 }
 
-/// ZFPlus: the letters in `color`, in a word art style.
-fn draw_letters(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: [u8; 4], art: WordArt) {
-    use tiny_skia::{Color, GradientStop, LinearGradient, Point, SpreadMode, Stroke};
+/// ZFPlus: the letters in `color` with their fill, outline and effects;
+/// `bold` thickens them, for a typeface without a bold of its own.
+fn draw_letters(
+    pixmap: &mut Pixmap,
+    path: &tiny_skia::Path,
+    color: [u8; 4],
+    look: &TextLook,
+    bold: bool,
+) {
+    use tiny_skia::{Color, GradientStop, LinearGradient, Point, SpreadMode};
     let solid = |rgba: [u8; 4]| {
         let mut paint = Paint::default();
         paint.set_color_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
         paint.anti_alias = true;
         paint
     };
-    let mix = |toward: u8, share: f32| -> [u8; 4] {
-        let blend = |channel: u8| {
-            (f32::from(channel) + (f32::from(toward) - f32::from(channel)) * share).round() as u8
-        };
+    let color_of = |rgba: [u8; 4]| Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
+    let shade = |share: f32| -> [u8; 4] {
+        let blend = |channel: u8| (f32::from(channel) * (1.0 - share)).round() as u8;
         [blend(color[0]), blend(color[1]), blend(color[2]), color[3]]
     };
-    let light = mix(255, 0.55);
-    let dark = mix(0, 0.55);
-    let bright =
-        (0.299 * f32::from(color[0]) + 0.587 * f32::from(color[1]) + 0.114 * f32::from(color[2]))
-            > 150.0;
-    let contrast = if bright {
-        [20, 20, 20, 255]
-    } else {
-        [255, 255, 255, 255]
-    };
     let bounds = path.bounds();
-    let fill = |pixmap: &mut Pixmap, paint: &Paint, shift: (f32, f32)| {
-        pixmap.fill_path(
-            path,
-            paint,
-            FillRule::Winding,
-            Transform::from_translate(shift.0, shift.1),
-            None,
-        );
-    };
-    let outline = |pixmap: &mut Pixmap, paint: &Paint, width: f32| {
-        let stroke = Stroke {
-            width,
-            line_join: tiny_skia::LineJoin::Round,
-            ..Default::default()
-        };
-        pixmap.stroke_path(path, paint, &stroke, Transform::identity(), None);
-    };
-    let color_of = |rgba: [u8; 4]| Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
-    match art {
-        WordArt::Plain => fill(pixmap, &solid(color), (0.0, 0.0)),
-        WordArt::Outline => {
-            fill(pixmap, &solid([0, 0, 0, 110]), (5.0, 6.0));
-            outline(pixmap, &solid(contrast), TEXT_PX * 0.12);
-            fill(pixmap, &solid(color), (0.0, 0.0));
+    let fill = |pixmap: &mut Pixmap, paint: &Paint, transform: Transform| {
+        pixmap.fill_path(path, paint, FillRule::Winding, transform, None);
+        if bold {
+            stroke_with(pixmap, path, paint, TEXT_PX * 0.045, transform);
         }
-        WordArt::Gradient => {
+    };
+    // What the letters are filled with.
+    let face: Option<Paint> = match look.fill {
+        TextFill::None => None,
+        TextFill::Solid => Some(solid(color)),
+        TextFill::Color(other) => Some(solid(other)),
+        TextFill::Gradient(to) => {
             let mut paint = solid(color);
             if let Some(shader) = LinearGradient::new(
                 Point::from_xy(0.0, bounds.top()),
                 Point::from_xy(0.0, bounds.bottom()),
                 vec![
-                    GradientStop::new(0.0, color_of(light)),
-                    GradientStop::new(1.0, color_of(dark)),
+                    GradientStop::new(0.0, color_of(color)),
+                    GradientStop::new(1.0, color_of(to)),
                 ],
                 SpreadMode::Pad,
                 Transform::identity(),
             ) {
                 paint.shader = shader;
             }
-            outline(pixmap, &solid(mix(0, 0.75)), TEXT_PX * 0.06);
-            fill(pixmap, &paint, (0.0, 0.0));
+            Some(paint)
         }
-        WordArt::Extruded => {
-            let depth = solid(dark);
-            for step in (1..=12).rev() {
-                let shift = step as f32 * TEXT_PX * 0.0075;
-                fill(pixmap, &depth, (shift, shift));
-            }
-            outline(pixmap, &solid(mix(0, 0.7)), TEXT_PX * 0.025);
-            fill(pixmap, &solid(color), (0.0, 0.0));
-        }
-        WordArt::Neon => {
-            for (width, alpha) in [(0.24, 35u8), (0.16, 60), (0.09, 120)] {
-                outline(
-                    pixmap,
-                    &solid([color[0], color[1], color[2], alpha]),
-                    TEXT_PX * width,
-                );
-            }
-            outline(pixmap, &solid(color), TEXT_PX * 0.035);
-            fill(pixmap, &solid([255, 255, 255, 255]), (0.0, 0.0));
-        }
-        WordArt::Rainbow => {
+        TextFill::Rainbow => {
             let mut paint = solid(color);
             let colors: [[u8; 4]; 6] = [
                 [235, 64, 52, 255],
@@ -603,11 +671,92 @@ fn draw_letters(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: [u8; 4], art
             ) {
                 paint.shader = shader;
             }
-            fill(pixmap, &solid([0, 0, 0, 90]), (4.0, 5.0));
-            outline(pixmap, &solid([255, 255, 255, 255]), TEXT_PX * 0.08);
-            fill(pixmap, &paint, (0.0, 0.0));
+            Some(paint)
+        }
+    };
+    // A reflection: the words upside down under them, fainter.
+    if look.reflection {
+        let flip = Transform::from_row(
+            1.0,
+            0.0,
+            0.0,
+            -1.0,
+            0.0,
+            bounds.bottom() * 2.0 + TEXT_PX * 0.08,
+        );
+        let mut faint = face
+            .clone()
+            .unwrap_or_else(|| solid(look.outline.unwrap_or(color)));
+        if let Some(shader) = LinearGradient::new(
+            Point::from_xy(0.0, bounds.bottom()),
+            Point::from_xy(0.0, bounds.bottom() + bounds.height() * 0.7),
+            vec![
+                GradientStop::new(0.0, Color::from_rgba8(color[0], color[1], color[2], 110)),
+                GradientStop::new(1.0, Color::from_rgba8(color[0], color[1], color[2], 0)),
+            ],
+            SpreadMode::Pad,
+            Transform::identity(),
+        ) {
+            faint.shader = shader;
+        }
+        fill(pixmap, &faint, flip);
+    }
+    if look.shadow {
+        fill(
+            pixmap,
+            &solid([0, 0, 0, 110]),
+            Transform::from_translate(TEXT_PX * 0.04, TEXT_PX * 0.05),
+        );
+    }
+    if look.extrude {
+        let depth = solid(shade(0.55));
+        for step in (1..=12).rev() {
+            let shift = step as f32 * TEXT_PX * 0.0075;
+            fill(pixmap, &depth, Transform::from_translate(shift, shift));
         }
     }
+    if let Some(glow) = look.glow {
+        for (width, alpha) in [(0.24, 35u8), (0.16, 60), (0.09, 120)] {
+            stroke_with(
+                pixmap,
+                path,
+                &solid([glow[0], glow[1], glow[2], alpha]),
+                TEXT_PX * width,
+                Transform::identity(),
+            );
+        }
+    }
+    let outline_width = TEXT_PX * 0.012 * f32::from(look.outline_width.clamp(1, 10));
+    // A thick outline goes under the letters, so it frames them without
+    // eating into them; a hollow one is all there is.
+    if let Some(outline) = look.outline {
+        stroke_with(
+            pixmap,
+            path,
+            &solid(outline),
+            outline_width,
+            Transform::identity(),
+        );
+    }
+    if let Some(face) = &face {
+        fill(pixmap, face, Transform::identity());
+    }
+}
+
+/// Strokes `path` round its letters with rounded corners.
+fn stroke_with(
+    pixmap: &mut Pixmap,
+    path: &tiny_skia::Path,
+    paint: &Paint,
+    width: f32,
+    transform: Transform,
+) {
+    let stroke = tiny_skia::Stroke {
+        width,
+        line_join: tiny_skia::LineJoin::Round,
+        ..Default::default()
+    };
+    pixmap.stroke_path(path, paint, &stroke, transform, None);
 }
 
 /// Whether a character is drawn as a colour emoji rather than a letter.
@@ -930,6 +1079,7 @@ fn straight(pixmap: &Pixmap) -> StampImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::WordArt;
 
     fn text(words: &str, fill: Option<[u8; 4]>, boxed: bool) -> MarkText {
         MarkText {
@@ -939,6 +1089,7 @@ mod tests {
             fill,
             boxed,
             art: WordArt::Plain,
+            style: crate::model::TextStyle::default(),
         }
     }
 
@@ -956,6 +1107,10 @@ mod tests {
         for art in WordArt::ALL {
             let mut words = text("Art", None, false);
             words.art = art;
+            words.style.look = art.look(words.color);
+            words.style.bold = true;
+            words.style.italic = true;
+            words.style.underline = true;
             let image = render_text(&words);
             let inked = image
                 .rgba
