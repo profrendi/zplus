@@ -169,6 +169,9 @@ fn label_chips(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     egui::Popup::menu(&more).show(|ui| {
         ui.set_min_width(180.0);
         if widgets::menu_item(ui, palette, Some(Icon::Users), "New group") {
+            // New group is a step of New chat: the dialog opens first.
+            app.actions
+                .push(Action::ShowDialog(crate::model::Dialog::NewChat));
             app.actions.push(Action::StartNewGroup);
         }
         if widgets::menu_item(ui, palette, Some(Icon::Tag), "New list") {
@@ -225,74 +228,228 @@ pub fn list_ticks(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palet
     }
 }
 
-/// ZFPlus: the chats on the list being edited, each with a tick, searched
-/// by name: WhatsApp's "Included".
-fn chats_of_list(app: &mut App, ui: &mut egui::Ui, palette: &Palette, id: &str) {
+/// ZFPlus: Edit list, as WhatsApp has it: the list's name and colour, the
+/// chats on it (each one removable), people and groups to add from a
+/// search, Save and Delete list.
+fn edit_list(app: &mut App, ui: &mut egui::Ui, palette: &Palette, id: &str) {
     let Some(label) = app.labels.iter().find(|label| label.id == id).cloned() else {
         return;
     };
-    ui.add_space(10.0);
+    let name_id = egui::Id::new(("list-edit-name", id));
+    let color_id = egui::Id::new(("list-edit-color", id));
+    let mut name: String = ui
+        .data(|data| data.get_temp(name_id))
+        .unwrap_or_else(|| label.name.clone());
+    let mut color: String = ui
+        .data(|data| data.get_temp(color_id))
+        .unwrap_or_else(|| label.color_hex.clone());
+    let close = |ui: &egui::Ui| {
+        ui.data_mut(|data| {
+            data.remove::<String>(editing_id());
+            data.remove::<String>(name_id);
+            data.remove::<String>(color_id);
+        });
+    };
     ui.horizontal(|ui| {
-        theme::text(
+        if theme::icon_button(
             ui,
-            format!("Chats on {}", label.name),
-            theme::semibold(14.0),
+            Icon::ArrowLeft,
+            16.0,
+            palette.secondary,
             palette.text,
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Done").clicked() {
-                ui.data_mut(|data| data.remove::<String>(editing_id()));
+            "Back",
+        )
+        .clicked()
+        {
+            close(ui);
+        }
+        theme::text(ui, "Edit list", theme::bold(18.0), palette.text);
+    });
+    ui.add_space(10.0);
+    theme::text(ui, "List name", theme::regular(12.5), palette.secondary);
+    ui.add(
+        egui::TextEdit::singleline(&mut name)
+            .char_limit(crate::archive::NAME_LIMIT)
+            .desired_width(f32::INFINITY)
+            .font(theme::regular(15.0)),
+    );
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        for hex in PRESET_COLORS {
+            let (rect, response) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(5), color_of(palette, hex));
+            if color.eq_ignore_ascii_case(hex) {
+                ui.painter().rect_stroke(
+                    rect.expand(1.5),
+                    CornerRadius::same(6),
+                    Stroke::new(1.5, palette.text),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if response.clicked() {
+                color = hex.to_owned();
+            }
+        }
+    });
+    ui.add_space(10.0);
+    let on_list: Vec<(String, String)> = app
+        .chats
+        .iter()
+        .filter(|chat| !chat.locked && chat.labels.contains(&label.id))
+        .map(|chat| (chat.id.clone(), app.chat_title(chat)))
+        .collect();
+    theme::text(
+        ui,
+        format!("Included · {}", on_list.len()),
+        theme::semibold(13.5),
+        palette.text,
+    );
+    let set = |app: &mut App, chat: &str, on: bool| {
+        if let Some(found) = app.chats.iter().find(|found| found.id == chat) {
+            let mut labels = found.labels.clone();
+            if on {
+                if !labels.contains(&label.id) {
+                    labels.push(label.id.clone());
+                }
+            } else {
+                labels.retain(|worn| *worn != label.id);
+            }
+            app.actions.push(Action::SetChatLabels {
+                chat: chat.to_owned(),
+                labels,
+            });
+        }
+    };
+    egui::ScrollArea::vertical()
+        .id_salt("list-edit-included")
+        .max_height(170.0)
+        .auto_shrink([false, true])
+        .show_rows(ui, 40.0, on_list.len(), |ui, range| {
+            for (chat, title) in &on_list[range] {
+                let (rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+                let picture = app.avatar(chat);
+                let face = Rect::from_center_size(
+                    pos2(rect.left() + 18.0, rect.center().y),
+                    egui::Vec2::splat(30.0),
+                );
+                widgets::paint_avatar(ui, palette, face, title, chat, picture.as_deref());
+                let line = widgets::line(
+                    ui,
+                    title,
+                    theme::regular(13.5),
+                    palette.text,
+                    (rect.width() - 90.0).max(40.0),
+                    1,
+                );
+                line.paint(
+                    ui,
+                    pos2(rect.left() + 42.0, rect.center().y - line.size().y / 2.0),
+                    palette.text,
+                );
+                let cross = Rect::from_center_size(
+                    pos2(rect.right() - 16.0, rect.center().y),
+                    egui::Vec2::splat(22.0),
+                );
+                let remove = ui.interact(
+                    cross,
+                    egui::Id::new(("list-edit-remove", chat)),
+                    Sense::click(),
+                );
+                theme::paint_icon(
+                    ui,
+                    Icon::X,
+                    cross.shrink(4.0),
+                    14.0,
+                    if remove.hovered() {
+                        palette.danger
+                    } else {
+                        palette.secondary
+                    },
+                );
+                if remove.on_hover_text("Remove from the list").clicked() {
+                    set(app, chat, false);
+                }
             }
         });
-    });
+    ui.add_space(8.0);
+    theme::text(
+        ui,
+        "Add people or groups",
+        theme::semibold(13.5),
+        palette.text,
+    );
     let search_id = egui::Id::new("lists-chat-search");
     let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
     ui.add(
         egui::TextEdit::singleline(&mut search)
-            .hint_text("Add people or groups: search")
+            .hint_text("Search name or number")
             .desired_width(f32::INFINITY),
     );
     let needle = crate::util::search_key(search.trim());
-    let mut rows: Vec<(String, String, bool, Vec<String>)> = app
+    let mut rows: Vec<(String, String)> = app
         .chats
         .iter()
-        .filter(|chat| !chat.locked && !chat.id.ends_with("@newsletter"))
-        .map(|chat| {
-            (
-                chat.id.clone(),
-                app.chat_title(chat),
-                chat.labels.contains(&label.id),
-                chat.labels.clone(),
-            )
+        .filter(|chat| {
+            !chat.locked && !chat.id.ends_with("@newsletter") && !chat.labels.contains(&label.id)
         })
-        .filter(|(_, name, ..)| {
+        .map(|chat| (chat.id.clone(), app.chat_title(chat)))
+        .filter(|(_, name)| {
             needle.is_empty()
                 || crate::util::search_matches(&crate::util::search_key(name), &needle)
         })
         .collect();
-    // Those on the list first, then by name.
-    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    rows.sort_by(|a, b| a.1.cmp(&b.1));
     egui::ScrollArea::vertical()
         .id_salt("lists-chats")
-        .max_height(260.0)
+        .max_height(170.0)
+        .auto_shrink([false, true])
         .show_rows(ui, 24.0, rows.len(), |ui, range| {
-            for (chat, name, on, labels) in &rows[range] {
-                let mut ticked = *on;
-                if ui.checkbox(&mut ticked, name).changed() {
-                    let mut labels = labels.clone();
-                    if ticked {
-                        labels.push(label.id.clone());
-                    } else {
-                        labels.retain(|id| *id != label.id);
-                    }
-                    app.actions.push(Action::SetChatLabels {
-                        chat: chat.clone(),
-                        labels,
-                    });
+            for (chat, title) in &rows[range] {
+                let mut ticked = false;
+                if ui.checkbox(&mut ticked, title).changed() && ticked {
+                    set(app, chat, true);
                 }
             }
         });
     ui.data_mut(|data| data.insert_temp(search_id, search));
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        let typed = name.trim().to_owned();
+        let changed = (!typed.is_empty() && typed != label.name)
+            || !color.eq_ignore_ascii_case(&label.color_hex);
+        if ui
+            .add_enabled_ui(changed, |ui| theme::pill_button(ui, palette, "Save", true))
+            .inner
+            .clicked()
+        {
+            app.actions.push(Action::UpdateLabel {
+                id: label.id.clone(),
+                name: if typed.is_empty() {
+                    label.name.clone()
+                } else {
+                    typed
+                },
+                color_hex: color.clone(),
+            });
+        }
+        if theme::pill_button(ui, palette, "Done", false).clicked() {
+            close(ui);
+            return;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::soft_button(ui, palette, Some(Icon::Trash), "Delete list", false).clicked() {
+                app.actions.push(Action::DeleteLabel(label.id.clone()));
+                close(ui);
+            }
+        });
+        ui.data_mut(|data| {
+            data.insert_temp(name_id, name.clone());
+            data.insert_temp(color_id, color.clone());
+        });
+    });
 }
 
 /// The labels a chat wears, as a submenu of the chat's context menu.
@@ -349,9 +506,15 @@ pub fn chat_menu(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palett
     );
 }
 
-/// The manager: create, rename, recolour and delete labels.
 pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     let locale = app.locale;
+    // ZFPlus: a list being edited takes the dialog, as WhatsApp's Edit list.
+    if let Some(id) = ui.data(|data| data.get_temp::<String>(editing_id()))
+        && app.labels.iter().any(|label| label.id == id)
+    {
+        edit_list(app, ui, palette, &id);
+        return;
+    }
     ui.horizontal(|ui| {
         theme::text(
             ui,
@@ -520,7 +683,7 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
             &label.name,
             theme::medium(13.5),
             palette.text,
-            (rect.width() - 140.0).max(40.0),
+            (rect.width() - 170.0).max(40.0),
             1,
         );
         name.paint(
@@ -538,9 +701,41 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         let worn_line = widgets::line(ui, &worn, theme::regular(12.0), palette.dim, worn_width, 1);
         worn_line.paint(
             ui,
-            pos2(rect.right() - 62.0 - worn_width, rect.center().y - 7.0),
+            pos2(rect.right() - 88.0 - worn_width, rect.center().y - 7.0),
             palette.dim,
         );
+        // ZFPlus: Edit list, with its chats, as WhatsApp's.
+        let open_rect =
+            Rect::from_min_size(rect.right_center() + vec2(-80.0, -11.0), vec2(24.0, 22.0));
+        let open = ui.interact(
+            open_rect,
+            egui::Id::new(("list-open", &label.id)),
+            Sense::click(),
+        );
+        theme::paint_icon(
+            ui,
+            Icon::ListChecks,
+            open_rect,
+            14.0,
+            if open.hovered() {
+                palette.text
+            } else {
+                palette.secondary
+            },
+        );
+        let name_rect = Rect::from_min_max(rect.min, pos2(rect.right() - 150.0, rect.max.y));
+        let name_click = ui.interact(
+            name_rect,
+            egui::Id::new(("list-name", &label.id)),
+            Sense::click(),
+        );
+        if open.on_hover_text("Edit list").clicked()
+            || name_click
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+        {
+            ui.data_mut(|data| data.insert_temp(editing_id(), label.id.clone()));
+        }
         let edit_rect =
             Rect::from_min_size(rect.right_center() + vec2(-54.0, -11.0), vec2(24.0, 22.0));
         let delete_rect =
@@ -616,25 +811,6 @@ pub fn manager(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
             data.insert_temp(editing_id(), id);
             data.remove::<String>(pending_id);
         });
-    }
-    if !app.labels.is_empty() {
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            theme::text(
-                ui,
-                "Chats on a list:",
-                theme::regular(12.5),
-                palette.secondary,
-            );
-            for label in app.labels.clone() {
-                if ui.small_button(&label.name).clicked() {
-                    ui.data_mut(|data| data.insert_temp(editing_id(), label.id.clone()));
-                }
-            }
-        });
-    }
-    if let Some(id) = ui.data(|data| data.get_temp::<String>(editing_id())) {
-        chats_of_list(app, ui, palette, &id);
     }
 }
 

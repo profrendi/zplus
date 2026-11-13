@@ -2843,6 +2843,24 @@ pub struct StatusPost {
     /// A photo's or video's small JPEG preview.
     pub thumbnail: Option<std::sync::Arc<Vec<u8>>>,
     pub mine: bool,
+    /// Looked at here before (the sender was not told).
+    pub seen: bool,
+    /// From someone whose statuses are muted.
+    pub muted: bool,
+    /// A video's length in seconds, when it says.
+    pub seconds: u32,
+}
+
+/// ZFPlus: who sees the account's statuses, as WhatsApp's Status privacy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusAudience {
+    /// All contacts.
+    #[default]
+    Contacts,
+    /// All contacts except those named.
+    Except,
+    /// Only those named.
+    Only,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2882,6 +2900,20 @@ pub enum PlusRequest {
         background: [u8; 4],
         picture: Option<std::path::PathBuf>,
     },
+    /// A status was looked at here; only this app remembers it.
+    StatusSeen(String),
+    /// Internal: a status this device posted, to keep for My status.
+    KeepOwnStatus {
+        id: String,
+        raw: Vec<u8>,
+    },
+    /// The account's Status privacy, as the phone last set it.
+    LoadStatusPrivacy,
+    /// Changes the account's Status privacy, for this and the phone.
+    SetStatusPrivacy {
+        audience: StatusAudience,
+        people: Vec<ChatId>,
+    },
     LoadCommunities,
     CreateCommunity {
         name: String,
@@ -2904,6 +2936,8 @@ pub enum PlusRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlusAnswer {
     Statuses(Vec<StatusPost>),
+    /// Who sees the account's statuses, and the people named.
+    StatusPrivacy(StatusAudience, Vec<ChatId>),
     StatusMedia {
         id: String,
         result: Result<std::path::PathBuf, String>,
@@ -2923,6 +2957,8 @@ pub const GRID_SLOT_LINE: [u8; 4] = [180, 184, 190, 255];
 /// ZFPlus: the editor's grids, for collages and comparisons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridLayout {
+    /// ZFPlus: no boxes: the photo on a plain canvas, to move and size freely.
+    Free,
     SideBySide,
     Stacked,
     ThreeAcross,
@@ -2933,7 +2969,8 @@ pub enum GridLayout {
 }
 
 impl GridLayout {
-    pub const ALL: [GridLayout; 7] = [
+    pub const ALL: [GridLayout; 8] = [
+        GridLayout::Free,
         GridLayout::SideBySide,
         GridLayout::Stacked,
         GridLayout::ThreeAcross,
@@ -2945,6 +2982,7 @@ impl GridLayout {
 
     pub fn name(self) -> &'static str {
         match self {
+            GridLayout::Free => "Free canvas",
             GridLayout::SideBySide => "2 side by side",
             GridLayout::Stacked => "2 stacked",
             GridLayout::ThreeAcross => "3 across",
@@ -2972,6 +3010,7 @@ impl GridLayout {
             cells
         };
         match self {
+            GridLayout::Free => even(1, 1),
             GridLayout::SideBySide => even(2, 1),
             GridLayout::Stacked => even(1, 2),
             GridLayout::ThreeAcross => even(3, 1),
@@ -3124,6 +3163,27 @@ impl Mark {
                 self.width
             } else {
                 (self.width * factor).clamp(0.001, 0.08)
+            },
+            ..self.clone()
+        }
+    }
+
+    /// ZFPlus: an upright mark moved and stretched from the box `from` to
+    /// the box `to` (each left, top, right, bottom): what dragging one of
+    /// its eight handles does.
+    pub fn refit(&self, from: [f32; 4], to: [f32; 4]) -> Self {
+        let across = (to[2] - to[0]) / (from[2] - from[0]).max(1e-6);
+        let down = (to[3] - to[1]) / (from[3] - from[1]).max(1e-6);
+        Self {
+            points: self
+                .points
+                .iter()
+                .map(|&[x, y]| [to[0] + (x - from[0]) * across, to[1] + (y - from[1]) * down])
+                .collect(),
+            width: if self.stamp.is_some() {
+                self.width
+            } else {
+                (self.width * across.abs().min(down.abs())).clamp(0.001, 0.08)
             },
             ..self.clone()
         }
@@ -3428,7 +3488,11 @@ impl PictureEdit {
             .collect();
         kept.reverse();
         let mut marks = Vec::new();
-        if let Some(ground) = self.grid_ground {
+        // ZFPlus: the grid lies on a canvas of its own, white unless a
+        // colour is picked, so the photo never shows behind its boxes: the
+        // photo is one of the pictures on it, moved and sized like them.
+        {
+            let ground = self.grid_ground.unwrap_or([255, 255, 255, 255]);
             marks.push(Mark {
                 tool: MarkTool::Rectangle,
                 points: vec![[area[0], area[1]], [area[2], area[3]]],
@@ -3487,6 +3551,155 @@ impl PictureEdit {
             .unwrap_or(0);
         self.tool = MarkTool::Select;
         self.selected = first_empty.map(|at| base + at);
+    }
+
+    /// ZFPlus: crops what is shown to the pictures, text and drawings on
+    /// it, so a grid or canvas ends where its pictures do.
+    pub fn fit_to_content(&mut self) {
+        let mut bounds: Option<[f32; 4]> = None;
+        for mark in self.marks.iter().filter(|mark| mark.grid != 1) {
+            let [left, top, right, bottom] = mark.bounds();
+            bounds = Some(match bounds {
+                None => [left, top, right, bottom],
+                Some([l, t, r, b]) => [l.min(left), t.min(top), r.max(right), b.max(bottom)],
+            });
+        }
+        let Some([left, top, right, bottom]) = bounds else {
+            return;
+        };
+        let (wide, tall) = self.displayed_size();
+        let (wide_f, tall_f) = (wide.max(1) as f32, tall.max(1) as f32);
+        let x = (left.clamp(0.0, 1.0) * wide_f).floor() as u32;
+        let y = (top.clamp(0.0, 1.0) * tall_f).floor() as u32;
+        let right = (right.clamp(0.0, 1.0) * wide_f).ceil() as u32;
+        let bottom = (bottom.clamp(0.0, 1.0) * tall_f).ceil() as u32;
+        if right > x + 8 && bottom > y + 8 {
+            self.crop = PictureCrop {
+                x,
+                y,
+                width: right - x,
+                height: bottom - y,
+            };
+        }
+    }
+
+    /// ZFPlus: a copy of the mark at `at`, a little aside, picked: what a
+    /// Shift drag or a paste makes.
+    pub fn duplicate(&mut self, at: usize, offset: [f32; 2]) -> Option<usize> {
+        let mut copy = self.marks.get(at)?.moved(offset);
+        // A copy is a picture of its own, not part of the grid.
+        if copy.grid != 1 {
+            copy.grid = 0;
+        }
+        self.change(|marks| marks.push(copy));
+        self.selected = Some(self.marks.len() - 1);
+        self.selected
+    }
+
+    /// ZFPlus: puts a mark copied before on the picture, a little aside.
+    pub fn paste_mark(&mut self, mark: &Mark) {
+        let mut copy = mark.moved([0.03, 0.03]);
+        if copy.grid != 1 {
+            copy.grid = 0;
+        }
+        self.commit_writing();
+        self.change(|marks| marks.push(copy));
+        self.selected = Some(self.marks.len() - 1);
+        self.tool = MarkTool::Select;
+    }
+
+    /// ZFPlus: trims the picked picture to `to` (left, top, right, bottom in
+    /// the picture's proportions, within its box), keeping what is inside.
+    pub fn crop_picture(&mut self, at: usize, to: [f32; 4]) {
+        let Some(mark) = self.marks.get(at) else {
+            return;
+        };
+        let Some(stamp) = mark.stamp.as_ref().filter(|stamp| stamp.text.is_none()) else {
+            return;
+        };
+        if mark.angle != 0.0 {
+            return;
+        }
+        let [left, top, right, bottom] = mark.bounds();
+        let (span_x, span_y) = ((right - left).max(1e-6), (bottom - top).max(1e-6));
+        let to = [
+            to[0].clamp(left, right),
+            to[1].clamp(top, bottom),
+            to[2].clamp(left, right),
+            to[3].clamp(top, bottom),
+        ];
+        let image = &stamp.image;
+        let (width, height) = (image.width as f32, image.height as f32);
+        // The kept part, in the picture's own pixels, mirrored as it shows.
+        let (from_x, to_x) = if mark.flipped {
+            ((right - to[2]) / span_x, (right - to[0]) / span_x)
+        } else {
+            ((to[0] - left) / span_x, (to[2] - left) / span_x)
+        };
+        let x0 = (from_x * width).floor().clamp(0.0, width - 1.0) as u32;
+        let x1 = (to_x * width).ceil().clamp(x0 as f32 + 1.0, width) as u32;
+        let y0 = ((to[1] - top) / span_y * height)
+            .floor()
+            .clamp(0.0, height - 1.0) as u32;
+        let y1 = ((to[3] - top) / span_y * height)
+            .ceil()
+            .clamp(y0 as f32 + 1.0, height) as u32;
+        let (new_width, new_height) = (x1 - x0, y1 - y0);
+        let mut rgba = Vec::with_capacity((new_width * new_height * 4) as usize);
+        for row in y0..y1 {
+            let start = ((row * image.width + x0) * 4) as usize;
+            let end = start + (new_width * 4) as usize;
+            match image.rgba.get(start..end) {
+                Some(pixels) => rgba.extend_from_slice(pixels),
+                None => return,
+            }
+        }
+        let cropped = Mark {
+            points: vec![[to[0], to[1]], [to[2], to[3]]],
+            stamp: Some(Stamp {
+                image: std::sync::Arc::new(StampImage {
+                    width: new_width,
+                    height: new_height,
+                    rgba,
+                }),
+                text: None,
+            }),
+            ..mark.clone()
+        };
+        self.change(|marks| marks[at] = cropped);
+    }
+
+    /// ZFPlus: shows the text being typed on the picture as it will be, in
+    /// its font, size, colour and word art, at once, as each key or setting
+    /// changes. Not a step for Undo: committing it is.
+    pub fn live_writing(&mut self) {
+        let Some(writing) = self.writing.clone() else {
+            return;
+        };
+        let words = writing.text.trim_end().to_owned();
+        if words.trim().is_empty() {
+            return;
+        }
+        let text = MarkText {
+            text: words,
+            font: self.font,
+            color: self.color,
+            fill: self.fill,
+            boxed: self.text_box,
+            art: self.art,
+            style: self.text_style,
+        };
+        let old = writing.replaces.and_then(|at| self.marks.get(at).cloned());
+        let mark = self.text_mark(text, writing.center, old.as_ref());
+        match writing.replaces {
+            Some(at) if at < self.marks.len() => self.marks[at] = mark,
+            _ => {
+                self.marks.push(mark);
+                if let Some(writing) = self.writing.as_mut() {
+                    writing.replaces = Some(self.marks.len() - 1);
+                }
+            }
+        }
     }
 
     /// ZFPlus: takes the grid away, its boxes and what is in them, so the
@@ -5251,6 +5464,55 @@ mod tests {
         assert!(edit.marks.len() <= free + 3);
         edit.remove_grid();
         assert!(edit.marks.iter().all(|mark| mark.grid == 0));
+    }
+
+    /// ZFPlus: on the free canvas a picture is sized by any side, trimmed
+    /// to what stays, copied aside, and the canvas fits what is on it.
+    #[test]
+    fn canvas_pictures_size_trim_copy_and_fit() {
+        use super::{GridLayout, PictureEdit, PictureSource, StampImage};
+        let mut edit = PictureEdit::new(
+            0,
+            PictureSource::File(std::path::PathBuf::from("photo.jpg")),
+            800,
+            600,
+        );
+        let photo = StampImage {
+            width: 80,
+            height: 60,
+            rgba: vec![200; 80 * 60 * 4],
+        };
+        edit.apply_grid(GridLayout::Free, Some(photo));
+        let at = edit
+            .marks
+            .iter()
+            .position(|mark| mark.grid == 2)
+            .expect("the photo is a picture on the canvas");
+        // Only the right side moves when its handle is dragged.
+        let from = edit.marks[at].bounds();
+        let to = [
+            from[0],
+            from[1],
+            from[0] + (from[2] - from[0]) / 2.0,
+            from[3],
+        ];
+        let wider = edit.marks[at].refit(from, to);
+        let bounds = wider.bounds();
+        assert!((bounds[0] - from[0]).abs() < 1e-5 && (bounds[2] - to[2]).abs() < 1e-5);
+        assert!((bounds[3] - from[3]).abs() < 1e-5, "its height stays");
+        // Trimming keeps the left half of its pixels.
+        edit.crop_picture(at, to);
+        let image = &edit.marks[at].stamp.as_ref().unwrap().image;
+        assert_eq!((image.width, image.height), (40, 60));
+        assert_eq!(image.rgba.len(), 40 * 60 * 4);
+        // A copy lands beside it, picked, free of the grid.
+        let copy = edit.duplicate(at, [0.05, 0.05]).unwrap();
+        assert_eq!(edit.marks[copy].grid, 0);
+        assert_eq!(edit.selected, Some(copy));
+        // Fitting crops what is shown to the pictures, not the canvas.
+        let before = edit.crop;
+        edit.fit_to_content();
+        assert!(edit.crop.width < before.width);
     }
 
     /// ZFPlus: a stroke drawn almost straight becomes a straight line; a

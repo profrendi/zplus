@@ -295,6 +295,84 @@ pub fn set_limit(limit_mb: u32) {
     LIMIT_MB.store(u64::from(limit_mb), Ordering::Relaxed);
 }
 
+/// ZFPlus: whether a window shows and has the keyboard, as of its last
+/// pass; when a person last did something in it; and whether a call or a
+/// video is on, which trimming would make stutter.
+static FOCUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LAST_ACTIVE: AtomicU64 = AtomicU64::new(0);
+
+/// Seconds since the sampler's clock started.
+fn clock() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs()
+}
+
+/// ZFPlus: what a window pass saw: focus, input, and a call or video on.
+pub fn note_window(focused: bool, active: bool, busy: bool) {
+    FOCUSED.store(focused, Ordering::Relaxed);
+    BUSY.store(busy, Ordering::Relaxed);
+    if active {
+        LAST_ACTIVE.store(clock(), Ordering::Relaxed);
+    }
+}
+
+/// ZFPlus: the window is gone (to the tray): idle from now.
+pub fn note_hidden() {
+    FOCUSED.store(false, Ordering::Relaxed);
+    BUSY.store(false, Ordering::Relaxed);
+}
+
+/// ZFPlus: when to give memory back, as the Outlook Lite shell does: after
+/// a while in the background, or long untouched in front, once the
+/// process holds more than a little, and again only once it has grown.
+#[derive(Default)]
+struct Trimmer {
+    /// Task Manager's figure right after the last trim, and when.
+    last: Option<(u64, u64)>,
+    /// The activity that last trim followed.
+    after: u64,
+    background: bool,
+}
+
+const TRIM_FLOOR: u64 = 120 * 1024 * 1024;
+const TRIM_GROWTH: u64 = 48 * 1024 * 1024;
+
+impl Trimmer {
+    fn step(&mut self, shown: u64) {
+        let now = clock();
+        let focused = FOCUSED.load(Ordering::Relaxed);
+        let busy = BUSY.load(Ordering::Relaxed);
+        let active = LAST_ACTIVE.load(Ordering::Relaxed);
+        let quiet = now.saturating_sub(active);
+        let idle = !busy && ((!focused && quiet >= 15) || (focused && quiet >= 90));
+        // In the background a while: Windows' efficiency mode and low
+        // memory priority, as Task Manager's green leaf; back to normal
+        // with focus.
+        let background = !busy && !focused && quiet >= 60;
+        if background != self.background {
+            self.background = background;
+            sys::set_background(background);
+        }
+        if !idle || shown < TRIM_FLOOR {
+            return;
+        }
+        let due = match self.last {
+            None => true,
+            Some((after_trim, at)) => {
+                active > self.after
+                    || (shown > after_trim + TRIM_GROWTH && now.saturating_sub(at) >= 120)
+            }
+        };
+        if due {
+            sys::trim();
+            let after = process().map_or(shown, |process| process.shown());
+            self.last = Some((after, now));
+            self.after = active;
+        }
+    }
+}
+
 /// ZFPlus: samples the process's memory and CPU once a second on a thread
 /// of its own, for the rail's meter and the memory warning. It wakes the
 /// window only for something to show: a meter on screen whose numbers moved,
@@ -313,12 +391,17 @@ pub fn start_sampler(wake: impl Fn() + Send + 'static) {
             let mut tick = 0u64;
             let mut counts = None;
             let mut tray_sent = String::new();
+            let mut trimmer = Trimmer::default();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
                 tick += 1;
                 let Some(process) = process() else {
                     continue;
                 };
+                // ZFPlus: memory given back while the app sits idle.
+                if tick.is_multiple_of(5) {
+                    trimmer.step(process.shown());
+                }
                 let memory = process.shown() as f32 / (1024.0 * 1024.0);
                 let cpu = cpu_percent();
                 // The tooltip, every two seconds; the processes counted
@@ -423,6 +506,70 @@ mod sys {
         fn Process32FirstW(snapshot: *mut core::ffi::c_void, entry: *mut Entry) -> i32;
         fn Process32NextW(snapshot: *mut core::ffi::c_void, entry: *mut Entry) -> i32;
         fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        fn K32EmptyWorkingSet(process: *mut core::ffi::c_void) -> i32;
+        fn GetProcessHeaps(count: u32, heaps: *mut *mut core::ffi::c_void) -> u32;
+        fn HeapCompact(heap: *mut core::ffi::c_void, flags: u32) -> usize;
+        fn SetProcessInformation(
+            process: *mut core::ffi::c_void,
+            class: i32,
+            information: *const core::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    /// Gives back what the heaps no longer use, then lets Windows take the
+    /// pages not touched lately out of RAM; they come back as needed.
+    pub fn trim() {
+        // SAFETY: the heaps are listed into a buffer of the length given,
+        // each compacted, and the process's own pseudo handle emptied.
+        unsafe {
+            let mut heaps = [std::ptr::null_mut(); 64];
+            let count = GetProcessHeaps(heaps.len() as u32, heaps.as_mut_ptr()) as usize;
+            for heap in heaps.iter().take(count.min(heaps.len())) {
+                HeapCompact(*heap, 0);
+            }
+            K32EmptyWorkingSet(GetCurrentProcess());
+        }
+    }
+
+    /// Windows' efficiency mode (EcoQoS) and low memory priority while the
+    /// app waits in the background, normal again in front.
+    pub fn set_background(background: bool) {
+        #[repr(C)]
+        struct Throttling {
+            version: u32,
+            control: u32,
+            state: u32,
+        }
+        #[repr(C)]
+        struct MemoryPriority {
+            priority: u32,
+        }
+        // ProcessMemoryPriority 0, ProcessPowerThrottling 4.
+        let throttling = Throttling {
+            version: 1,
+            control: if background { 1 } else { 0 },
+            state: if background { 1 } else { 0 },
+        };
+        let memory = MemoryPriority {
+            priority: if background { 2 } else { 5 },
+        };
+        // SAFETY: each structure is passed with its own size to the class
+        // that reads it, for the current process.
+        unsafe {
+            SetProcessInformation(
+                GetCurrentProcess(),
+                4,
+                std::ptr::from_ref(&throttling).cast(),
+                std::mem::size_of::<Throttling>() as u32,
+            );
+            SetProcessInformation(
+                GetCurrentProcess(),
+                0,
+                std::ptr::from_ref(&memory).cast(),
+                std::mem::size_of::<MemoryPriority>() as u32,
+            );
+        }
     }
 
     /// How many processes run this app's program, and this one's threads.
@@ -487,6 +634,10 @@ mod sys {
 
 #[cfg(target_os = "linux")]
 mod sys {
+    pub fn trim() {}
+
+    pub fn set_background(_background: bool) {}
+
     pub fn process() -> Option<super::Process> {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
         let field = |name: &str| {
@@ -517,6 +668,10 @@ mod sys {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 mod sys {
+    pub fn trim() {}
+
+    pub fn set_background(_background: bool) {}
+
     pub fn process() -> Option<super::Process> {
         None
     }

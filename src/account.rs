@@ -164,6 +164,8 @@ pub struct Account {
     pub status_media: std::collections::HashMap<String, Result<std::path::PathBuf, String>>,
     /// ZFPlus: the communities, once asked.
     pub communities: Option<Result<Vec<crate::model::CommunityInfo>, String>>,
+    /// ZFPlus: the account's Status privacy, once asked.
+    pub status_privacy: Option<(crate::model::StatusAudience, Vec<String>)>,
     /// ZFPlus: this business's catalogue, once asked.
     pub catalog: Option<Result<Vec<crate::model::CatalogItem>, String>>,
     /// ZFPlus: the last business category search and what it found.
@@ -295,6 +297,7 @@ impl Account {
             statuses: Vec::new(),
             status_media: std::collections::HashMap::new(),
             communities: None,
+            status_privacy: None,
             catalog: None,
             category_search: None,
             call_log: Vec::new(),

@@ -1160,6 +1160,54 @@ pub const ZFPLUS_URL: &str = "https://github.com/profrendi/zplus";
 pub const ZAPFAST_URL: &str = "https://github.com/crmne/zapfast";
 pub const WAWPLUS_URL: &str = "https://www.wawplus.com";
 
+/// ZFPlus: what New group's options ask of a group as it is made, as
+/// WhatsApp Web's New group screen offers them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupOptions {
+    /// Disappearing messages, in seconds; 0 keeps them.
+    pub timer: u32,
+    /// Members can edit the group's settings.
+    pub members_edit: bool,
+    /// Members can send messages.
+    pub members_send: bool,
+    /// Members can add others.
+    pub members_add: bool,
+    /// Members can invite with the group's link.
+    pub members_invite: bool,
+    /// Admins approve new members.
+    pub approve: bool,
+}
+
+impl Default for GroupOptions {
+    fn default() -> Self {
+        Self {
+            timer: 0,
+            members_edit: true,
+            members_send: true,
+            members_add: true,
+            members_invite: true,
+            approve: false,
+        }
+    }
+}
+
+static GROUP_OPTIONS: std::sync::Mutex<Option<GroupOptions>> = std::sync::Mutex::new(None);
+
+/// ZFPlus: the options New group shows, for the group about to be made.
+pub fn set_group_options(options: GroupOptions) {
+    *GROUP_OPTIONS.lock().unwrap_or_else(|p| p.into_inner()) = Some(options);
+}
+
+/// ZFPlus: the options for the group being made now, the defaults when
+/// none were set.
+pub fn take_group_options() -> GroupOptions {
+    GROUP_OPTIONS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::i18n::Locale;

@@ -82,12 +82,16 @@ impl Worker {
         let lids = self.lid_to_pn.clone();
         let commands = self.commands.clone();
         let waker = self.waker.clone();
+        // ZFPlus: New group's disappearing messages and permissions.
+        let extra = crate::plus::take_group_options();
         tokio::spawn(async move {
             let options = GroupCreateOptions::new(subject.clone())
                 .with_participants(jids.into_iter().map(GroupParticipantOptions::new).collect());
+            let options = plus_group_options(options, extra);
             let result = match client.groups().create_group(options).await {
                 Ok(created) => {
                     let jid = created.metadata.id.clone();
+                    plus_group_after(&client, &jid, extra).await;
                     // The create answer counts refused people as members.
                     let (metadata, confirmed) = match client.groups().fetch_metadata(&jid).await {
                         Ok(metadata) => (metadata, true),
@@ -289,6 +293,48 @@ fn stage_picture(dir: &Path, jpeg: &[u8]) -> Result<PathBuf, String> {
     let path = dir.join(format!("new-group-{:016x}.jpg", hasher.finish()));
     std::fs::write(&path, jpeg).map_err(|error| error.to_string())?;
     Ok(path)
+}
+
+/// ZFPlus: New group's choices that WhatsApp takes as the group is made.
+fn plus_group_options(
+    mut options: GroupCreateOptions,
+    extra: crate::plus::GroupOptions,
+) -> GroupCreateOptions {
+    use whatsapp_rust::{MemberAddMode, MemberLinkMode, MembershipApprovalMode};
+    options.ephemeral_expiration = Some(extra.timer);
+    options.member_add_mode = Some(if extra.members_add {
+        MemberAddMode::AllMemberAdd
+    } else {
+        MemberAddMode::AdminAdd
+    });
+    options.member_link_mode = Some(if extra.members_invite {
+        MemberLinkMode::AllMemberLink
+    } else {
+        MemberLinkMode::AdminLink
+    });
+    options.membership_approval_mode = Some(if extra.approve {
+        MembershipApprovalMode::On
+    } else {
+        MembershipApprovalMode::Off
+    });
+    options
+}
+
+/// ZFPlus: New group's choices set once the group exists: only admins
+/// edit its settings, or only admins send.
+async fn plus_group_after(client: &Client, jid: &Jid, extra: crate::plus::GroupOptions) {
+    if !extra.members_edit && client.groups().set_locked(jid.clone(), true).await.is_err() {
+        log::warn!("could not keep a new group's settings to admins");
+    }
+    if !extra.members_send
+        && client
+            .groups()
+            .set_announce(jid.clone(), true)
+            .await
+            .is_err()
+    {
+        log::warn!("could not keep a new group's messages to admins");
+    }
 }
 
 #[cfg(test)]

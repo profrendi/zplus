@@ -431,6 +431,7 @@ fn naming(app: &mut App, ui: &mut egui::Ui) {
     );
     let (spot, _) = ui.allocate_exact_size(list.size(), Sense::hover());
     list.paint(ui, spot.min, palette.secondary);
+    super::plus_group::options(app, ui, &draft.members);
     ui.add_space(12.0);
 
     let ready = app

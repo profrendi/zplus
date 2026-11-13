@@ -2851,8 +2851,69 @@ impl Archive {
                 sender TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
                 raw BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS plus_status_seen (
+                id TEXT PRIMARY KEY,
+                at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS plus_status_muted (
+                sender TEXT PRIMARY KEY
             )",
         )
+    }
+
+    /// ZFPlus: remembers that a status was looked at here, so it moves to
+    /// Viewed; the sender is not told.
+    pub fn plus_mark_status_seen(&self, id: &str) -> Result<()> {
+        self.plus_status_table()?;
+        self.connection.execute(
+            "INSERT OR IGNORE INTO plus_status_seen (id, at) VALUES (?1, ?2)",
+            params![id, crate::util::now()],
+        )?;
+        self.connection.execute(
+            "DELETE FROM plus_status_seen WHERE at < ?1",
+            params![crate::util::now() - 2 * 24 * 60 * 60],
+        )?;
+        Ok(())
+    }
+
+    /// ZFPlus: the statuses looked at here.
+    pub fn plus_seen_statuses(&self) -> Result<std::collections::HashSet<String>> {
+        self.plus_status_table()?;
+        let mut statement = self.connection.prepare("SELECT id FROM plus_status_seen")?;
+        let rows = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// ZFPlus: whose statuses the phone or WhatsApp Web muted.
+    pub fn plus_set_status_muted(&self, sender: &str, muted: bool) -> Result<()> {
+        self.plus_status_table()?;
+        if muted {
+            self.connection.execute(
+                "INSERT OR IGNORE INTO plus_status_muted (sender) VALUES (?1)",
+                params![sender],
+            )?;
+        } else {
+            self.connection.execute(
+                "DELETE FROM plus_status_muted WHERE sender = ?1",
+                params![sender],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// ZFPlus: the people whose statuses are muted.
+    pub fn plus_muted_status_senders(&self) -> Result<std::collections::HashSet<String>> {
+        self.plus_status_table()?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT sender FROM plus_status_muted")?;
+        let rows = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
     }
 
     /// ZFPlus: keeps a status update as WhatsApp sent it, and lets those

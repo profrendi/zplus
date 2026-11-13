@@ -479,6 +479,8 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                 ui.add_space(room.left);
                 let picture = app.avatar(&chat.id);
                 let (subtitle, color) = subtitle(app, chat);
+                // ZFPlus: a community's group names its community, as WhatsApp.
+                let subtitle = super::plus_pages::community_subtitle(app, chat, subtitle);
                 let call_here = app.call_live_here(&chat.id);
                 // More and Search, and Back in a narrow window, and the call
                 // buttons in a person's or a group's chat, each on its own
@@ -534,6 +536,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                                     picture.as_deref(),
                                 );
                                 avatar = avatar_response.rect;
+                                super::plus_pages::community_badge(app, ui, &chat.id, avatar);
                                 if chat.disappearing_timer().is_some() {
                                     widgets::paint_disappearing_badge(
                                         ui,

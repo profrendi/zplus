@@ -540,17 +540,27 @@ fn new_chat(app: &mut App, ui: &mut egui::Ui) {
     let needle = crate::util::search_key(app.new_chat_search.trim());
     // ZFPlus: numbers WhatsApp has not been asked about are asked now, so a
     // contact without WhatsApp drops out.
-    ask_registered(app, &contact_choices(app, &needle));
     // ZFPlus: everyone, saved contacts with WhatsApp, or numbers with
     // WhatsApp not saved, with how many of each.
     let filter_id = egui::Id::new("new-chat-saved");
     let mut filter: u8 = ui.data(|data| data.get_temp(filter_id)).unwrap_or(0);
     SAVED_FILTER.with(|cell| cell.set(0));
     let everyone = contact_choices(app, "");
-    let saved = everyone
-        .iter()
-        .filter(|contact| is_saved(app, &contact.id))
-        .count();
+    // Counted, and the unknown numbers asked about, once per list built,
+    // not every frame: thousands of contacts made each frame slow.
+    let saved = LIST_FACTS.with(|facts| {
+        let (built, count) = facts.get();
+        if built == everyone.key() {
+            return count;
+        }
+        ask_registered(app, &everyone);
+        let count = everyone
+            .iter()
+            .filter(|contact| is_saved(app, &contact.id))
+            .count();
+        facts.set((everyone.key(), count));
+        count
+    });
     ui.horizontal_wrapped(|ui| {
         for (index, label, count) in [
             (0u8, "All", everyone.len()),
@@ -662,6 +672,8 @@ thread_local! {
     /// ZFPlus: New chat's filter while it draws: 0 everyone, 1 saved
     /// contacts with WhatsApp, 2 numbers with WhatsApp not saved.
     static SAVED_FILTER: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// ZFPlus: the everyone list last counted, and its saved contacts.
+    static LIST_FACTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 /// ZFPlus: whether a person is saved in the phone's contacts (has a name
@@ -689,13 +701,15 @@ pub(super) fn is_saved(app: &App, id: &str) -> bool {
 /// most two seconds (a renamed contact shows then).
 pub(super) fn contact_choices(app: &App, needle: &str) -> Choices {
     type Key = (String, usize, usize, usize, Option<String>, u8);
-    type Cached = Option<(
+    type Cached = Vec<(
         Key,
         std::time::Instant,
         std::rc::Rc<Vec<crate::model::Contact>>,
+        usize,
     )>;
     thread_local! {
-        static CACHE: std::cell::RefCell<Cached> = const { std::cell::RefCell::new(None) };
+        static CACHE: std::cell::RefCell<Cached> = const { std::cell::RefCell::new(Vec::new()) };
+        static BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
     let key: Key = (
         needle.to_owned(),
@@ -705,25 +719,53 @@ pub(super) fn contact_choices(app: &App, needle: &str) -> Choices {
         app.me.clone(),
         SAVED_FILTER.with(std::cell::Cell::get),
     );
+    // ZFPlus: a few lists kept side by side (everyone, the filtered one,
+    // the search), so asking for one does not throw away another.
     let cached = CACHE.with(|cache| {
-        cache.borrow().as_ref().and_then(|(cached_key, at, list)| {
-            (*cached_key == key && at.elapsed() < std::time::Duration::from_secs(2))
-                .then(|| std::rc::Rc::clone(list))
-        })
+        cache
+            .borrow()
+            .iter()
+            .find_map(|(cached_key, at, list, built)| {
+                (*cached_key == key && at.elapsed() < std::time::Duration::from_secs(2))
+                    .then(|| Choices(std::rc::Rc::clone(list), *built))
+            })
     });
-    if let Some(list) = cached {
-        return Choices(list);
+    if let Some(choices) = cached {
+        return choices;
     }
     let list = std::rc::Rc::new(build_contact_choices(app, needle));
-    CACHE.with(|cache| {
-        *cache.borrow_mut() = Some((key, std::time::Instant::now(), std::rc::Rc::clone(&list)));
+    let built = BUILT.with(|built| {
+        built.set(built.get() + 1);
+        built.get()
     });
-    Choices(list)
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.retain(|(cached_key, at, _, _)| {
+            *cached_key != key && at.elapsed() < std::time::Duration::from_secs(2)
+        });
+        if cache.len() >= 4 {
+            cache.remove(0);
+        }
+        cache.push((
+            key,
+            std::time::Instant::now(),
+            std::rc::Rc::clone(&list),
+            built,
+        ));
+    });
+    Choices(list, built)
 }
 
 /// ZFPlus: the cached people New chat and New call offer, read as a slice
 /// and walked by value.
-pub(super) struct Choices(std::rc::Rc<Vec<crate::model::Contact>>);
+pub(super) struct Choices(std::rc::Rc<Vec<crate::model::Contact>>, usize);
+
+impl Choices {
+    /// ZFPlus: which list this is, to tell a rebuilt one apart.
+    pub(super) fn key(&self) -> usize {
+        self.1
+    }
+}
 
 impl std::ops::Deref for Choices {
     type Target = [crate::model::Contact];
@@ -733,10 +775,31 @@ impl std::ops::Deref for Choices {
 }
 
 impl IntoIterator for Choices {
-    type Item = crate::model::Contact;
-    type IntoIter = std::vec::IntoIter<crate::model::Contact>;
+    type Item = Choice;
+    type IntoIter = std::iter::Map<
+        std::iter::Zip<
+            std::iter::Repeat<std::rc::Rc<Vec<crate::model::Contact>>>,
+            std::ops::Range<usize>,
+        >,
+        fn((std::rc::Rc<Vec<crate::model::Contact>>, usize)) -> Choice,
+    >;
+    /// ZFPlus: each person by reference into the kept list, not copied:
+    /// thousands of copies a frame made New chat slow.
     fn into_iter(self) -> Self::IntoIter {
-        std::rc::Rc::unwrap_or_clone(self.0).into_iter()
+        let count = self.0.len();
+        std::iter::repeat(self.0)
+            .zip(0..count)
+            .map(|(list, at)| Choice(list, at))
+    }
+}
+
+/// ZFPlus: one person of the kept New chat list, read as a `Contact`.
+pub(super) struct Choice(std::rc::Rc<Vec<crate::model::Contact>>, usize);
+
+impl std::ops::Deref for Choice {
+    type Target = crate::model::Contact;
+    fn deref(&self) -> &Self::Target {
+        &self.0[self.1]
     }
 }
 

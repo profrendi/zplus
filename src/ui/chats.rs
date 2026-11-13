@@ -745,6 +745,16 @@ fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
 
 /// ZFPlus: while chats are being selected, how many are, and what to do
 /// with them all: mark read or unread, mute, archive, or stop selecting.
+/// ZFPlus: a chat row's drawing area, moved right in select mode so the
+/// check box has room of its own beside the picture.
+fn select_room(app: &App, rect: Rect) -> Rect {
+    if app.chat_select.is_some() {
+        rect.with_min_x(rect.left() + 38.0)
+    } else {
+        rect
+    }
+}
+
 fn select_bar(app: &mut App, ui: &mut egui::Ui) {
     let Some(picked) = app.chat_select.clone() else {
         return;
@@ -779,8 +789,27 @@ fn select_bar(app: &mut App, ui: &mut egui::Ui) {
         if ui.add_enabled(any, egui::Button::new("Mute")).clicked() {
             each(|chat| Action::SetMuted(chat, Some(0)));
         }
+        if ui.add_enabled(any, egui::Button::new("Unmute")).clicked() {
+            each(|chat| Action::SetMuted(chat, None));
+        }
         if ui.add_enabled(any, egui::Button::new("Archive")).clicked() {
             each(|chat| Action::SetArchived(chat, true));
+        }
+        if ui
+            .add_enabled(any, egui::Button::new("Unarchive"))
+            .clicked()
+        {
+            each(|chat| Action::SetArchived(chat, false));
+        }
+        if ui.button("Select all").clicked() {
+            let all: std::collections::BTreeSet<String> = app
+                .chats
+                .iter()
+                .filter(|chat| !chat.locked && chat.archived == app.show_archived)
+                .map(|chat| chat.id.clone())
+                .collect();
+            app.chat_select = Some(all);
+            return;
         }
         if ui.button("Clear selected").clicked() {
             app.chat_select = None;
@@ -1789,6 +1818,8 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         vec2(ui.available_width(), theme::ROW_HEIGHT),
         Sense::click(),
     );
+    // ZFPlus: select mode keeps room at the left for the check box.
+    let rect = select_room(app, rect);
     theme::reveal_focus(&response);
     // The preview area and the whole last message, when the row cuts it short.
     let mut full_preview: Option<(Rect, String, String)> = None;
@@ -2065,22 +2096,16 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
     if let Some(picked) = app.chat_select.as_mut() {
         let on = picked.contains(&chat.id);
         let tick =
-            Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(14.0, 14.0));
-        ui.painter()
-            .rect_filled(tick, 3.0, if on { palette.accent } else { palette.surface });
-        ui.painter().rect_stroke(
-            tick,
-            3.0,
-            egui::Stroke::new(1.0, palette.secondary),
-            egui::StrokeKind::Inside,
-        );
+            Rect::from_center_size(pos2(rect.left() - 20.0, rect.center().y), vec2(20.0, 20.0));
         if on {
-            ui.painter().text(
-                tick.center(),
-                egui::Align2::CENTER_CENTER,
-                "✓",
-                theme::bold(11.0),
-                palette.window,
+            ui.painter().rect_filled(tick, 4.0, palette.accent);
+            theme::paint_icon(ui, Icon::Check, tick.shrink(3.0), 14.0, palette.on_accent);
+        } else {
+            ui.painter().rect_stroke(
+                tick,
+                4.0,
+                egui::Stroke::new(2.0, palette.secondary),
+                egui::StrokeKind::Inside,
             );
         }
         if response.clicked() {

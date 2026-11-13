@@ -414,20 +414,6 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
                 widgets::paint_avatar(ui, &palette, avatar, name, &jid, picture.as_deref());
                 x += 46.0;
                 let painter = ui.painter();
-                painter.text(
-                    pos2(x, rect.center().y - 9.0),
-                    Align2::LEFT_CENTER,
-                    name,
-                    theme::medium(13.5),
-                    palette.text,
-                );
-                painter.text(
-                    pos2(x, rect.center().y + 9.0),
-                    Align2::LEFT_CENTER,
-                    format!("+{number}"),
-                    theme::regular(12.0),
-                    palette.secondary,
-                );
                 // WhatsApp, or not: a small pill at the row's end.
                 let saved = super::dialogs::is_saved(app, &jid);
                 let (word, color) = match on_whatsapp(app, number) {
@@ -471,6 +457,27 @@ pub fn share_contact(app: &mut App, ui: &mut egui::Ui, chat: &str) {
                     egui::StrokeKind::Inside,
                 );
                 painter.galley(pill_rect.min + vec2(6.0, 3.0), pill, color);
+                // ZFPlus: a long name ends in an ellipsis before the pill.
+                let room = (pill_rect.left() - 10.0 - x).max(40.0);
+                let title = widgets::line(ui, name, theme::medium(13.5), palette.text, room, 1);
+                title.paint(
+                    ui,
+                    pos2(x, rect.center().y - 9.0 - title.size().y / 2.0),
+                    palette.text,
+                );
+                let phone = widgets::line(
+                    ui,
+                    &format!("+{number}"),
+                    theme::regular(12.0),
+                    palette.secondary,
+                    room,
+                    1,
+                );
+                phone.paint(
+                    ui,
+                    pos2(x, rect.center().y + 9.0 - phone.size().y / 2.0),
+                    palette.secondary,
+                );
                 if response
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()

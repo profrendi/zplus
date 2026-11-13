@@ -5398,6 +5398,11 @@ impl Worker {
             }
             E::ServerAck(ack) => self.server_ack(ack),
             E::LabelEditUpdate(update) => self.list_edited(update),
+            // ZFPlus: whose statuses the phone muted, for Status's Muted.
+            E::UserStatusMuteUpdate(update) => {
+                let sender = self.canonical(&update.jid);
+                let _ = self.archive.plus_set_status_muted(&sender, update.muted);
+            }
             E::LabelAssociationUpdate(update) => {
                 let chat = self.canonical(&update.chat_jid);
                 let id = format!("wa:{}", update.label_id);
@@ -7083,6 +7088,8 @@ impl Worker {
                 if batched && self.archive.end_batch().is_err() {
                     log::warn!("could not commit a history chunk");
                 }
+                // ZFPlus: the statuses the phone sent with the history.
+                self.plus_keep_history_statuses();
                 if on_demand {
                     self.answer_older(filed, session.as_deref());
                 }
@@ -15325,6 +15332,7 @@ fn parse_history(compressed: &[u8]) -> Result<ParsedHistory, String> {
         chats.push(parse_conversation(conversation));
     }
     let remainder = stream.remainder().map_err(|error| error.to_string())?;
+    plus_pages::stash_history_statuses(&remainder.status_v3_messages);
     let push_names = remainder
         .pushnames
         .iter()

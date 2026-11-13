@@ -1104,6 +1104,9 @@ pub struct Staged {
     pub preview: Option<std::sync::Arc<egui::ColorImage>>,
 }
 
+/// ZFPlus: what a status's video is known by in the player.
+pub(crate) const STATUS_VIDEO: &str = "zfstatus:";
+
 impl App {
     /// Stages an attachment and answers with the identity the backend names
     /// when it is done with it.
@@ -2243,6 +2246,7 @@ impl App {
     /// Updates the linked app while no window exists.
     pub fn window_gone(&mut self) {
         crate::plus_memory::set_meter_shown(false);
+        crate::plus_memory::note_hidden();
         crate::plus::forget_blur_gl();
         self.flush_open_draft();
         self.clear_chat_lock_entry();
@@ -2642,6 +2646,9 @@ impl App {
         use crate::model::PlusAnswer;
         match answer {
             PlusAnswer::Statuses(statuses) => self.statuses = statuses,
+            PlusAnswer::StatusPrivacy(audience, people) => {
+                self.status_privacy = Some((audience, people));
+            }
             PlusAnswer::StatusMedia { id, result } => {
                 if let Err(error) = &result {
                     self.toast_error(error.clone());
@@ -7609,6 +7616,27 @@ impl App {
         crate::plus_memory::set_meter_shown(
             self.settings.plus.usage_meter && !minimized && !self.window_hidden,
         );
+        // ZFPlus: idle memory is given back; a call or a video keeps it.
+        let (focused, active) = ctx.input(|input| {
+            (
+                input.focused,
+                input.pointer.is_moving()
+                    || input.events.iter().any(|event| {
+                        matches!(
+                            event,
+                            egui::Event::Key { .. }
+                                | egui::Event::Text(_)
+                                | egui::Event::PointerButton { .. }
+                                | egui::Event::MouseWheel { .. }
+                        )
+                    }),
+            )
+        });
+        crate::plus_memory::note_window(
+            focused && !minimized && !self.window_hidden,
+            active,
+            self.call.is_some() || self.video.is_active(),
+        );
         // Close the window and continue headless when background mode is
         // enabled. Decided here rather than in `frame_ui`, which eframe skips
         // for a minimized window: closing one from the taskbar quit instead.
@@ -11633,6 +11661,15 @@ impl App {
         if self.video.message().is_some() && self.video_chat != self.open_chat {
             self.video.stop();
         }
+        // ZFPlus: a status's video plays only while Status is open.
+        if self
+            .video
+            .message()
+            .is_some_and(|key| key.starts_with(STATUS_VIDEO))
+            && self.dialog != Some(Dialog::Status)
+        {
+            self.video.stop();
+        }
         // The viewer shows the open chat's media, and leaves with it. ZFPlus:
         // a profile photo belongs to no chat (its chat is empty), and once
         // closed here in the very frame it opened, so it never showed.
@@ -11654,6 +11691,16 @@ impl App {
             ));
             self.actions.push(Action::OpenFile(path));
         }
+    }
+
+    /// ZFPlus: plays or pauses a status's video, with its sound, on the
+    /// Status page. `key` starts with `STATUS_VIDEO`.
+    pub(crate) fn play_status_video(&mut self, key: &str, path: &std::path::Path) {
+        self.player.stop();
+        self.voice_chat = None;
+        self.voice_wanted = None;
+        self.video.toggle(key, path);
+        self.video_chat = self.open_chat.clone();
     }
 
     /// Plays or pauses a video in its message. A video message, the round
@@ -12617,6 +12664,52 @@ impl App {
         // A message or button may retain keyboard focus after clicking it.
         // Other text fields still own their clipboard input.
         let editing_text = ctx.text_edit_focused();
+        // ZFPlus: Ctrl+V in the photo editor: an object copied there, or a
+        // picture (a screenshot) or picture file from the clipboard.
+        if requested && !editing_text && self.picture_edit.is_some() {
+            if let Some(mark) = crate::ui::image_editor::copied_mark() {
+                if let Some(edit) = self.picture_edit.as_mut() {
+                    edit.paste_mark(&mark);
+                }
+                ctx.data_mut(|data| data.insert_temp(frame_id, (frame, true)));
+                ctx.input_mut(|input| {
+                    input
+                        .events
+                        .retain(|event| !matches!(event, egui::Event::Paste(_)))
+                });
+                return;
+            }
+            let picture = match read_clipboard() {
+                Some(ClipboardPaste::Image {
+                    width,
+                    height,
+                    rgba,
+                }) => Some((width, height, rgba)),
+                Some(ClipboardPaste::Files(paths)) => paths.iter().find_map(|path| {
+                    let picture = image::open(path).ok()?.to_rgba8();
+                    Some((
+                        picture.width() as usize,
+                        picture.height() as usize,
+                        picture.into_raw(),
+                    ))
+                }),
+                None => None,
+            };
+            if let Some((width, height, rgba)) = picture {
+                self.actions.push(Action::PasteImage {
+                    width,
+                    height,
+                    rgba,
+                });
+                ctx.data_mut(|data| data.insert_temp(frame_id, (frame, true)));
+                ctx.input_mut(|input| {
+                    input
+                        .events
+                        .retain(|event| !matches!(event, egui::Event::Paste(_)))
+                });
+            }
+            return;
+        }
         let composing = ctx.memory(|memory| {
             memory.has_focus(egui::Id::new("composer-text"))
                 || (!editing_text

@@ -76,6 +76,8 @@ enum Change {
     Grid(Option<GridLayout>),
     /// ZFPlus: opens the picked text to change its words.
     EditText,
+    /// ZFPlus: crops the canvas to its pictures.
+    Fit,
 }
 
 /// ZFPlus: the editor's tools in WhatsApp's order, with their names.
@@ -136,6 +138,108 @@ struct Handling {
     /// ZFPlus: or turned by this many degrees, when the round handle above
     /// it is dragged.
     turn: Option<f32>,
+    /// ZFPlus: or resized by one of its eight handles: which edges move
+    /// (-1 the left or top, 1 the right or bottom, 0 neither), by how much,
+    /// whether Shift keeps its proportions, and whether a picture is
+    /// trimmed rather than stretched.
+    sides: Option<[i8; 2]>,
+    delta: [f32; 2],
+    keep: bool,
+    crop: bool,
+}
+
+/// ZFPlus: the eight handles of an upright mark: corners, then sides.
+const SIDES: [[i8; 2]; 8] = [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+    [0, -1],
+    [1, 0],
+    [0, 1],
+    [-1, 0],
+];
+
+/// ZFPlus: the box a mark's `from` box becomes when the handle at `sides`
+/// is dragged by `delta`; `keep` holds a corner's proportions.
+fn resized(from: [f32; 4], sides: [i8; 2], delta: [f32; 2], keep: bool) -> [f32; 4] {
+    let [mut left, mut top, mut right, mut bottom] = from;
+    match sides[0] {
+        -1 => left = (left + delta[0]).min(right - 0.005),
+        1 => right = (right + delta[0]).max(left + 0.005),
+        _ => {}
+    }
+    match sides[1] {
+        -1 => top = (top + delta[1]).min(bottom - 0.005),
+        1 => bottom = (bottom + delta[1]).max(top + 0.005),
+        _ => {}
+    }
+    if keep && sides[0] != 0 && sides[1] != 0 {
+        let (wide, tall) = ((from[2] - from[0]).max(1e-6), (from[3] - from[1]).max(1e-6));
+        let scale = ((right - left) / wide).max((bottom - top) / tall);
+        if sides[0] == -1 {
+            left = right - wide * scale;
+        } else {
+            right = left + wide * scale;
+        }
+        if sides[1] == -1 {
+            top = bottom - tall * scale;
+        } else {
+            bottom = top + tall * scale;
+        }
+    }
+    [left, top, right, bottom]
+}
+
+/// ZFPlus: where a handle sits on a mark's outline, on the screen.
+fn side_point(mark: &Mark, picture: Rect, sides: [i8; 2]) -> Pos2 {
+    let [left, top, right, bottom] = mark.bounds();
+    let pad = mark.width * picture.width().min(picture.height()) / 2.0 + 4.0;
+    let flat = Rect::from_min_max(
+        pos2(
+            picture.min.x + left * picture.width(),
+            picture.min.y + top * picture.height(),
+        ),
+        pos2(
+            picture.min.x + right * picture.width(),
+            picture.min.y + bottom * picture.height(),
+        ),
+    )
+    .expand(pad);
+    pos2(
+        egui::lerp(flat.left()..=flat.right(), f32::from(sides[0] + 1) / 2.0),
+        egui::lerp(flat.top()..=flat.bottom(), f32::from(sides[1] + 1) / 2.0),
+    )
+}
+
+fn side_cursor(sides: [i8; 2]) -> egui::CursorIcon {
+    match sides {
+        [-1, -1] | [1, 1] => egui::CursorIcon::ResizeNwSe,
+        [1, -1] | [-1, 1] => egui::CursorIcon::ResizeNeSw,
+        [0, _] => egui::CursorIcon::ResizeVertical,
+        _ => egui::CursorIcon::ResizeHorizontal,
+    }
+}
+
+/// ZFPlus: whether dragging a picture's handles trims it (Crop picture).
+pub(crate) fn crop_mode_id() -> egui::Id {
+    egui::Id::new("picture-editor-crop-picture")
+}
+
+thread_local! {
+    /// ZFPlus: an object copied or cut in the editor, for Ctrl+V. It goes
+    /// when the window loses focus, so a picture copied elsewhere wins.
+    static COPIED: std::cell::RefCell<Option<Mark>> = const { std::cell::RefCell::new(None) };
+}
+
+/// ZFPlus: the object copied in the editor, if any is waiting.
+pub(crate) fn copied_mark() -> Option<Mark> {
+    COPIED.with(|copied| copied.borrow().clone())
+}
+
+/// ZFPlus: forgets the copied object, as the window loses focus.
+pub(crate) fn forget_copied() {
+    COPIED.with(|copied| *copied.borrow_mut() = None);
 }
 
 /// ZFPlus: where a picked mark's handles show: its outline's four corners
@@ -356,6 +460,34 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .data(|data| data.get_temp::<Handling>(handling_id()));
             for (at, mark) in edit.marks.iter().enumerate() {
                 match handling.filter(|handling| handling.at == at) {
+                    // ZFPlus: a picture being trimmed shows only what stays.
+                    Some(handling) if handling.crop && handling.sides.is_some() => {
+                        let to = resized(
+                            mark.bounds(),
+                            handling.sides.unwrap_or_default(),
+                            handling.delta,
+                            false,
+                        );
+                        let clip = Rect::from_min_max(
+                            pos2(
+                                picture.min.x + to[0] * picture.width(),
+                                picture.min.y + to[1] * picture.height(),
+                            ),
+                            pos2(
+                                picture.min.x + to[2] * picture.width(),
+                                picture.min.y + to[3] * picture.height(),
+                            ),
+                        );
+                        let mut clipped = ui.new_child(egui::UiBuilder::new());
+                        clipped.set_clip_rect(clip.intersect(ui.clip_rect()));
+                        paint_mark(&clipped, palette, mark, picture);
+                        ui.painter().rect_stroke(
+                            clip,
+                            0.0,
+                            Stroke::new(1.5, palette.accent),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
                     Some(handling) => {
                         paint_mark(ui, palette, &handled(mark, handling), picture);
                     }
@@ -567,6 +699,38 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                     // ZFPlus: the picked object turns and mirrors; its round
                     // handle turns it freely.
+                    // ZFPlus: Crop picture: the handles trim the picked
+                    // picture instead of stretching it (Alt does it too).
+                    if picked.is_some_and(|mark| {
+                        mark.angle == 0.0
+                            && mark
+                                .stamp
+                                .as_ref()
+                                .is_some_and(|stamp| stamp.text.is_none())
+                    }) {
+                        ui.add_space(8.0);
+                        let on = ui
+                            .ctx()
+                            .data(|data| data.get_temp::<bool>(crop_mode_id()))
+                            .unwrap_or(false);
+                        if theme::icon_button(
+                            ui,
+                            Icon::Crop,
+                            18.0,
+                            if on {
+                                palette.accent
+                            } else {
+                                palette.secondary
+                            },
+                            palette.text,
+                            "Crop picture: drag its handles to trim it (or hold Alt)",
+                        )
+                        .clicked()
+                        {
+                            ui.ctx()
+                                .data_mut(|data| data.insert_temp(crop_mode_id(), !on));
+                        }
+                    }
                     if picked.is_some_and(Mark::turnable) {
                         ui.add_space(8.0);
                         for (icon, name, step) in [
@@ -644,47 +808,60 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     );
                     egui::Popup::menu(&grid)
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .align(egui::RectAlign::TOP_START)
                         .show(|ui| {
-                            ui.set_min_width(190.0);
-                            // ZFPlus: the grid's ground and lines, then its shape.
-                            ui.label("Background");
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .selectable_label(edit.grid_ground.is_none(), "None")
-                                    .clicked()
-                                {
-                                    edit.grid_ground = None;
-                                }
-                                if ui
-                                    .selectable_label(
-                                        edit.grid_ground == Some([255, 255, 255, 255]),
-                                        "White",
-                                    )
-                                    .clicked()
-                                {
-                                    edit.grid_ground = Some([255, 255, 255, 255]);
-                                }
-                                if let Some(Some(ground)) = inline_colors(
-                                    ui,
-                                    palette,
-                                    "Colour",
-                                    "grid-ground",
-                                    edit.grid_ground,
-                                    false,
-                                ) {
-                                    edit.grid_ground = Some(ground);
-                                }
-                            });
-                            ui.checkbox(&mut edit.grid_lines, "Outline the boxes");
-                            ui.separator();
-                            if ui.button("No grid").clicked() {
-                                change = Some(Change::Grid(None));
-                            }
-                            for layout in GridLayout::ALL {
-                                if ui.button(layout.name()).clicked() {
-                                    change = Some(Change::Grid(Some(layout)));
-                                }
-                            }
+                            egui::ScrollArea::vertical()
+                                .max_height((grid.rect.top() - 24.0).max(160.0))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(190.0);
+                                    // ZFPlus: the grid's ground and lines, then its shape.
+                                    ui.label("Background");
+                                    ui.horizontal(|ui| {
+                                        // ZFPlus: the canvas is white unless a
+                                        // colour is picked; the photo is never
+                                        // behind the boxes.
+                                        if ui
+                                            .selectable_label(
+                                                edit.grid_ground.is_none()
+                                                    || edit.grid_ground
+                                                        == Some([255, 255, 255, 255]),
+                                                "White",
+                                            )
+                                            .clicked()
+                                        {
+                                            edit.grid_ground = None;
+                                        }
+                                        if let Some(Some(ground)) = inline_colors(
+                                            ui,
+                                            palette,
+                                            "Colour",
+                                            "grid-ground",
+                                            edit.grid_ground,
+                                            false,
+                                        ) {
+                                            edit.grid_ground = Some(ground);
+                                        }
+                                    });
+                                    ui.checkbox(&mut edit.grid_lines, "Outline the boxes");
+                                    ui.separator();
+                                    if ui.button("No grid").clicked() {
+                                        change = Some(Change::Grid(None));
+                                    }
+                                    if ui
+                                        .button("Fit to the pictures")
+                                        .on_hover_text(
+                                            "Crops the canvas to where its pictures and text are",
+                                        )
+                                        .clicked()
+                                    {
+                                        change = Some(Change::Fit);
+                                    }
+                                    for layout in GridLayout::ALL {
+                                        if ui.button(layout.name()).clicked() {
+                                            change = Some(Change::Grid(Some(layout)));
+                                        }
+                                    }
+                                });
                         });
                 },
             );
@@ -903,6 +1080,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             edit.insert_picture(image);
         }
         Some(Change::Grid(None)) => edit.remove_grid(),
+        Some(Change::Fit) => {
+            edit.commit_writing();
+            edit.fit_to_content();
+        }
         Some(Change::Grid(Some(layout))) => {
             edit.commit_writing();
             let original =
@@ -926,6 +1107,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         }
         None => {}
     }
+    copy_and_cut(ctx, &mut edit);
+    live_text(ctx, &mut edit);
     prune_stamp_textures(ctx, &edit);
     // The panel's thumbnails go when it closes.
     if edit.tool != MarkTool::Stamp {
@@ -933,6 +1116,90 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
     app.picture_edit = Some(edit);
     app.actions.extend(actions);
+}
+
+/// ZFPlus: Ctrl+C and Ctrl+X on a picked object keep it for Ctrl+V (Cut
+/// takes it away too); the window losing focus forgets it.
+fn copy_and_cut(ctx: &egui::Context, edit: &mut PictureEdit) {
+    let (copy, cut, left) = ctx.input(|input| {
+        let any = |test: fn(&egui::Event) -> bool| input.events.iter().any(test);
+        (
+            any(|event| matches!(event, egui::Event::Copy)),
+            any(|event| matches!(event, egui::Event::Cut)),
+            any(|event| matches!(event, egui::Event::WindowFocused(false))),
+        )
+    });
+    if left {
+        forget_copied();
+    }
+    if (!copy && !cut) || edit.writing.is_some() || ctx.text_edit_focused() {
+        return;
+    }
+    let Some(mark) = edit.selected.and_then(|at| edit.marks.get(at)).cloned() else {
+        return;
+    };
+    COPIED.with(|copied| *copied.borrow_mut() = Some(mark));
+    if cut {
+        edit.delete_selected();
+    }
+}
+
+/// ZFPlus: text being typed shows on the picture as it will be, changing
+/// at once with each key and each font, size, colour or word art picked.
+/// Escape puts back what was there; done, it is one step for Undo.
+fn live_text(ctx: &egui::Context, edit: &mut PictureEdit) {
+    let base_id = writing_id().with("live-base");
+    let key_id = writing_id().with("live-key");
+    let key_of = |edit: &PictureEdit| {
+        edit.writing.as_ref().map(|writing| {
+            format!(
+                "{}|{:?}|{:?}|{:?}|{}|{:?}|{:?}|{:?}",
+                writing.text,
+                edit.font,
+                edit.color,
+                edit.fill,
+                edit.text_box,
+                edit.art,
+                edit.text_style,
+                writing.replaces
+            )
+        })
+    };
+    match key_of(edit) {
+        Some(key) => {
+            if ctx.data(|data| data.get_temp::<String>(key_id)).as_deref() == Some(key.as_str()) {
+                return;
+            }
+            if ctx
+                .data(|data| data.get_temp::<(Vec<Mark>, usize)>(base_id))
+                .is_none()
+            {
+                let base = (edit.marks.clone(), edit.history.len());
+                ctx.data_mut(|data| data.insert_temp(base_id, base));
+            }
+            edit.live_writing();
+            if let Some(key) = key_of(edit) {
+                ctx.data_mut(|data| data.insert_temp(key_id, key));
+            }
+        }
+        None => {
+            let Some((base, length)) =
+                ctx.data_mut(|data| data.remove_temp::<(Vec<Mark>, usize)>(base_id))
+            else {
+                return;
+            };
+            ctx.data_mut(|data| data.remove::<String>(key_id));
+            if edit.tool == MarkTool::Text {
+                // Escape: what was there before comes back.
+                edit.marks = base;
+                edit.selected = None;
+            } else if edit.marks != base {
+                edit.history.truncate(length);
+                edit.history.push(base);
+                edit.future.clear();
+            }
+        }
+    }
 }
 
 /// ZFPlus: Office's theme colours, then its standard colours.
@@ -1005,7 +1272,11 @@ fn more_colors(
         .id(egui::Id::new(salt))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            chosen = palette_body(ui, palette, salt, current, allow_none);
+            egui::ScrollArea::vertical()
+                .max_height(ui.ctx().content_rect().height() * 0.6)
+                .show(ui, |ui| {
+                    chosen = palette_body(ui, palette, salt, current, allow_none);
+                });
         });
     if chosen.is_some() {
         egui::Popup::close_id(ui.ctx(), egui::Id::new(salt));
@@ -1126,169 +1397,187 @@ fn text_format(ui: &mut egui::Ui, palette: theme::Palette, edit: &PictureEdit) -
         .id(egui::Id::new("editor-text-format"))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            ui.set_min_width(300.0);
-            let mut style = edit.text_style;
-            // Lists in place: a drop-down inside this menu would close it.
-            ui.label("Font");
-            egui::Grid::new("editor-fonts")
-                .num_columns(3)
+            egui::ScrollArea::vertical()
+                .max_height(
+                    (ui.ctx().content_rect().height() - button.rect.bottom() - 24.0).max(200.0),
+                )
                 .show(ui, |ui| {
-                    for (at, font) in MarkFont::ALL.into_iter().enumerate() {
+                    ui.set_min_width(300.0);
+                    let mut style = edit.text_style;
+                    // Lists in place: a drop-down inside this menu would close it.
+                    ui.label("Font");
+                    egui::Grid::new("editor-fonts")
+                        .num_columns(3)
+                        .show(ui, |ui| {
+                            for (at, font) in MarkFont::ALL.into_iter().enumerate() {
+                                if ui
+                                    .selectable_label(edit.font == font, font.name())
+                                    .clicked()
+                                {
+                                    change = Some(Change::Font(font));
+                                }
+                                if at % 3 == 2 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    ui.label("Size");
+                    ui.horizontal_wrapped(|ui| {
+                        for size in TEXT_SIZES {
+                            ui.selectable_value(&mut style.size, size, size.to_string());
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        use crate::model::{TextAlign, TextList};
+                        for (align, name) in [
+                            (TextAlign::Left, "Left"),
+                            (TextAlign::Center, "Centre"),
+                            (TextAlign::Right, "Right"),
+                            (TextAlign::Justify, "Justify"),
+                        ] {
+                            ui.selectable_value(&mut style.align, align, name);
+                        }
+                        ui.separator();
+                        for (list, name) in [
+                            (TextList::None, "No list"),
+                            (TextList::Bullets, "• Bullets"),
+                            (TextList::Numbers, "1. Numbers"),
+                            (TextList::Multilevel, "1.1 Multilevel"),
+                        ] {
+                            ui.selectable_value(&mut style.list, list, name)
+                                .on_hover_text(
+                                    "Start a line with a tab or two spaces to go a level deeper",
+                                );
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.toggle_value(&mut style.bold, egui::RichText::new("B").strong())
+                            .on_hover_text("Bold");
+                        ui.toggle_value(&mut style.italic, egui::RichText::new("I").italics())
+                            .on_hover_text("Italic");
+                        ui.toggle_value(&mut style.underline, egui::RichText::new("U").underline())
+                            .on_hover_text("Underline");
+                        ui.toggle_value(
+                            &mut style.strike,
+                            egui::RichText::new("S").strikethrough(),
+                        )
+                        .on_hover_text("Strikethrough");
+                    });
+                    ui.separator();
+                    ui.label("Word art styles");
+                    ui.horizontal_wrapped(|ui| {
+                        for art in WordArt::ALL {
+                            if ui.selectable_label(edit.art == art, art.name()).clicked() {
+                                change = Some(Change::Art(art));
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.label("Text fill");
+                    ui.horizontal_wrapped(|ui| {
+                        let look = &mut style.look;
                         if ui
-                            .selectable_label(edit.font == font, font.name())
+                            .selectable_label(look.fill == TextFill::Solid, "Text colour")
                             .clicked()
                         {
-                            change = Some(Change::Font(font));
+                            look.fill = TextFill::Solid;
                         }
-                        if at % 3 == 2 {
-                            ui.end_row();
+                        if ui
+                            .selectable_label(
+                                matches!(look.fill, TextFill::Gradient(_)),
+                                "Gradient",
+                            )
+                            .clicked()
+                        {
+                            look.fill = TextFill::Gradient([255, 255, 255, 255]);
                         }
+                        if ui
+                            .selectable_label(look.fill == TextFill::Rainbow, "Rainbow")
+                            .clicked()
+                        {
+                            look.fill = TextFill::Rainbow;
+                        }
+                        if ui
+                            .selectable_label(look.fill == TextFill::None, "No fill")
+                            .clicked()
+                        {
+                            look.fill = TextFill::None;
+                        }
+                        let current = match look.fill {
+                            TextFill::Color(color) | TextFill::Gradient(color) => Some(color),
+                            _ => None,
+                        };
+                        ui.label(if matches!(look.fill, TextFill::Gradient(_)) {
+                            "to"
+                        } else {
+                            "Other"
+                        });
+                        if let Some(Some(color)) =
+                            inline_colors(ui, palette, "Fill colour", "text-fill", current, false)
+                        {
+                            look.fill = match look.fill {
+                                TextFill::Gradient(_) => TextFill::Gradient(color),
+                                _ => TextFill::Color(color),
+                            };
+                        }
+                    });
+                    ui.label("Text outline");
+                    ui.horizontal_wrapped(|ui| {
+                        let look = &mut style.look;
+                        if ui
+                            .selectable_label(look.outline.is_none(), "No outline")
+                            .clicked()
+                        {
+                            look.outline = None;
+                        }
+                        if let Some(outline) = inline_colors(
+                            ui,
+                            palette,
+                            "Outline colour",
+                            "text-outline",
+                            look.outline,
+                            true,
+                        ) {
+                            look.outline = outline;
+                            if look.outline_width == 0 {
+                                look.outline_width = 3;
+                            }
+                        }
+                        let mut weight = look.outline_width.max(1);
+                        if ui
+                            .add(egui::Slider::new(&mut weight, 1..=10).text("weight"))
+                            .changed()
+                        {
+                            look.outline_width = weight;
+                        }
+                    });
+                    ui.label("Text effects");
+                    ui.horizontal_wrapped(|ui| {
+                        let look = &mut style.look;
+                        ui.checkbox(&mut look.shadow, "Shadow");
+                        ui.checkbox(&mut look.reflection, "Reflection");
+                        ui.checkbox(&mut look.extrude, "3D");
+                        let mut glowing = look.glow.is_some();
+                        if ui.checkbox(&mut glowing, "Glow").changed() {
+                            look.glow = glowing.then_some(edit.color);
+                        }
+                        if glowing
+                            && let Some(Some(glow)) = inline_colors(
+                                ui,
+                                palette,
+                                "Glow colour",
+                                "text-glow",
+                                look.glow,
+                                false,
+                            )
+                        {
+                            look.glow = Some(glow);
+                        }
+                    });
+                    if style != edit.text_style && change.is_none() {
+                        change = Some(Change::Style(style));
                     }
                 });
-            ui.label("Size");
-            ui.horizontal_wrapped(|ui| {
-                for size in TEXT_SIZES {
-                    ui.selectable_value(&mut style.size, size, size.to_string());
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                use crate::model::{TextAlign, TextList};
-                for (align, name) in [
-                    (TextAlign::Left, "Left"),
-                    (TextAlign::Center, "Centre"),
-                    (TextAlign::Right, "Right"),
-                    (TextAlign::Justify, "Justify"),
-                ] {
-                    ui.selectable_value(&mut style.align, align, name);
-                }
-                ui.separator();
-                for (list, name) in [
-                    (TextList::None, "No list"),
-                    (TextList::Bullets, "• Bullets"),
-                    (TextList::Numbers, "1. Numbers"),
-                    (TextList::Multilevel, "1.1 Multilevel"),
-                ] {
-                    ui.selectable_value(&mut style.list, list, name)
-                        .on_hover_text(
-                            "Start a line with a tab or two spaces to go a level deeper",
-                        );
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.toggle_value(&mut style.bold, egui::RichText::new("B").strong())
-                    .on_hover_text("Bold");
-                ui.toggle_value(&mut style.italic, egui::RichText::new("I").italics())
-                    .on_hover_text("Italic");
-                ui.toggle_value(&mut style.underline, egui::RichText::new("U").underline())
-                    .on_hover_text("Underline");
-                ui.toggle_value(&mut style.strike, egui::RichText::new("S").strikethrough())
-                    .on_hover_text("Strikethrough");
-            });
-            ui.separator();
-            ui.label("Word art styles");
-            ui.horizontal_wrapped(|ui| {
-                for art in WordArt::ALL {
-                    if ui.selectable_label(edit.art == art, art.name()).clicked() {
-                        change = Some(Change::Art(art));
-                    }
-                }
-            });
-            ui.separator();
-            ui.label("Text fill");
-            ui.horizontal_wrapped(|ui| {
-                let look = &mut style.look;
-                if ui
-                    .selectable_label(look.fill == TextFill::Solid, "Text colour")
-                    .clicked()
-                {
-                    look.fill = TextFill::Solid;
-                }
-                if ui
-                    .selectable_label(matches!(look.fill, TextFill::Gradient(_)), "Gradient")
-                    .clicked()
-                {
-                    look.fill = TextFill::Gradient([255, 255, 255, 255]);
-                }
-                if ui
-                    .selectable_label(look.fill == TextFill::Rainbow, "Rainbow")
-                    .clicked()
-                {
-                    look.fill = TextFill::Rainbow;
-                }
-                if ui
-                    .selectable_label(look.fill == TextFill::None, "No fill")
-                    .clicked()
-                {
-                    look.fill = TextFill::None;
-                }
-                let current = match look.fill {
-                    TextFill::Color(color) | TextFill::Gradient(color) => Some(color),
-                    _ => None,
-                };
-                ui.label(if matches!(look.fill, TextFill::Gradient(_)) {
-                    "to"
-                } else {
-                    "Other"
-                });
-                if let Some(Some(color)) =
-                    inline_colors(ui, palette, "Fill colour", "text-fill", current, false)
-                {
-                    look.fill = match look.fill {
-                        TextFill::Gradient(_) => TextFill::Gradient(color),
-                        _ => TextFill::Color(color),
-                    };
-                }
-            });
-            ui.label("Text outline");
-            ui.horizontal_wrapped(|ui| {
-                let look = &mut style.look;
-                if ui
-                    .selectable_label(look.outline.is_none(), "No outline")
-                    .clicked()
-                {
-                    look.outline = None;
-                }
-                if let Some(outline) = inline_colors(
-                    ui,
-                    palette,
-                    "Outline colour",
-                    "text-outline",
-                    look.outline,
-                    true,
-                ) {
-                    look.outline = outline;
-                    if look.outline_width == 0 {
-                        look.outline_width = 3;
-                    }
-                }
-                let mut weight = look.outline_width.max(1);
-                if ui
-                    .add(egui::Slider::new(&mut weight, 1..=10).text("weight"))
-                    .changed()
-                {
-                    look.outline_width = weight;
-                }
-            });
-            ui.label("Text effects");
-            ui.horizontal_wrapped(|ui| {
-                let look = &mut style.look;
-                ui.checkbox(&mut look.shadow, "Shadow");
-                ui.checkbox(&mut look.reflection, "Reflection");
-                ui.checkbox(&mut look.extrude, "3D");
-                let mut glowing = look.glow.is_some();
-                if ui.checkbox(&mut glowing, "Glow").changed() {
-                    look.glow = glowing.then_some(edit.color);
-                }
-                if glowing
-                    && let Some(Some(glow)) =
-                        inline_colors(ui, palette, "Glow colour", "text-glow", look.glow, false)
-                {
-                    look.glow = Some(glow);
-                }
-            });
-            if style != edit.text_style && change.is_none() {
-                change = Some(Change::Style(style));
-            }
         });
     change
 }
@@ -1303,6 +1592,13 @@ fn waker(ctx: &egui::Context) -> impl Fn() + Send + 'static {
 fn handled(mark: &Mark, handling: Handling) -> Mark {
     if let Some(turn) = handling.turn {
         return mark.rotated(turn);
+    }
+    if let Some(sides) = handling.sides {
+        if handling.crop {
+            return mark.clone();
+        }
+        let from = mark.bounds();
+        return mark.refit(from, resized(from, sides, handling.delta, handling.keep));
     }
     match (handling.grow, handling.grow_y) {
         (Some(grow), Some(down)) => mark.stretched(grow, down),
@@ -1344,14 +1640,101 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         .selected
         .and_then(|at| edit.marks.get(at))
         .map(|mark| (handles_of(mark, picture), mark.turnable()));
-    let corner = picked_handles.as_ref().map(|(handles, _)| {
-        ui.interact(
-            Rect::from_center_size(handles.grow, Vec2::splat(GRIP)),
-            ui.id().with("picture-select-grow"),
-            Sense::DRAG,
-        )
-        .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
-    });
+    // ZFPlus: an upright mark has eight handles instead of the one corner.
+    let upright = edit
+        .selected
+        .and_then(|at| edit.marks.get(at))
+        .is_some_and(|mark| mark.angle == 0.0);
+    let side_handles: Vec<([i8; 2], egui::Response)> = edit
+        .selected
+        .and_then(|at| edit.marks.get(at))
+        .filter(|_| upright)
+        .map(|mark| {
+            SIDES
+                .iter()
+                .map(|&sides| {
+                    let response = ui
+                        .interact(
+                            Rect::from_center_size(
+                                side_point(mark, picture, sides),
+                                Vec2::splat(GRIP),
+                            ),
+                            ui.id().with(("picture-select-side", sides)),
+                            Sense::DRAG,
+                        )
+                        .on_hover_cursor(side_cursor(sides));
+                    (sides, response)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let crop_mode = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(crop_mode_id()))
+        .unwrap_or(false);
+    let (shift, alt) = ui.input(|input| (input.modifiers.shift, input.modifiers.alt));
+    if let Some(at) = edit.selected {
+        for (sides, response) in &side_handles {
+            if response.drag_started() {
+                let picture_mark = edit
+                    .marks
+                    .get(at)
+                    .and_then(|mark| mark.stamp.as_ref())
+                    .is_some_and(|stamp| stamp.text.is_none());
+                handling = Some(Handling {
+                    at,
+                    offset: [0.0; 2],
+                    grow: None,
+                    grow_y: None,
+                    turn: None,
+                    sides: Some(*sides),
+                    delta: [0.0; 2],
+                    keep: false,
+                    crop: picture_mark && (crop_mode || alt),
+                });
+            }
+            if response.dragged()
+                && let Some(current) = handling.as_mut()
+                && current.sides == Some(*sides)
+            {
+                let moved = response.drag_delta();
+                current.delta[0] += moved.x / size[0];
+                current.delta[1] += moved.y / size[1];
+                current.keep = shift && !current.crop;
+            }
+            if response.drag_stopped()
+                && let Some(done) = handling.take()
+                && let Some(sides) = done.sides
+                && let Some(mark) = edit.marks.get(done.at)
+            {
+                let from = mark.bounds();
+                let to = resized(from, sides, done.delta, done.keep);
+                if done.crop {
+                    edit.crop_picture(done.at, to);
+                } else {
+                    edit.change(|marks| {
+                        if let Some(mark) = marks.get_mut(done.at) {
+                            *mark = mark.refit(from, to);
+                        }
+                    });
+                }
+            }
+        }
+    }
+    let on_side = side_handles
+        .iter()
+        .any(|(_, response)| response.dragged() || response.drag_stopped() || response.hovered());
+    let corner = picked_handles
+        .as_ref()
+        .filter(|_| !upright)
+        .map(|(handles, _)| {
+            ui.interact(
+                Rect::from_center_size(handles.grow, Vec2::splat(GRIP)),
+                ui.id().with("picture-select-grow"),
+                Sense::DRAG,
+            )
+            .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
+        });
     // ZFPlus: the round handle above a picked mark turns it freely; Shift
     // keeps it to steps of fifteen degrees.
     let turner = picked_handles
@@ -1378,6 +1761,10 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         if turner.drag_started() {
             handling = Some(Handling {
                 at,
+                sides: None,
+                delta: [0.0; 2],
+                keep: false,
+                crop: false,
                 offset: [0.0; 2],
                 grow: None,
                 grow_y: None,
@@ -1421,6 +1808,10 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         if corner.drag_started() {
             handling = Some(Handling {
                 at,
+                sides: None,
+                delta: [0.0; 2],
+                keep: false,
+                crop: false,
                 offset: [0.0; 2],
                 grow: Some(1.0),
                 grow_y: None,
@@ -1470,6 +1861,7 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         }
     }
     let on_corner = on_turner
+        || on_side
         || corner
             .as_ref()
             .is_some_and(|corner| corner.dragged() || corner.drag_stopped() || corner.hovered());
@@ -1496,9 +1888,19 @@ fn select_input(ui: &mut egui::Ui, edit: &mut PictureEdit, picture: Rect) {
         if area.drag_started()
             && let Some(at) = area.interact_pointer_pos().and_then(|at| topmost(edit, at))
         {
+            // ZFPlus: Shift and drag leaves the original and moves a copy.
+            let at = if shift {
+                edit.duplicate(at, [0.0, 0.0]).unwrap_or(at)
+            } else {
+                at
+            };
             edit.select(Some(at));
             handling = Some(Handling {
                 at,
+                sides: None,
+                delta: [0.0; 2],
+                keep: false,
+                crop: false,
                 offset: [0.0; 2],
                 grow: None,
                 grow_y: None,
@@ -1586,7 +1988,23 @@ fn writing_field(
     );
     let width = (picture.width() * 0.6).clamp(160.0, 520.0);
     let lines = writing.text.lines().count().max(1) as f32;
-    let field = Rect::from_center_size(center, vec2(width, 34.0 * lines + 12.0));
+    let height = 34.0 * lines + 12.0;
+    // ZFPlus: with the text showing on the picture as it will be, the
+    // field sits just under it rather than over it.
+    let center = match writing.replaces.and_then(|at| edit.marks.get(at)) {
+        Some(mark) => {
+            let bottom = picture.min.y + mark.bounds()[3] * picture.height();
+            let below = bottom + 10.0 + height / 2.0;
+            let y = if below + height / 2.0 <= picture.max.y + 40.0 {
+                below
+            } else {
+                picture.min.y + mark.bounds()[1] * picture.height() - 10.0 - height / 2.0
+            };
+            pos2(center.x, y)
+        }
+        None => center,
+    };
+    let field = Rect::from_center_size(center, vec2(width, height));
     let color = Color32::from_rgba_unmultiplied(edit.color[0], edit.color[1], edit.color[2], 255);
     let fill = edit
         .fill
@@ -1689,8 +2107,23 @@ fn outline_selected(
             4.0,
         ));
     }
-    painter.circle_filled(handles.grow, 6.0, palette.accent);
-    painter.circle_stroke(handles.grow, 6.0, Stroke::new(1.5, palette.on_accent));
+    if mark.angle == 0.0 {
+        // ZFPlus: eight handles, at the corners and the middle of each side.
+        for sides in SIDES {
+            let at = side_point(mark, picture, sides);
+            let square = Rect::from_center_size(at, Vec2::splat(9.0));
+            painter.rect_filled(square, 2.0, palette.surface);
+            painter.rect_stroke(
+                square,
+                2.0,
+                Stroke::new(1.5, palette.accent),
+                egui::StrokeKind::Middle,
+            );
+        }
+    } else {
+        painter.circle_filled(handles.grow, 6.0, palette.accent);
+        painter.circle_stroke(handles.grow, 6.0, Stroke::new(1.5, palette.on_accent));
+    }
     // ZFPlus: the round handle that turns it, on a stalk above its top.
     if mark.turnable() {
         let top_middle = lt + (rt - lt) / 2.0;
