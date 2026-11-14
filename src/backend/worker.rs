@@ -9655,10 +9655,11 @@ impl Worker {
                 tokio::spawn(async move {
                     let cleared = client
                         .chat_actions()
-                        .clear_chat(
+                        .clear_chat_with_options(
                             &jid,
-                            true,
-                            true,
+                            whatsapp_rust::ClearChatOptions::default()
+                                .with_starred_messages(whatsapp_rust::StarredMessages::Delete)
+                                .with_media(whatsapp_rust::MediaDeletion::Delete),
                             Some(whatsapp_rust::message_range(through, None, Vec::new())),
                         )
                         .await
@@ -9944,7 +9945,14 @@ impl Worker {
             },
             Command::Unlink => {
                 if let Some(client) = self.client.clone() {
-                    client.logout().await;
+                    // The logged-out event clears this side either way; a
+                    // phone that never confirmed may still list the device.
+                    let report = client.logout().await;
+                    if let whatsapp_rust::DeregistrationOutcome::Failed { source } =
+                        &report.deregistration
+                    {
+                        log::warn!("the phone did not confirm the unlink: {source}");
+                    }
                 } else {
                     self.on_logged_out().await;
                 }
@@ -20297,10 +20305,7 @@ mod receipt_tests {
             .set_group_rights(group, false, false)
             .unwrap();
         for (action, expected) in [
-            (
-                GroupNotificationAction::Locked { threshold: None },
-                Some(true),
-            ),
+            (GroupNotificationAction::locked().build(), Some(true)),
             (GroupNotificationAction::Unlocked, Some(false)),
         ] {
             let update = wa_events::GroupUpdate::builder()
@@ -20336,9 +20341,11 @@ mod receipt_tests {
             .group_jid(group.parse().unwrap())
             .timestamp(whatsapp_rust::wacore::time::from_secs(100).unwrap())
             .is_lid_addressing_mode(false)
-            .action(Box::new(GroupNotificationAction::Create {
-                raw: Node::default(),
-            }))
+            .action(Box::new(
+                GroupNotificationAction::create()
+                    .raw(Node::default())
+                    .build(),
+            ))
             .build();
         worker
             .handle_wa_event(Arc::new(wa_events::Event::GroupUpdate(update)))
@@ -20363,9 +20370,11 @@ mod receipt_tests {
                     .group_jid(group.parse().unwrap())
                     .timestamp(whatsapp_rust::wacore::time::from_secs(at).unwrap())
                     .is_lid_addressing_mode(false)
-                    .action(Box::new(GroupNotificationAction::Create {
-                        raw: Node::default(),
-                    }))
+                    .action(Box::new(
+                        GroupNotificationAction::create()
+                            .raw(Node::default())
+                            .build(),
+                    ))
                     .build(),
             )
         };
@@ -20468,10 +20477,12 @@ mod receipt_tests {
                 .group_jid(group.parse().unwrap())
                 .timestamp(whatsapp_rust::wacore::time::from_secs(100).unwrap())
                 .is_lid_addressing_mode(false)
-                .action(Box::new(GroupNotificationAction::Description {
-                    id: "fixture-description".into(),
-                    description: description.map(str::to_owned),
-                }))
+                .action(Box::new(
+                    GroupNotificationAction::description()
+                        .id("fixture-description".into())
+                        .maybe_description(description.map(str::to_owned))
+                        .build(),
+                ))
                 .build();
             worker
                 .handle_wa_event(Arc::new(wa_events::Event::GroupUpdate(update)))
@@ -20507,10 +20518,12 @@ mod receipt_tests {
             .group_jid(group.parse().unwrap())
             .timestamp(whatsapp_rust::wacore::time::from_secs(100).unwrap())
             .is_lid_addressing_mode(false)
-            .action(Box::new(GroupNotificationAction::Description {
-                id: "fixture-description".into(),
-                description: Some("New description".into()),
-            }))
+            .action(Box::new(
+                GroupNotificationAction::description()
+                    .id("fixture-description".into())
+                    .maybe_description(Some("New description".into()))
+                    .build(),
+            ))
             .build();
         worker
             .handle_wa_event(Arc::new(wa_events::Event::GroupUpdate(update)))
@@ -23440,10 +23453,9 @@ mod receipt_tests {
                 .timestamp(whatsapp_rust::wacore::time::from_secs(timestamp).unwrap())
                 .is_lid_addressing_mode(false)
                 .action(Box::new(
-                    whatsapp_rust::wacore::stanza::groups::GroupNotificationAction::Ephemeral {
-                        expiration,
-                        trigger: None,
-                    },
+                    whatsapp_rust::wacore::stanza::groups::GroupNotificationAction::ephemeral()
+                        .expiration(expiration)
+                        .build(),
                 ))
                 .build();
             worker
