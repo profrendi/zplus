@@ -14,10 +14,17 @@ fi
 git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/crmne/zapfast
 git fetch --quiet upstream "refs/tags/$latest:refs/tags/$latest"
 if ! git merge --no-edit --no-ff -m "Merge ZapFast $latest into ZFPlus" "$latest"; then
-  # The version lines always clash: take ZapFast's and set ours again.
+  # The version lines always clash: take ZapFast's side of the clashing lines
+  # only (set-version.sh sets ours again below), and keep what ZFPlus added
+  # elsewhere in the file, such as the Windows features the Enhancements use.
   for file in Cargo.toml Cargo.lock; do
     if git diff --name-only --diff-filter=U | grep -qx "$file"; then
-      git checkout --theirs -- "$file" && git add "$file"
+      tmp=$(mktemp -d)
+      git show ":1:$file" > "$tmp/base"
+      git show ":2:$file" > "$tmp/ours"
+      git show ":3:$file" > "$tmp/theirs"
+      git merge-file --theirs "$tmp/ours" "$tmp/base" "$tmp/theirs"
+      cp "$tmp/ours" "$file" && rm -rf "$tmp" && git add "$file"
     fi
   done
   # ZFPlus keeps its own README; ZapFast's is linked from it.
