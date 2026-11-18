@@ -10,7 +10,7 @@ impl Archive {
     /// A missing target is allowed only when its source message is also absent
     /// (metadata may arrive first), never when a removal excluded the source.
     pub(super) fn move_message_metadata(
-        transaction: &rusqlite::Connection,
+        transaction: &super::Batch<'_>,
         source: &str,
         target: &str,
     ) -> Result<()> {

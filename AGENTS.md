@@ -119,6 +119,12 @@ protocol. These notes are for coding agents and new contributors.
   migration checkpoints the old WAL and verifies an encrypted staging file before
   atomic replacement. A locked or missing key stops linking; never fall back to
   a disposable archive. Tests use fixtures and mock credentials only.
+  Each history chunk, and each run of runtime events already queued (up to
+  `EVENT_BATCH` or `EVENT_BATCH_TIME`), commits once (`Archive::begin_batch`):
+  committed write by write, a first sync wrote fifteen times the archive's
+  size (#839). Archive transactions are `archive::Batch`es, savepoints that
+  nest inside such a batch, never `unchecked_transaction` on the worker's
+  connection. `write_batching::history_write_bench` (ignored) measures it.
 - `src/model.rs` holds the app's own types. Views never touch a protobuf;
   the worker translates in `classify()` and `parse_conversation()`.
 - A motion photo is a photo plus a short clip sent as a second message in an
@@ -369,7 +375,13 @@ protocol. These notes are for coding agents and new contributors.
   platform's picture over it afterwards (Apple Color Emoji, Segoe UI Emoji
   through DirectWrite, or the desktop's bitmap emoji font, with the bundled
   Noto behind them). New pictures are drawn on its worker thread; tests and
-  demo builds draw them inside the frame. The interface font is the
+  demo builds draw them inside the frame. Pickers and `:` completions list
+  emoji through `emoji::catalogue` / `emoji::lookup`, which stop at the
+  bundled font's emoji version (`BUNDLED_VERSION`), so an `emojis` update
+  never offers an emoji no font draws; when updating
+  `assets/fonts/NotoColorEmoji.ttf` (the CBDT build from googlefonts/noto-emoji,
+  not COLRv1), raise it, and a test checks the font draws every offered emoji.
+  The interface font is the
   platform's own (`fastframe_fonts::Primary::System`), and Inter in tests.
   fastframe-emoji's `EmojiPlugin` (added in `App::attach`) colours the
   emoji in every other egui text: labels, menus, tooltips, text fields. It

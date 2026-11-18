@@ -108,7 +108,7 @@ impl Archive {
 
     /// Deletes a label and takes it off every chat that wore it.
     pub fn delete_label(&self, id: &str) -> Result<bool> {
-        let transaction = crate::archive::Write::begin(&self.connection)?;
+        let transaction = super::Batch::begin(&self.connection)?;
         transaction.execute(
             "DELETE FROM local_chat_labels WHERE label = ?1",
             params![id],
@@ -123,7 +123,7 @@ impl Archive {
     /// Ids of labels that no longer exist are skipped, so a menu drawn just
     /// before a delete cannot bring a label back onto a chat.
     pub fn set_chat_labels(&self, chat: &str, labels: &[String]) -> Result<()> {
-        let transaction = crate::archive::Write::begin(&self.connection)?;
+        let transaction = super::Batch::begin(&self.connection)?;
         transaction.execute(
             "DELETE FROM local_chat_labels WHERE chat = ?1",
             params![chat],
@@ -160,7 +160,7 @@ impl Archive {
         color_hex: &str,
         created_at: i64,
     ) -> Result<()> {
-        let transaction = crate::archive::Write::begin(&self.connection)?;
+        let transaction = super::Batch::begin(&self.connection)?;
         let existing: Option<String> = transaction
             .query_row(
                 "SELECT name FROM local_labels WHERE id = ?1",
@@ -231,7 +231,7 @@ impl Archive {
     /// ZFPlus: renames a list made here to the `wa:` id WhatsApp took it
     /// under, keeping its chats.
     pub fn adopt_label(&self, local: &str, synced: &str) -> Result<()> {
-        let transaction = crate::archive::Write::begin(&self.connection)?;
+        let transaction = super::Batch::begin(&self.connection)?;
         transaction.execute(
             "UPDATE local_labels SET id = ?2 WHERE id = ?1",
             params![local, synced],
