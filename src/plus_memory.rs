@@ -634,7 +634,15 @@ mod sys {
 
 #[cfg(target_os = "linux")]
 mod sys {
-    pub fn trim() {}
+    /// Hands the allocator's free pages back to the system, as the
+    /// Windows build empties its working set when idle.
+    pub fn trim() {
+        #[cfg(target_env = "gnu")]
+        // SAFETY: malloc_trim only releases memory the allocator holds free.
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    }
 
     pub fn set_background(_background: bool) {}
 

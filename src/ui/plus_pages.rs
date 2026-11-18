@@ -879,10 +879,21 @@ fn status_privacy(ui: &mut egui::Ui, app: &mut App, view: &mut StatusView) {
     use crate::model::StatusAudience;
     let palette = app.palette;
     let draft_id = egui::Id::new("status-privacy-draft");
-    let mut draft: (StatusAudience, Vec<String>) = ui
-        .data(|data| data.get_temp(draft_id))
-        .or_else(|| app.status_privacy.clone())
-        .unwrap_or_default();
+    // What WhatsApp said when the draft began: a newer answer replaces a
+    // draft nobody has touched, so the lists come in as they arrive.
+    let base_id = egui::Id::new("status-privacy-base");
+    let base: Option<(StatusAudience, Vec<String>)> = ui.data(|data| data.get_temp(base_id));
+    let now_known = app.status_privacy.clone().unwrap_or_default();
+    let mut draft: (StatusAudience, Vec<String>) =
+        match (ui.data(|data| data.get_temp(draft_id)), base) {
+            // Untouched since the last answer: the newer answer replaces it.
+            (Some(draft), Some(base)) if draft == base && now_known != base => now_known.clone(),
+            (Some(draft), Some(_)) => draft,
+            _ => now_known.clone(),
+        };
+    if draft == now_known {
+        ui.data_mut(|data| data.insert_temp(base_id, now_known.clone()));
+    }
     ui.horizontal(|ui| {
         if theme::icon_button(
             ui,
@@ -937,7 +948,13 @@ fn status_privacy(ui: &mut egui::Ui, app: &mut App, view: &mut StatusView) {
         for (audience, title, note) in options {
             ui.horizontal(|ui| {
                 if ui.radio(draft.0 == audience, "").clicked() && draft.0 != audience {
-                    draft = (audience, Vec::new());
+                    // Each list as WhatsApp keeps it, not started afresh.
+                    let kept = match audience {
+                        StatusAudience::Except => app.status_lists.0.clone(),
+                        StatusAudience::Only => app.status_lists.1.clone(),
+                        StatusAudience::Contacts => Vec::new(),
+                    };
+                    draft = (audience, kept);
                 }
                 ui.vertical(|ui| {
                     theme::text(ui, title, theme::regular(14.5), palette.text);
@@ -991,11 +1008,17 @@ fn status_privacy(ui: &mut egui::Ui, app: &mut App, view: &mut StatusView) {
                         audience: draft.0,
                         people: draft.1.clone(),
                     }));
-                ui.data_mut(|data| data.remove::<(StatusAudience, Vec<String>)>(draft_id));
+                ui.data_mut(|data| {
+                    data.remove::<(StatusAudience, Vec<String>)>(draft_id);
+                    data.remove::<(StatusAudience, Vec<String>)>(base_id);
+                });
                 *view = StatusView::Nothing;
             }
             if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
-                ui.data_mut(|data| data.remove::<(StatusAudience, Vec<String>)>(draft_id));
+                ui.data_mut(|data| {
+                    data.remove::<(StatusAudience, Vec<String>)>(draft_id);
+                    data.remove::<(StatusAudience, Vec<String>)>(base_id);
+                });
                 *view = StatusView::Nothing;
             }
         });

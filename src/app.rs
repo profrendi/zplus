@@ -958,6 +958,9 @@ pub struct App {
     /// ZFPlus: a check asked for from the tray, whose result a notification
     /// reports once it is known.
     tray_check_asked: bool,
+    /// ZFPlus: notification content as last agreed with the other ZFPlus
+    /// app (`plus_shared`), to tell a change made here from one made there.
+    shared_content: Option<bool>,
     /// Whether the app is running without a window.
     pub window_hidden: bool,
     /// ZFPlus: the window was minimized or hidden, so the next frame drawn
@@ -1875,6 +1878,7 @@ impl App {
             tray_lockable,
             tray_updates: None,
             tray_check_asked: false,
+            shared_content: None,
             window_hidden: false,
             away: false,
             camera: None,
@@ -2696,6 +2700,7 @@ impl App {
             PlusAnswer::StatusPrivacy(audience, people) => {
                 self.status_privacy = Some((audience, people));
             }
+            PlusAnswer::StatusLists { except, only } => self.status_lists = (except, only),
             PlusAnswer::StatusMedia { id, result } => {
                 if let Err(error) = &result {
                     self.toast_error(error.clone());
@@ -2853,6 +2858,35 @@ impl App {
         self.notifications.reset_throttle(&account, chat);
     }
 
+    /// ZFPlus: follows the notification content choice made last in either
+    /// ZFPlus app. The first time, a choice to hide it is shared, so the
+    /// other app stops showing what this one hides.
+    fn follow_shared_content(&mut self) {
+        match crate::plus_shared::notification_content() {
+            Some(shared) => {
+                if self.shared_content != Some(shared) {
+                    self.shared_content = Some(shared);
+                    if self.settings.notification_content != shared {
+                        self.settings.notification_content = shared;
+                        self.mark_settings_dirty();
+                    }
+                }
+            }
+            None => {
+                if !self.settings.notification_content {
+                    crate::plus_shared::set_notification_content(false);
+                }
+                self.shared_content = Some(self.settings.notification_content);
+            }
+        }
+    }
+
+    /// ZFPlus: whether notifications may say who and what.
+    fn notification_content_shown(&mut self) -> bool {
+        self.follow_shared_content();
+        !self.app_lock.is_locked() && self.settings.notification_content
+    }
+
     /// Sends a desktop notification for an unseen incoming message.
     fn maybe_notify(&mut self, chat_id: &str, message: &Message) {
         if !self.account().settings.notifications || self.power.conditions().display_off {
@@ -2892,10 +2926,14 @@ impl App {
         let Some(chat) = self.chat(chat_id) else {
             return;
         };
-        if self.app_lock.is_locked() || !self.settings.notification_content {
-            self.notify_without_content(chat_id, chat.is_group(), &message.id, limited);
+        let is_group = chat.is_group();
+        if !self.notification_content_shown() {
+            self.notify_without_content(chat_id, is_group, &message.id, limited);
             return;
         }
+        let Some(chat) = self.chat(chat_id) else {
+            return;
+        };
         let (name, is_group) = (self.chat_title(chat), chat.is_group());
         let chat_sound = chat.notification_sound.clone();
         let sender = self.display_name_or(&message.sender, message.sender_name.as_deref());
@@ -3003,7 +3041,9 @@ impl App {
     }
 
     fn plus_notice(&mut self, chat_id: &str, title: String, body: String) {
-        if self.app_lock.is_locked() || !self.settings.notifications {
+        // Who is online or typing is as private as what they wrote: with
+        // notification content off, these say nothing at all.
+        if !self.settings.notifications || !self.notification_content_shown() {
             return;
         }
         let picture = self.avatar(chat_id).or_else(|| self.cached_avatar(chat_id));
@@ -3103,6 +3143,8 @@ impl App {
     pub fn attach(&mut self, ctx: &egui::Context) {
         // ZFPlus: the blur's GL objects belonged to the last window.
         crate::plus::forget_blur_gl();
+        // ZFPlus: notification content as the other ZFPlus app last set it.
+        self.follow_shared_content();
         // ZFPlus: memory and CPU for the rail's meter and the warning. Tests
         // keep their windows idle.
         #[cfg(not(test))]
@@ -10458,7 +10500,18 @@ impl App {
                 self.search_hits.clear();
                 self.mark_settings_dirty();
             }
-            Action::SettingsChanged => self.mark_settings_dirty(),
+            Action::SettingsChanged => {
+                // ZFPlus: a content choice made here reaches the other app.
+                if self.shared_content.is_some()
+                    && self.shared_content != Some(self.settings.notification_content)
+                {
+                    self.shared_content = Some(self.settings.notification_content);
+                    crate::plus_shared::set_notification_content(
+                        self.settings.notification_content,
+                    );
+                }
+                self.mark_settings_dirty();
+            }
             Action::SetAccountPrivacy { kind, choice } => {
                 // The value lives on the phone: nothing is written without a
                 // connection and a snapshot to write against.
@@ -11766,7 +11819,14 @@ impl App {
         }
         // Larger frames while the viewer shows the clip, the bubble's size
         // otherwise. Only a clip on the viewer plays while it is open.
-        self.video.set_expanded(self.image_preview.is_some());
+        // ZFPlus: a status's video plays as large as the viewer's; asked
+        // for a size back and forth each frame, it never got past its start.
+        let status_video = self
+            .video
+            .message()
+            .is_some_and(|key| key.starts_with(STATUS_VIDEO));
+        self.video
+            .set_expanded(self.image_preview.is_some() || status_video);
         if let Some(crate::video::Notice::Unsupported(path)) = self.video.poll(ctx) {
             self.toast(crate::i18n::gettext(
                 self.locale,

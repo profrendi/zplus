@@ -166,6 +166,8 @@ pub struct Account {
     pub communities: Option<Result<Vec<crate::model::CommunityInfo>, String>>,
     /// ZFPlus: the account's Status privacy, once asked.
     pub status_privacy: Option<(crate::model::StatusAudience, Vec<String>)>,
+    /// ZFPlus: both Status privacy lists, except and only, as WhatsApp keeps.
+    pub status_lists: (Vec<String>, Vec<String>),
     /// ZFPlus: this business's catalogue, once asked.
     pub catalog: Option<Result<Vec<crate::model::CatalogItem>, String>>,
     /// ZFPlus: the last business category search and what it found.
@@ -298,6 +300,7 @@ impl Account {
             status_media: std::collections::HashMap::new(),
             communities: None,
             status_privacy: None,
+            status_lists: (Vec::new(), Vec::new()),
             catalog: None,
             category_search: None,
             call_log: Vec::new(),

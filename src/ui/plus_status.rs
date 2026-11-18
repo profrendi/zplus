@@ -253,7 +253,6 @@ pub(crate) fn stage(
         == Some(key.as_str());
     if let (Some(path), true) = (&fetched, post.kind == StatusKind::Video) {
         app.video.saw(&key);
-        app.video.set_expanded(true);
         if app.video.message() != Some(key.as_str()) && paused.is_none() && !begun {
             app.play_status_video(&key, path);
             ctx.data_mut(|data| data.insert_temp(began_id, key.clone()));
@@ -338,6 +337,7 @@ pub(crate) fn stage(
         paused: if paused.is_some() { None } else { Some(now) },
     };
     let mut focus: Option<Focus> = ctx.data(|data| data.get_temp(focus_id()));
+    let was_focused = focus.is_some();
     let mut next: Option<StatusView> = None;
     // The keyboard, unless a reply is being typed.
     if reply_focused {
@@ -533,6 +533,15 @@ pub(crate) fn stage(
                 .clicked()
                 {
                     state.zoom = (state.zoom * 1.25).min(8.0);
+                }
+                // Pause and play, as long as it is looked at.
+                let (icon, tip) = if paused.is_some() {
+                    (Icon::Play, "Play (Space)")
+                } else {
+                    (Icon::Pause, "Pause (Space)")
+                };
+                if round_button(ui, pos2(center - 104.0, bottom), 40.0, icon, tip, true).clicked() {
+                    next = Some(toggle_pause(paused));
                 }
                 if focus.is_some() {
                     focus = Some(state);
@@ -813,9 +822,30 @@ pub(crate) fn stage(
             data.remove::<Focus>(focus_id());
         }),
     }
+    // On its own, a picture or text waits as long as it is looked at (the
+    // timer holds), and a video plays without moving on when it ends; back
+    // in the column, a hold made by opening it lets go.
+    let held_id = egui::Id::new("status-stage-focus-held");
+    let focus_held: bool = ctx.data(|data| data.get_temp(held_id)).unwrap_or(false);
+    let next = match (was_focused, focus.is_some(), next) {
+        (false, true, None) if post.kind != StatusKind::Video && paused.is_none() => {
+            ctx.data_mut(|data| data.insert_temp(held_id, true));
+            Some(toggle_pause(None))
+        }
+        (true, false, None) if focus_held => {
+            ctx.data_mut(|data| data.insert_temp(held_id, false));
+            paused.map(|at| toggle_pause(Some(at)))
+        }
+        (_, _, next) => {
+            if next.is_some() && focus_held {
+                ctx.data_mut(|data| data.insert_temp(held_id, false));
+            }
+            next
+        }
+    };
     let next = match next {
         Some(next) => next,
-        None if ended && paused.is_none() => forward(),
+        None if ended && paused.is_none() && focus.is_none() => forward(),
         None => {
             if paused.is_none() {
                 // The segment fills smoothly enough at a dozen frames a second.
@@ -839,7 +869,6 @@ pub(crate) fn stage(
         {
             app.video.stop();
         }
-        app.video.set_expanded(false);
         ctx.data_mut(|data| {
             data.remove::<Focus>(focus_id());
             data.remove::<String>(began_id);

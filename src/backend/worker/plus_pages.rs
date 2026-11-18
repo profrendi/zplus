@@ -31,7 +31,15 @@ impl Worker {
                 }
                 self.emit_statuses();
             }
-            PlusRequest::LoadStatusPrivacy => self.emit_status_privacy(),
+            PlusRequest::LoadStatusPrivacy => {
+                self.emit_status_privacy();
+                self.read_status_privacy();
+            }
+            PlusRequest::KeepStatusPrivacy {
+                audience,
+                except,
+                only,
+            } => self.keep_status_privacy(audience, except, only),
             PlusRequest::SetStatusPrivacy { audience, people } => {
                 self.set_status_privacy(audience, people)
             }
@@ -452,7 +460,145 @@ impl Worker {
             Some(Mode::DENY_LIST) => StatusAudience::Except,
             _ => StatusAudience::Contacts,
         };
+        // What WhatsApp itself last answered, both lists, comes first.
+        if let Some((kept, except, only)) = self.kept_status_lists() {
+            let people = match kept {
+                StatusAudience::Except => except.clone(),
+                StatusAudience::Only => only.clone(),
+                StatusAudience::Contacts => Vec::new(),
+            };
+            self.emit(Event::Plus(PlusAnswer::StatusLists { except, only }));
+            self.emit(Event::Plus(PlusAnswer::StatusPrivacy(kept, people)));
+            return;
+        }
         self.emit(Event::Plus(PlusAnswer::StatusPrivacy(audience, people)));
+    }
+
+    /// ZFPlus: asks WhatsApp for the account's Status privacy and both its
+    /// lists, as WhatsApp Web does when Status privacy opens: an IQ in the
+    /// `status` namespace with an empty `privacy`, answered with one `list`
+    /// per kind (`contacts`, `blacklist` for "except", `whitelist` for
+    /// "only"), the one in use marked `default`. The library has no call for
+    /// it, so it goes through its raw IQ.
+    fn read_status_privacy(&self) {
+        use crate::model::StatusAudience;
+        use whatsapp_rust::NodeBuilder;
+        let Some(client) = self.connected_client() else {
+            return;
+        };
+        let lids = self.lid_to_pn.clone();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let query = NodeBuilder::new("iq")
+                .attr("xmlns", "status")
+                .attr("type", "get")
+                .attr("to", "s.whatsapp.net")
+                .children([NodeBuilder::new("privacy").build()])
+                .build();
+            let answer = match client
+                .send_iq_node(query, Some(Duration::from_secs(20)))
+                .await
+            {
+                Ok(answer) => answer,
+                Err(error) => {
+                    log::info!("status privacy was not read: {error}");
+                    return;
+                }
+            };
+            let Some(privacy) = answer.get().get_optional_child("privacy") else {
+                return;
+            };
+            let mut audience = StatusAudience::Contacts;
+            let (mut except, mut only) = (Vec::new(), Vec::new());
+            for list in privacy.get_children_by_tag("list") {
+                let mut attrs = list.attrs();
+                let kind = attrs
+                    .optional_string("type")
+                    .unwrap_or_default()
+                    .to_string();
+                let in_use = attrs
+                    .optional_string("default")
+                    .is_some_and(|value| value == "true");
+                let people: Vec<String> = list
+                    .get_children_by_tag("user")
+                    .filter_map(|user| user.attrs().optional_jid("jid"))
+                    .map(|jid| match lids.get(jid.user.as_str()) {
+                        Some(pn) if jid.server == "lid" => format!("{pn}@s.whatsapp.net"),
+                        _ => format!("{}@s.whatsapp.net", jid.user),
+                    })
+                    .collect();
+                let kind = match kind.as_str() {
+                    "blacklist" | "denylist" => {
+                        except = people;
+                        StatusAudience::Except
+                    }
+                    "whitelist" | "allowlist" => {
+                        only = people;
+                        StatusAudience::Only
+                    }
+                    _ => StatusAudience::Contacts,
+                };
+                if in_use {
+                    audience = kind;
+                }
+            }
+            let _ = commands.send(Command::Plus(PlusRequest::KeepStatusPrivacy {
+                audience,
+                except,
+                only,
+            }));
+        });
+    }
+
+    /// ZFPlus: keeps the Status privacy WhatsApp gave, so it shows at once
+    /// next time and while offline, and passes it on.
+    fn keep_status_privacy(
+        &mut self,
+        audience: crate::model::StatusAudience,
+        except: Vec<String>,
+        only: Vec<String>,
+    ) {
+        use crate::model::StatusAudience;
+        let code = match audience {
+            StatusAudience::Contacts => "contacts",
+            StatusAudience::Except => "except",
+            StatusAudience::Only => "only",
+        };
+        let kept = serde_json::json!({ "audience": code, "except": except, "only": only });
+        let _ = self.archive.set_meta(STATUS_LISTS, &kept.to_string());
+        let people = match audience {
+            StatusAudience::Except => except.clone(),
+            StatusAudience::Only => only.clone(),
+            StatusAudience::Contacts => Vec::new(),
+        };
+        self.emit(Event::Plus(PlusAnswer::StatusLists { except, only }));
+        self.emit(Event::Plus(PlusAnswer::StatusPrivacy(audience, people)));
+    }
+
+    /// ZFPlus: the lists as last kept, while WhatsApp is asked again.
+    fn kept_status_lists(
+        &self,
+    ) -> Option<(crate::model::StatusAudience, Vec<String>, Vec<String>)> {
+        use crate::model::StatusAudience;
+        let kept: serde_json::Value =
+            serde_json::from_str(&self.archive.meta(STATUS_LISTS).ok()??).ok()?;
+        let list = |key: &str| -> Vec<String> {
+            kept[key]
+                .as_array()
+                .map(|people| {
+                    people
+                        .iter()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let audience = match kept["audience"].as_str() {
+            Some("except") => StatusAudience::Except,
+            Some("only") => StatusAudience::Only,
+            _ => StatusAudience::Contacts,
+        };
+        Some((audience, list("except"), list("only")))
     }
 
     /// ZFPlus: sets who sees the account's statuses, as WhatsApp Web's
@@ -468,6 +614,11 @@ impl Worker {
         let events = self.events.clone();
         let waker = self.waker.clone();
         let shown = people.clone();
+        let keep = self.commands.clone();
+        let (except_before, only_before) = self
+            .kept_status_lists()
+            .map(|(_, except, only)| (except, only))
+            .unwrap_or_default();
         self.plus_task(move |client| async move {
             let mut action = wa::sync_action_value::StatusPrivacyAction::default();
             action.mode = Some(
@@ -495,8 +646,24 @@ impl Worker {
                 .send_app_state_action(&whatsapp_rust::schemas::STATUS_PRIVACY, &[], &value)
                 .await
                 .map_err(|error| error.to_string())?;
-            let _ = events.send(Event::Plus(PlusAnswer::StatusPrivacy(audience, shown)));
+            let _ = events.send(Event::Plus(PlusAnswer::StatusPrivacy(
+                audience,
+                shown.clone(),
+            )));
             waker.wake();
+            let _ = keep.send(Command::Plus(PlusRequest::KeepStatusPrivacy {
+                audience,
+                except: if audience == StatusAudience::Except {
+                    shown.clone()
+                } else {
+                    except_before
+                },
+                only: if audience == StatusAudience::Only {
+                    shown
+                } else {
+                    only_before
+                },
+            }));
             Ok("Status privacy saved".to_owned())
         });
     }
@@ -822,6 +989,9 @@ fn catalog_item(product: &whatsapp_rust::features::Product) -> CatalogItem {
         link: product.url.clone(),
     }
 }
+
+/// ZFPlus: `meta` key for the Status privacy WhatsApp last gave.
+const STATUS_LISTS: &str = "plus_status_privacy";
 
 /// ZFPlus: the communities known to be ones, whose pictures are asked for by
 /// the community route.

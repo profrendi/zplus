@@ -473,16 +473,27 @@ fn header(
                                 name,
                             });
                         }
-                        // ZFPlus: twice as large, resampled and sharpened.
-                        if theme::icon_button(
-                            ui,
-                            Icon::Sparkles,
-                            18.0,
-                            palette.secondary,
-                            palette.text,
-                            "Save sharper (2×)",
-                        )
-                        .clicked()
+                        // ZFPlus: twice as large, resampled and sharpened;
+                        // photos only, never a video.
+                        let photo = path
+                            .extension()
+                            .and_then(|extension| extension.to_str())
+                            .is_some_and(|extension| {
+                                matches!(
+                                    extension.to_ascii_lowercase().as_str(),
+                                    "jpg" | "jpeg" | "png" | "webp" | "bmp"
+                                )
+                            });
+                        if photo
+                            && theme::icon_button(
+                                ui,
+                                Icon::Sparkles,
+                                18.0,
+                                palette.secondary,
+                                palette.text,
+                                "Save sharper (2×)",
+                            )
+                            .clicked()
                         {
                             super::plus_pages::save_as(path, Some(2));
                         }

@@ -2920,6 +2920,12 @@ pub enum PlusRequest {
         audience: StatusAudience,
         people: Vec<ChatId>,
     },
+    /// Keeps the Status privacy WhatsApp gave, both lists, for next time.
+    KeepStatusPrivacy {
+        audience: StatusAudience,
+        except: Vec<ChatId>,
+        only: Vec<ChatId>,
+    },
     /// Answers a status in its sender's chat, quoting it, as WhatsApp does.
     ReplyStatus {
         id: String,
@@ -2949,6 +2955,12 @@ pub enum PlusAnswer {
     Statuses(Vec<StatusPost>),
     /// Who sees the account's statuses, and the people named.
     StatusPrivacy(StatusAudience, Vec<ChatId>),
+    /// Both Status privacy lists WhatsApp keeps: "My contacts except..."
+    /// and "Only share with...", each kept while the other is in use.
+    StatusLists {
+        except: Vec<ChatId>,
+        only: Vec<ChatId>,
+    },
     StatusMedia {
         id: String,
         result: Result<std::path::PathBuf, String>,

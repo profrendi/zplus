@@ -510,7 +510,7 @@ impl App {
             Some(chat) => chat.notification_sound.clone(),
             None => None,
         };
-        let (title, body, picture) = if self.app_lock.is_locked() {
+        let (title, body, picture) = if !self.notification_content_shown() {
             // Behind the app lock the desktop learns that a call came, and
             // nothing about who is calling.
             (
@@ -581,7 +581,7 @@ impl App {
         if !self.account().settings.notifications || !eligible {
             return;
         }
-        let (title, body, picture) = if self.app_lock.is_locked() {
+        let (title, body, picture) = if !self.notification_content_shown() {
             (
                 crate::channel::NAME.to_owned(),
                 crate::i18n::gettext(self.locale, "Incoming call").into_owned(),
