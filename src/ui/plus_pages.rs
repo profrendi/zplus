@@ -88,6 +88,22 @@ pub(crate) fn release_textures(app: &App) {
     }
 }
 
+thread_local! {
+    // The last picture decoded, small, with its key.
+    static LAST_DECODED: std::cell::RefCell<Option<(String, image::DynamicImage)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A small copy of the picture last decoded under `key`, if it was.
+pub(crate) fn last_decoded_small(key: &str) -> Option<image::DynamicImage> {
+    LAST_DECODED.with(|last| {
+        last.borrow()
+            .as_ref()
+            .filter(|(kept, _)| kept == key)
+            .map(|(_, image)| image.clone())
+    })
+}
+
 /// A texture for `bytes` (a picture file's contents), made once per key.
 pub(crate) fn picture_texture(
     ui: &egui::Ui,
@@ -104,7 +120,16 @@ pub(crate) fn picture_texture(
     }
     let decoded = image::load_from_memory(&bytes()?).ok()?;
     // A screen's worth is enough to look at; the file keeps the rest.
-    let decoded = decoded.thumbnail(1280, 1280).to_rgba8();
+    let decoded = decoded.thumbnail(1280, 1280);
+    // ZFPlus: the status viewer's blurred backdrop is made from this copy
+    // instead of decoding the whole file a second time.
+    LAST_DECODED.with(|last| {
+        *last.borrow_mut() = Some((
+            key.to_owned(),
+            decoded.resize(28, 28, image::imageops::FilterType::Triangle),
+        ));
+    });
+    let decoded = decoded.to_rgba8();
     let size = [decoded.width() as usize, decoded.height() as usize];
     let texture = ui.ctx().load_texture(
         format!("plus-picture-{key}"),
@@ -161,47 +186,16 @@ fn panes(
     left: impl FnOnce(&mut egui::Ui, &mut App),
     right: impl FnOnce(&mut egui::Ui, &mut App),
 ) {
+    // ZFPlus: the page's list fills the list's column; what it shows of a
+    // pick goes where the chat goes, while no chat is open there.
     let height = page_height(ui);
-    let width = ui.available_width();
-    // ZFPlus: beside an open chat the page is only its list, filling the
-    // list's column.
-    let dialog = app.dialog.clone();
-    if dialog
-        .as_ref()
-        .is_some_and(|dialog| super::plus_panel::in_column(app, ui.ctx(), dialog))
-    {
-        egui::ScrollArea::vertical()
-            .id_salt(ui.next_auto_id())
-            .max_height(height)
-            .auto_shrink([false, false])
-            .show(ui, |ui| left(ui, app));
-        return;
-    }
-    let list = (width * 0.34).clamp(300.0, 440.0);
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            Vec2::new(list, height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_min_size(Vec2::new(list, height));
-                egui::ScrollArea::vertical()
-                    .id_salt(ui.next_auto_id())
-                    .max_height(height)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| left(ui, app));
-            },
-        );
-        ui.separator();
-        let rest = ui.available_width();
-        ui.allocate_ui_with_layout(
-            Vec2::new(rest, height),
-            egui::Layout::top_down(egui::Align::Center),
-            |ui| {
-                ui.set_min_size(Vec2::new(rest, height));
-                right(ui, app);
-            },
-        );
-    });
+    egui::ScrollArea::vertical()
+        .id_salt(ui.next_auto_id())
+        .max_height(height)
+        .auto_shrink([false, false])
+        .show(ui, |ui| left(ui, app));
+    let ctx = ui.ctx().clone();
+    super::plus_panel::detail(app, &ctx, right);
 }
 
 /// A list row: a round picture (ringed in `ring` when given), a name and
@@ -242,6 +236,30 @@ pub(crate) fn person_line(
         let line =
             super::widgets::line(ui, second, theme::regular(12.5), palette.secondary, room, 1);
         line.paint(ui, egui::pos2(left, rect.top() + 36.0), palette.secondary);
+        // ZFPlus: Private Mode veils the second line (a last message, a
+        // time) as the chat list does.
+        if crate::plus::get().blur_recent() && !crate::plus::pointer_over(ui, rect) {
+            crate::plus::blur_text(
+                ui,
+                &palette,
+                egui::Rect::from_min_size(egui::pos2(left, rect.top() + 36.0), line.size()),
+                palette.sidebar(),
+            );
+        }
+    }
+    if !crate::plus::pointer_over(ui, rect) {
+        let plus = crate::plus::get();
+        if plus.blur_photos() {
+            crate::plus::blur_avatar(ui, &palette, face);
+        }
+        if plus.blur_names() {
+            crate::plus::blur_text(
+                ui,
+                &palette,
+                egui::Rect::from_min_size(egui::pos2(left, rect.top() + 12.0), title.size()),
+                palette.sidebar(),
+            );
+        }
     }
     response.on_hover_text(name)
 }
@@ -326,8 +344,15 @@ pub fn status(app: &mut App, ui: &mut egui::Ui) {
     let now = ui.input(|input| input.time);
     if opened(ui, "status") {
         app.actions.push(Action::Plus(PlusRequest::LoadStatuses));
-        app.actions
-            .push(Action::Plus(PlusRequest::LoadStatusPrivacy));
+        // ZFPlus: the privacy lists are asked of WhatsApp at most every
+        // five minutes, not each time the page opens.
+        let asked_id = egui::Id::new("status-privacy-asked-at");
+        let asked: Option<f64> = ui.data(|data| data.get_temp(asked_id));
+        if asked.is_none_or(|at| now - at > 300.0) {
+            app.actions
+                .push(Action::Plus(PlusRequest::LoadStatusPrivacy));
+            ui.data_mut(|data| data.insert_temp(asked_id, now));
+        }
         ui.data_mut(|data| data.insert_temp(loaded_id, now));
     } else if ui
         .data(|data| data.get_temp::<f64>(loaded_id))
@@ -1292,7 +1317,8 @@ pub fn communities(app: &mut App, ui: &mut egui::Ui) {
                                 community.id.clone(),
                             )
                         });
-                        super::plus_panel::leave_column(ui.ctx());
+                        // Its info goes where the chat goes.
+                        app.actions.push(Action::CloseChat);
                     }
                     let open = expanded.contains(&community.id);
                     let shown = if open {

@@ -1860,28 +1860,34 @@ impl Archive {
         Ok(rows)
     }
 
-    /// ZFPlus: the newest photos, videos or documents of every chat (not
-    /// the locked ones), for the media gallery. `kinds` is `media`,
-    /// `documents` or anything else for both.
-    pub fn plus_gallery(&self, kinds: &str, limit: usize) -> Result<Vec<Message>> {
-        let compare = match kinds {
-            "media" => "IN ('image', 'video')",
-            "photos" => "= 'image'",
-            "videos" => "= 'video'",
-            "documents" => "= 'document'",
-            _ => "IN ('image', 'video', 'document')",
+    /// ZFPlus: a page of the newest photos, videos or documents of every
+    /// chat (not the locked ones), for the media gallery. `kinds` is
+    /// `photos`, `videos`, `documents`, or anything else for photos and
+    /// videos. A partial index made on first use (as the archive's own
+    /// sticker and call indexes) walks the newest first instead of reading
+    /// every message.
+    pub fn plus_gallery(&self, kinds: &str, limit: usize, offset: usize) -> Result<Vec<Message>> {
+        self.connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS plus_messages_media ON messages (timestamp)
+                 WHERE json_extract(content, '$.kind') IN ('image', 'video', 'document');",
+        )?;
+        let narrow = match kinds {
+            "photos" => "AND json_extract(content, '$.kind') = 'image'",
+            "videos" => "AND json_extract(content, '$.kind') = 'video'",
+            "documents" => "AND json_extract(content, '$.kind') = 'document'",
+            _ => "AND json_extract(content, '$.kind') <> 'document'",
         };
         let sql = format!(
             "SELECT {SEARCH_COLUMNS}
-             FROM messages
-             WHERE json_valid(content)
-               AND json_extract(content, '$.kind') {compare}
+             FROM messages INDEXED BY plus_messages_media
+             WHERE json_extract(content, '$.kind') IN ('image', 'video', 'document')
+               {narrow}
                AND chat NOT IN (SELECT id FROM chats WHERE locked = 1)
-             ORDER BY timestamp DESC, rowid DESC
-             LIMIT ?1"
+             ORDER BY timestamp DESC
+             LIMIT ?1 OFFSET ?2"
         );
         let mut statement = self.connection.prepare(&sql)?;
-        let rows = statement.query_map(params![limit as i64], searched_message)?;
+        let rows = statement.query_map(params![limit as i64, offset as i64], searched_message)?;
         rows.collect()
     }
 

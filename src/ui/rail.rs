@@ -199,8 +199,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
             .filter(|destination| destination.offered(app))
             .collect();
         let eye = app.settings.plus.show_eye_button && app.settings.plus.private_mode;
+        let saver = app.settings.plus.show_saver_button;
         let lock = app.settings.app_lock_hash.is_some();
-        let extras = usize::from(eye) + 1 + usize::from(lock);
+        let extras = usize::from(eye) + usize::from(saver) + 1 + usize::from(lock);
         let foot = (bottom.len() + extras) as f32 * (PLATE + GAP) + GAP + AVATAR + GAP;
         let minimum = top.len() as f32 * CELL
             + foot
@@ -304,6 +305,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                         if eye {
                             ui.add_space(GAP);
                             private_mode_button(app, ui, &palette, PLATE);
+                        }
+                        if saver {
+                            ui.add_space(GAP);
+                            saver_button(app, ui, &palette, PLATE);
                         }
                         ui.add_space(GAP);
                         plus_plate(
@@ -462,12 +467,77 @@ fn private_mode_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette, heig
         theme::paint_icon(ui, icon, plate, ICON, tint);
     }
     let label = if on {
-        "Private Mode is on: click to turn it off"
+        "Private Mode is on: click for where it blurs"
     } else {
-        "Private Mode is off: click to turn it on (options in Settings → Enhancements)"
+        "Private Mode is off: click to turn it on, or pick where it blurs"
+    };
+    let response = response.on_hover_text(label);
+    // ZFPlus: the eye opens a menu: the switch, All, and each section. It
+    // and Settings share the same choices, so either follows the other.
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(250.0);
+            let mut plus = app.settings.plus;
+            theme::text(ui, "Private Mode", theme::semibold(15.0), palette.text);
+            ui.add_space(4.0);
+            if crate::ui::settings::plus_tick(ui, palette, "Blur now", plus.eye_on, true) {
+                plus.eye_on = !plus.eye_on;
+                plus.private_mode |= plus.eye_on;
+                if plus.eye_on && plus.blur_sections == 0 {
+                    plus.blur_sections = crate::plus::Section::ALL_BITS;
+                }
+            }
+            ui.separator();
+            let all = plus.blur_sections == crate::plus::Section::ALL_BITS && plus.eye_on;
+            if crate::ui::settings::plus_tick(ui, palette, "All", all, true) {
+                crate::plus::set_all(&mut plus, !all);
+            }
+            for section in crate::plus::Section::ALL {
+                let ticked = plus.eye_on && plus.blur_sections & section.bit() != 0;
+                if crate::ui::settings::plus_tick(ui, palette, section.label(), ticked, true) {
+                    crate::plus::set_section(&mut plus, section, !ticked);
+                }
+            }
+            if plus != app.settings.plus {
+                app.settings.plus = plus;
+                crate::plus::set(plus);
+                app.actions.push(Action::SettingsChanged);
+            }
+        });
+}
+
+/// ZFPlus: Mode Hemat's switch, a leaf under the eye.
+fn saver_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette, height: f32) {
+    let on = app.settings.plus.saver;
+    let (cell, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let plate = Rect::from_center_size(cell.center(), Vec2::splat(PLATE));
+    let response = ui
+        .interact(plate, egui::Id::new("plus-saver-mode"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if ui.is_rect_visible(plate) {
+        let hovered = response.hovered();
+        if on {
+            widgets::highlight_card(ui, palette, plate, palette.surface_active);
+        } else if hovered {
+            widgets::highlight_card(ui, palette, plate, palette.surface_hover);
+        }
+        let tint = if on {
+            palette.accent
+        } else if hovered {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        theme::paint_icon(ui, Icon::Leaf, plate, ICON, tint);
+    }
+    let label = if on {
+        "Mode Hemat is on: click to turn it off (its parts are in Settings → Enhancements)"
+    } else {
+        "Mode Hemat is off: click to save memory and processor"
     };
     if response.on_hover_text(label).clicked() {
-        app.settings.plus.eye_on = !on;
+        app.settings.plus.saver = !on;
         crate::plus::set(app.settings.plus);
         app.actions.push(Action::SettingsChanged);
     }

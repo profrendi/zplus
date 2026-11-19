@@ -250,6 +250,8 @@ fn header(
                 )
         });
     let message = preview.message().to_owned();
+    // ZFPlus: who sent it, in which chat, when.
+    let title = super::plus_gallery::viewer_title(app, &message).unwrap_or(title);
     // The file already on the computer, when the item has one: the header
     // offers Save as for it, as the message menu does, instead of fetching it
     // again and leaving the viewer.
@@ -283,6 +285,27 @@ fn header(
             .clicked()
             {
                 actions.push(Action::CloseImagePreview);
+            }
+            // ZFPlus: to the message in its chat, from wherever the viewer
+            // was opened (the media gallery, say).
+            if theme::icon_button(
+                ui,
+                Icon::MessageCircle,
+                18.0,
+                palette.secondary,
+                palette.text,
+                "Go to message",
+            )
+            .clicked()
+            {
+                actions.push(Action::CloseImagePreview);
+                if app.dialog.as_ref().is_some_and(super::plus_panel::is_page) {
+                    actions.push(Action::CloseDialog);
+                }
+                actions.push(Action::OpenMessage {
+                    chat: chat.to_owned(),
+                    message: message.clone(),
+                });
             }
             if let Some(path) = preview.path() {
                 if theme::icon_button(
@@ -640,6 +663,11 @@ fn still(
     let image = crate::ui::widgets::file_image(ui, path);
     match image.load_for_size(ui.ctx(), canvas) {
         Ok(egui::load::TexturePoll::Ready { texture }) => {
+            // ZFPlus: on the graphics card now; the pixels need not stay
+            // in memory as well.
+            if let egui::ImageSource::Uri(uri) = image.source(ui.ctx()) {
+                crate::plus_memory::drop_decoded(ui.ctx(), &uri, texture.id);
+            }
             let size = display_size(texture.size, canvas, preview.is_fit(), preview.zoom());
             if preview.is_fit() && texture.size.x > 0.0 {
                 preview.set_fit_scale(size.x / texture.size.x);

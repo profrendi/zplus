@@ -87,11 +87,15 @@ fn backdrop(
     }) {
         return Some(texture);
     }
-    let decoded = image::load_from_memory(&bytes()?).ok()?;
-    let small = decoded
-        .resize(28, 28, image::imageops::FilterType::Triangle)
-        .blur(1.2)
-        .to_rgba8();
+    let small = match super::plus_pages::last_decoded_small(key) {
+        Some(small) => small,
+        None => image::load_from_memory(&bytes()?).ok()?.resize(
+            28,
+            28,
+            image::imageops::FilterType::Triangle,
+        ),
+    };
+    let small = small.blur(1.2).to_rgba8();
     let size = [small.width() as usize, small.height() as usize];
     let texture = ui.ctx().load_texture(
         format!("status-backdrop-{key}"),

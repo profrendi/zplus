@@ -1041,6 +1041,26 @@ fn starred_row(
         ),
         palette.secondary,
     );
+    // ZFPlus: Private Mode veils the sender and the message until hovered.
+    {
+        let plus = crate::plus::get();
+        if !crate::plus::pointer_over(ui, rect) {
+            if plus.blur_names() {
+                crate::plus::blur_text(
+                    ui,
+                    palette,
+                    Rect::from_min_max(
+                        pos2(rect.left() + 12.0, rect.top() + 4.0),
+                        pos2(rect.right() - 12.0, rect.top() + 24.0),
+                    ),
+                    palette.sidebar(),
+                );
+            }
+            if plus.blur_messages() {
+                crate::plus::blur_text(ui, palette, bubble, palette.sidebar());
+            }
+        }
+    }
     // The bubble's rect is what the menu is anchored to, and what a test reads
     // to click it.
     ui.ctx()
@@ -1122,9 +1142,16 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     if app.show_starred {
+        crate::plus::enter(crate::plus::Section::Starred);
         starred_list(app, ui);
         return;
     }
+    // ZFPlus: Private Mode follows the list's own switch.
+    crate::plus::enter(if app.show_archived {
+        crate::plus::Section::Archived
+    } else {
+        crate::plus::Section::Chats
+    });
     if !app.search.trim().is_empty() {
         results(app, ui);
         return;

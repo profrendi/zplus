@@ -1341,7 +1341,9 @@ fn sticker_tab(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         .collect();
     let grid = GridContext {
         locale,
-        animate: app.window_focused,
+        // ZFPlus: a window on screen beside the one being typed in is still
+        // seen, as a browser tab is; stickers and GIFs move under the pointer.
+        animate: app.window_focused || crate::plus_saver::shown(),
         local: &local,
     };
     let mut choices = StickerChoices::default();

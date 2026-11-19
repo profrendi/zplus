@@ -168,8 +168,11 @@ pub struct Account {
     pub status_privacy: Option<(crate::model::StatusAudience, Vec<String>)>,
     /// ZFPlus: both Status privacy lists, except and only, as WhatsApp keeps.
     pub status_lists: (Vec<String>, Vec<String>),
-    /// ZFPlus: the media gallery's filter and items, once listed.
-    pub plus_gallery: Option<(String, Vec<crate::model::Message>)>,
+    /// ZFPlus: the media gallery's filter, items listed so far, and whether
+    /// more follow.
+    pub plus_gallery: Option<(String, Vec<crate::model::Message>, bool)>,
+    /// ZFPlus: a gallery item downloading to open in the viewer.
+    pub plus_gallery_pending: Option<(String, String)>,
     /// ZFPlus: the call whose info the Calls page shows, as (chat, message).
     pub plus_call_info: Option<(String, String)>,
     /// ZFPlus: recent searches, contact notes and reminders, once loaded.
@@ -315,6 +318,7 @@ impl Account {
             plus_data: None,
             plus_call_info: None,
             plus_gallery: None,
+            plus_gallery_pending: None,
             media_cleanup: None,
             catalog: None,
             category_search: None,

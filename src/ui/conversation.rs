@@ -60,6 +60,12 @@ const NOT_SENT_HINT: &str =
     "This message could not be sent, and ZapFast will not retry it. Send it again yourself.";
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    // ZFPlus: Private Mode follows the switch of the chat's own section.
+    crate::plus::enter(match app.current_chat() {
+        Some(chat) if chat.archived => crate::plus::Section::Archived,
+        Some(chat) if chat.is_channel() => crate::plus::Section::Channels,
+        _ => crate::plus::Section::Chats,
+    });
     let Some(chat) = app.current_chat().cloned() else {
         super::banner(app, ui);
         super::voice_bar::show(app, ui);
@@ -3431,7 +3437,9 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
         avatars: &avatars,
         contacts: &app.contacts,
         now: crate::util::now(),
-        animate: app.window_focused,
+        // ZFPlus: a window on screen beside the one being typed in is still
+        // seen, as a browser tab is; stickers and GIFs move under the pointer.
+        animate: app.window_focused || crate::plus_saver::shown(),
         motion_playing: app
             .motion_playing
             .as_ref()

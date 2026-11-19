@@ -7,8 +7,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Whether the window has the keyboard, kept by the app each frame.
-static FOCUSED: AtomicBool = AtomicBool::new(true);
+/// Whether the window is on screen (not minimized, in the tray or covered
+/// by other windows), kept by the app each frame.
+static SHOWN: AtomicBool = AtomicBool::new(true);
 
 /// The parts, as Settings lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,10 +38,12 @@ impl Part {
         match self {
             Part::Wallpaper => "Plain chat background (no doodles or picture)",
             Part::HoverAnimations => "GIFs and stickers move only under the pointer",
-            Part::PauseBackground => "Animations stop while the window is in the background",
+            Part::PauseBackground => {
+                "Animations stop while the window is minimized, in the tray or covered"
+            }
             Part::ShortAnimations => "Shorter animations (at most 60 frames kept)",
             Part::SmallPictures => "Smaller pictures in chats (sharp again when opened)",
-            Part::ReleaseMemory => "Give memory back to Windows past 300 MB",
+            Part::ReleaseMemory => "Give memory back to Windows past the amount below",
             Part::MinimizeToTray => "Minimizing hides the window to the tray",
         }
     }
@@ -72,8 +75,20 @@ pub fn has(parts: u8, part: Part) -> bool {
     parts & part.bit() != 0
 }
 
-pub fn set_focused(focused: bool) {
-    FOCUSED.store(focused, Ordering::Relaxed);
+pub fn set_shown(shown: bool) {
+    SHOWN.store(shown, Ordering::Relaxed);
+}
+
+/// Whether the window is on screen.
+pub fn shown() -> bool {
+    SHOWN.load(Ordering::Relaxed)
+}
+
+/// Whether `info` describes a window on screen: not minimized and not
+/// covered whole by other windows. Focus does not matter: a window beside
+/// the one being typed in is still seen, as a browser tab is.
+pub fn on_screen(info: &egui::ViewportInfo) -> bool {
+    info.minimized != Some(true) && info.occluded != Some(true) && info.visible() != Some(false)
 }
 
 /// Whether an animation in `rect` may move now.
@@ -81,11 +96,13 @@ pub fn may_animate(ui: &egui::Ui, rect: egui::Rect, wanted: bool) -> bool {
     if !wanted {
         return false;
     }
-    if saving(Part::PauseBackground) && !FOCUSED.load(Ordering::Relaxed) {
+    if saving(Part::PauseBackground) && !shown() {
         return false;
     }
+    // Chat stickers and GIFs already move only under the pointer; this
+    // holds the rest (the picker, previews, statuses) the same way.
     if saving(Part::HoverAnimations) {
-        return ui.rect_contains_pointer(rect);
+        return ui.rect_contains_pointer(rect.expand(2.0));
     }
     true
 }
@@ -107,9 +124,6 @@ pub fn picture_scale() -> f32 {
         1.0
     }
 }
-
-/// The memory, in MB, past which it is given back.
-pub const RELEASE_MB: u64 = 300;
 
 #[cfg(test)]
 mod tests {

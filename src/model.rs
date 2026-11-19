@@ -2931,8 +2931,12 @@ pub enum PlusRequest {
     /// "Leave them": asks again in three days, or sooner past the limit by
     /// another tenth.
     SnoozeMediaCleanup,
-    /// The media gallery: newest photos, videos or documents of every chat.
-    LoadGallery(String),
+    /// The media gallery: a page of the newest photos, videos or documents
+    /// of every chat, from `offset`.
+    LoadGallery {
+        filter: String,
+        offset: usize,
+    },
     /// Mutes or unmutes someone's status updates, here and on the phone.
     MuteStatus {
         sender: String,
@@ -3023,7 +3027,9 @@ pub enum PlusAnswer {
     /// The media gallery's messages, newest first, for a filter.
     Gallery {
         filter: String,
+        offset: usize,
         items: Vec<Message>,
+        more: bool,
     },
     Communities(Result<Vec<CommunityInfo>, String>),
     Catalog(Result<Vec<CatalogItem>, String>),

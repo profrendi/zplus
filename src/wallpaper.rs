@@ -14,6 +14,8 @@ const DEFAULT_SVG: &[u8] = include_bytes!("../assets/wallpaper.svg");
 /// The longest side a wallpaper image keeps, which bounds its texture to about
 /// 26 MB even for a square picture while staying sharp on a 1440p display.
 pub const MAX_SIDE: u32 = 2560;
+/// ZFPlus: the largest side the wallpaper is decoded at for drawing.
+const DISPLAY_SIDE: u32 = 1600;
 
 /// The extensions a copied wallpaper image may have.
 const EXTENSIONS: [&str; 4] = ["jpg", "png", "webp", "gif"];
@@ -317,6 +319,18 @@ pub fn decode(path: &Path) -> Result<ColorImage, String> {
         .map_err(|error| error.to_string())?
         .decode()
         .map_err(|error| error.to_string())?;
+    // ZFPlus: drawn behind a chat pane, never larger than a screen's worth:
+    // 1600 points at most keeps it sharp there at a third of the memory
+    // (a 2560 one took 14 MB as a texture and as much again decoded).
+    let decoded = if decoded.width().max(decoded.height()) > DISPLAY_SIDE {
+        decoded.resize(
+            DISPLAY_SIDE,
+            DISPLAY_SIDE,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        decoded
+    };
     let rgba = bounded(decoded).to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     Ok(ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
@@ -501,7 +515,8 @@ mod tests {
         assert!(!small.exists(), "the earlier copy is gone");
         let (width, height) = image::image_dimensions(&copy).unwrap();
         assert_eq!((width, height), (MAX_SIDE, 640));
-        assert_eq!(decode(&copy).unwrap().size, [2560, 640]);
+        // ZFPlus: drawn at 1600 points at most, the stored copy untouched.
+        assert_eq!(decode(&copy).unwrap().size, [1600, 400]);
 
         // Something that is not an image is refused and the copy survives.
         let text = root.path().join("notes.png");

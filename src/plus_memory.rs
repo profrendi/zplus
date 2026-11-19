@@ -341,6 +341,29 @@ static TRIM_SOON: AtomicU64 = AtomicU64::new(0);
 
 /// ZFPlus: asks for memory to go back to the system within a couple of
 /// seconds, once what was freed has been let go.
+/// Drops the file bytes and the decoded pixels egui keeps for `uri` once
+/// its texture is made, keeping the texture: a 12-megapixel photo held its
+/// 48 MB of pixels twice (decoded, and on the graphics card) while it was
+/// open, which is the jump from 70 MB to 200 MB opening one picture.
+pub fn drop_decoded(ctx: &egui::Context, uri: &str, texture: egui::TextureId) {
+    // Once per texture: a picture opened again is decoded again.
+    let dropped = egui::Id::new(("plus-decoded-dropped", uri, texture));
+    if ctx
+        .data(|data| data.get_temp::<bool>(dropped))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    ctx.data_mut(|data| data.insert_temp(dropped, true));
+    let loaders = ctx.loaders();
+    for loader in loaders.image.lock().iter() {
+        loader.forget(uri);
+    }
+    for loader in loaders.bytes.lock().iter() {
+        loader.forget(uri);
+    }
+}
+
 pub fn trim_soon() {
     TRIM_SOON.store(clock().max(1), Ordering::Relaxed);
 }

@@ -747,6 +747,8 @@ fn identity(app: &mut App, ui: &mut egui::Ui, shown: &Shown, overlay: bool) {
         egui::ScrollArea::vertical()
             .id_salt("group-description")
             .max_height(120.0)
+            // ZFPlus: the wheel scrolls the panel, never this box.
+            .scroll_source(egui::scroll_area::ScrollSource::SCROLL_BAR)
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 theme::selectable_text(ui, description, theme::regular(13.5), palette.text);
@@ -1024,16 +1026,19 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
     // Limit the visible rows because groups can have thousands of members.
     // ZFPlus: large rows, a picture, the name and the number, as
     // WhatsApp Web lists members.
+    // ZFPlus: no list scrolls inside the panel (a wheel over it stopped the
+    // panel, which felt frozen): the first ten members show in the panel,
+    // as WhatsApp Web shows them, and View all opens the search list.
     let row_height = 58.0;
-    let rows = ((window - photo - 300.0) / row_height)
-        .floor()
-        .clamp(3.0, 9.0);
+    let _ = (window, photo);
+    let rows = (members.len() as f32).clamp(1.0, 10.0);
     let mut open = None;
     // `show_rows` reads the spacing from outside its closure.
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical()
         .id_salt(("members", id))
         .max_height(row_height * rows)
+        .scroll_source(egui::scroll_area::ScrollSource::NONE)
         .auto_shrink([false, true])
         .show_rows(ui, row_height, members.len(), |ui, range| {
             for (member, name) in &members[range] {
@@ -1181,6 +1186,20 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
                 }
             }
         });
+    if members.len() > 10 {
+        ui.add_space(4.0);
+        let all = ui.add(
+            egui::Button::new(
+                egui::RichText::new(format!("View all ({} more)", members.len() - 10))
+                    .color(palette.accent)
+                    .size(14.0),
+            )
+            .frame(false),
+        );
+        if all.clicked() {
+            ui.data_mut(|data| data.insert_temp(member_search_id(), id.to_owned()));
+        }
+    }
     app.info_members = Some((id.to_owned(), members));
     if let Some((member, change)) = chosen {
         app.actions.push(match change {

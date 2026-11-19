@@ -188,6 +188,7 @@ fn matches(app: &App, id: &str, needle: &str) -> bool {
 /// The Calls tab's list pane, under the header the chat list's header
 /// draws for it: the call history, or the new-call list over it.
 pub fn list(app: &mut App, ui: &mut egui::Ui) {
+    crate::plus::enter(crate::plus::Section::Calls);
     if app.new_call {
         new_call_list(app, ui);
     } else {
@@ -455,6 +456,23 @@ fn history_row(app: &mut App, ui: &mut egui::Ui, row: &[Message], actions: &mut 
         1,
     );
     name_line.paint(ui, pos2(left, name_top), name_color);
+    // ZFPlus: Private Mode veils who called until hovered.
+    {
+        let plus = crate::plus::get();
+        if !crate::plus::pointer_over(ui, rect) {
+            if plus.blur_photos() {
+                crate::plus::blur_avatar(ui, &palette, avatar_rect);
+            }
+            if plus.blur_names() {
+                crate::plus::blur_text(
+                    ui,
+                    &palette,
+                    Rect::from_min_size(pos2(left, name_top), name_line.size()),
+                    palette.sidebar(),
+                );
+            }
+        }
+    }
     let glyph_rect = Rect::from_min_size(pos2(left, rect.top() + 39.0), Vec2::splat(15.0));
     theme::paint_icon(
         ui,

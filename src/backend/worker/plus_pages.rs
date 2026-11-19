@@ -18,19 +18,28 @@ impl Worker {
             PlusRequest::CheckMediaNow => self.plus_check_media(true),
             PlusRequest::CleanMedia => self.plus_clean_media(),
             PlusRequest::MuteStatus { sender, muted } => self.plus_mute_status(sender, muted),
-            PlusRequest::LoadGallery(filter) => {
+            PlusRequest::LoadGallery { filter, offset } => {
+                const PAGE: usize = 60;
                 let started = std::time::Instant::now();
-                match self.archive.plus_gallery(&filter, 600) {
+                match self.archive.plus_gallery(&filter, PAGE + 1, offset) {
                     Ok(mut items) => {
+                        let more = items.len() > PAGE;
+                        items.truncate(PAGE);
                         for item in &mut items {
                             self.polish(item);
                         }
-                        crate::plus_info!(target: "plus:gallery",
-                            "{} items in {} ms",
+                        crate::plus_info!(
+                            target: "plus:gallery",
+                            "{} items from {offset} in {} ms",
                             items.len(),
                             started.elapsed().as_millis()
                         );
-                        self.emit(Event::Plus(PlusAnswer::Gallery { filter, items }));
+                        self.emit(Event::Plus(PlusAnswer::Gallery {
+                            filter,
+                            offset,
+                            items,
+                            more,
+                        }));
                     }
                     Err(error) => {
                         crate::plus_warn!(target: "plus:gallery", "could not list media: {error}")
@@ -100,12 +109,18 @@ impl Worker {
                     return;
                 };
                 self.plus_task(move |client| async move {
-                    client
-                        .community()
-                        .join_subgroup(community, group)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    Ok("Joined the group".to_owned())
+                    // A group that needs an admin's approval takes the join
+                    // as a request: it is sent, not refused.
+                    match client.community().join_subgroup(community, group).await {
+                        Ok(_) => Ok("Joined the group".to_owned()),
+                        Err(error)
+                            if error.to_string().contains("membership approval") =>
+                        {
+                            crate::plus_info!(target: "plus:community", "join request sent for approval");
+                            Ok("Request sent: an admin of the group has to approve it".to_owned())
+                        }
+                        Err(error) => Err(error.to_string()),
+                    }
                 });
             }
             PlusRequest::CreateChannel { name, description } => {

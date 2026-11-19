@@ -86,6 +86,13 @@ pub struct PlusSettings {
     /// Mode Hemat (`crate::plus_saver`): the switch, and its parts.
     pub saver: bool,
     pub saver_parts: u8,
+    /// Mode Hemat gives memory back past this many MB (Task Manager's
+    /// Memory column).
+    pub saver_release_mb: u16,
+    /// Where Private Mode blurs (`Section` bits); all by default.
+    pub blur_sections: u8,
+    /// Mode Hemat's switch in the rail, under the eye.
+    pub show_saver_button: bool,
 }
 
 impl Default for PlusSettings {
@@ -130,6 +137,9 @@ impl Default for PlusSettings {
             feature_log: 1,
             saver: false,
             saver_parts: crate::plus_saver::ALL_PARTS,
+            saver_release_mb: 200,
+            blur_sections: Section::ALL_BITS,
+            show_saver_button: true,
         }
     }
 }
@@ -140,20 +150,28 @@ impl PlusSettings {
     pub fn private(&self) -> bool {
         self.private_mode && (!self.show_eye_button || self.eye_on)
     }
+    /// Whether Private Mode blurs the section being drawn.
+    fn private_here(&self) -> bool {
+        self.private() && self.blur_sections & section().bit() != 0
+    }
     pub fn blur_names(&self) -> bool {
-        self.private() && self.blur_names
+        self.private_here() && self.blur_names
     }
     pub fn blur_photos(&self) -> bool {
-        self.private() && self.blur_photos
+        self.private_here() && self.blur_photos
     }
     pub fn blur_recent(&self) -> bool {
-        self.private() && self.blur_recent
+        self.private_here() && self.blur_recent
     }
     pub fn blur_messages(&self) -> bool {
-        self.private() && self.blur_messages
+        self.private_here() && self.blur_messages
     }
     pub fn blur_composer(&self) -> bool {
-        self.private() && self.blur_composer
+        self.private_here() && self.blur_composer
+    }
+    /// Whether Private Mode blurs `section` (on, and the section ticked).
+    pub fn blurs(&self, section: Section) -> bool {
+        self.private() && self.blur_sections & section.bit() != 0
     }
     // The privacy boxes act whenever they are ticked: Private Mode and its
     // eye only blur, so turning the eye off never sends read receipts or
@@ -408,6 +426,91 @@ fn translate(text: &str, target: &str) -> anyhow::Result<String> {
         anyhow::bail!("empty translation");
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Where Private Mode blurs.
+
+/// The parts of the window Private Mode can blur, each on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Chats,
+    Archived,
+    Calls,
+    Status,
+    Channels,
+    Communities,
+    Starred,
+}
+
+impl Section {
+    pub const ALL: [Section; 7] = [
+        Section::Chats,
+        Section::Archived,
+        Section::Calls,
+        Section::Status,
+        Section::Channels,
+        Section::Communities,
+        Section::Starred,
+    ];
+    pub const ALL_BITS: u8 = 0b111_1111;
+
+    pub fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Chats => "Chats",
+            Section::Archived => "Archived",
+            Section::Calls => "Calls",
+            Section::Status => "Status",
+            Section::Channels => "Channels",
+            Section::Communities => "Communities",
+            Section::Starred => "Starred messages",
+        }
+    }
+}
+
+/// The section being drawn, set by each page before it draws, so the
+/// blur checks above follow the section's own switch.
+static SECTION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn enter(section: Section) {
+    SECTION.store(section as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn section() -> Section {
+    Section::ALL
+        .get(usize::from(
+            SECTION.load(std::sync::atomic::Ordering::Relaxed),
+        ))
+        .copied()
+        .unwrap_or(Section::Chats)
+}
+
+/// Ticks or unticks `section` (the eye's menu and Settings share these).
+/// Ticking one turns Private Mode on; unticking the last turns it off.
+pub fn set_section(settings: &mut PlusSettings, section: Section, on: bool) {
+    if on {
+        settings.blur_sections |= section.bit();
+        settings.private_mode = true;
+        settings.eye_on = true;
+    } else {
+        settings.blur_sections &= !section.bit();
+        if settings.blur_sections == 0 {
+            settings.eye_on = false;
+        }
+    }
+}
+
+/// "All": every section on (and Private Mode with them), or every one off.
+pub fn set_all(settings: &mut PlusSettings, on: bool) {
+    settings.blur_sections = if on { Section::ALL_BITS } else { 0 };
+    settings.eye_on = on;
+    if on {
+        settings.private_mode = true;
+    }
 }
 
 // ---------------------------------------------------------------------------

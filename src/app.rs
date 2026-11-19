@@ -975,6 +975,9 @@ pub struct App {
     pub camera_texture: Option<(u64, egui::TextureHandle)>,
     /// ZFPlus: when Mode Hemat last gave memory back.
     pub plus_released: Option<Instant>,
+    /// ZFPlus: Mode Hemat's switch and parts as last applied, to drop the
+    /// pictures and animations drawn the other way when they change.
+    pub plus_saver_applied: (bool, u8),
     /// ZFPlus: when the memory was last measured (`plus_memory::tick`).
     memory_measured: Option<Instant>,
     /// ZFPlus: whether the memory warning may go off (`plus_memory::alert`).
@@ -1890,6 +1893,7 @@ impl App {
             camera_texture: None,
             memory_measured: None,
             plus_released: None,
+            plus_saver_applied: (false, crate::plus_saver::ALL_PARTS),
             memory_alert_armed: true,
             hide_intent: false,
             wants_show: false,
@@ -2704,8 +2708,20 @@ impl App {
     /// the keyboard (animations stop without it), and minimizing to the
     /// tray.
     fn plus_saver_frame(&mut self, ctx: &egui::Context) {
-        let focused = ctx.input(|input| input.viewport().focused) != Some(false);
-        crate::plus_saver::set_focused(focused);
+        let shown = !self.window_hidden
+            && ctx.input(|input| crate::plus_saver::on_screen(input.viewport()));
+        crate::plus_saver::set_shown(shown);
+        // A change takes effect at once: what was drawn the other way
+        // (full-size pictures, long animations) is dropped and drawn again.
+        let plus = crate::plus::get();
+        let applied = (plus.saver, plus.saver_parts);
+        if applied != self.plus_saver_applied {
+            self.plus_saver_applied = applied;
+            crate::animation::release(ctx, egui::Id::new("default"));
+            ctx.forget_all_images();
+            crate::plus_memory::trim_soon();
+            crate::plus_info!(target: "plus:saver", "applied (on {}, parts {:07b})", applied.0, applied.1);
+        }
         if crate::plus_saver::saving(crate::plus_saver::Part::MinimizeToTray)
             && ctx.input(|input| input.viewport().minimized) == Some(true)
             && self.tray_shown()
@@ -2823,7 +2839,19 @@ impl App {
                 self.status_media.insert(id, result);
             }
             PlusAnswer::PlusStorage(info) => self.plus_storage = Some(info),
-            PlusAnswer::Gallery { filter, items } => self.plus_gallery = Some((filter, items)),
+            PlusAnswer::Gallery {
+                filter,
+                offset,
+                items,
+                more,
+            } => match self.plus_gallery.as_mut() {
+                Some((shown, kept, has_more)) if *shown == filter && offset == kept.len() => {
+                    kept.extend(items);
+                    *has_more = more;
+                }
+                _ if offset == 0 => self.plus_gallery = Some((filter, items, more)),
+                _ => {}
+            },
             PlusAnswer::PlusData(json) => {
                 crate::plus_data::mark_loaded();
                 self.plus_data = Some(crate::plus_data::PlusData::parse(&json));
@@ -6594,6 +6622,18 @@ impl App {
         card: Option<usize>,
         result: Result<PathBuf, String>,
     ) {
+        // ZFPlus: a gallery item that was downloading opens in the viewer.
+        if self
+            .plus_gallery_pending
+            .as_ref()
+            .is_some_and(|(pending_chat, pending)| pending_chat == chat && pending == id)
+        {
+            self.plus_gallery_pending = None;
+            if let Ok(path) = &result {
+                self.actions
+                    .push(crate::ui::plus_gallery::view_action(chat, id, path));
+            }
+        }
         if card.is_none()
             && let Some(progress) = self.download_progress.get_mut(chat)
         {
@@ -10039,6 +10079,19 @@ impl App {
             Action::ShowDialog(dialog) => {
                 self.cancel_contact_dialog_request();
                 self.clear_chat_lock_entry();
+                // ZFPlus: a page takes the list's column, replacing Starred,
+                // Archived and the locked folder, and starts with its own
+                // detail beside it, as WhatsApp Web's pages do.
+                if crate::ui::plus_panel::is_page(&dialog) && dialog != Dialog::Labels {
+                    self.show_starred = false;
+                    self.show_archived = false;
+                    if self.locked_folder {
+                        self.close_locked_folder();
+                    }
+                    if self.open_chat.is_some() && self.dialog.as_ref() != Some(&dialog) {
+                        self.apply(Action::CloseChat, ctx);
+                    }
+                }
                 if dialog == Dialog::BlockedContacts {
                     self.backend.send(Command::FetchBlocklist);
                 }
@@ -10233,6 +10286,15 @@ impl App {
                 }
             }
             Action::ShowArchived(show) => {
+                // ZFPlus: the archive replaces a page in the list's column.
+                if show
+                    && self
+                        .dialog
+                        .as_ref()
+                        .is_some_and(crate::ui::plus_panel::is_page)
+                {
+                    self.dialog = None;
+                }
                 if self.locked_folder {
                     self.close_locked_folder();
                     self.search.clear();
@@ -10242,6 +10304,15 @@ impl App {
                 self.unread_kept.clear();
             }
             Action::ToggleStarred => {
+                // ZFPlus: Starred replaces a page in the list's column.
+                if !self.show_starred
+                    && self
+                        .dialog
+                        .as_ref()
+                        .is_some_and(crate::ui::plus_panel::is_page)
+                {
+                    self.dialog = None;
+                }
                 // The rail, the list header's Back and Escape all land here. The
                 // sidebar has to be open for the list to be visible.
                 self.sidebar_visible = true;
@@ -11648,10 +11719,10 @@ impl App {
             self.settings.plus.memory_alert_mb
         };
         crate::plus_memory::set_limit(limit);
-        // ZFPlus: Mode Hemat gives memory back past 300 MB, once a minute
-        // at most.
+        // ZFPlus: Mode Hemat gives memory back past the reader's amount
+        // (Task Manager's figure), once a minute at most.
         if crate::plus_saver::saving(crate::plus_saver::Part::ReleaseMemory)
-            && private > crate::plus_saver::RELEASE_MB
+            && private > u64::from(self.settings.plus.saver_release_mb.max(50))
             && self
                 .plus_released
                 .is_none_or(|at| at.elapsed() > Duration::from_secs(60))

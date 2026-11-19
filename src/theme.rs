@@ -914,6 +914,7 @@ fastframe_icons::icons! {
         prefix: "zapfast-icon-",
         directory: "../assets/icons/",
         Archive => "archive",
+        Leaf => "leaf",
         ArrowDown => "arrow-down",
         // ZFPlus: the profile's username.
         AtSign => "at-sign",

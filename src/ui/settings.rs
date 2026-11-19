@@ -1361,11 +1361,42 @@ fn plus_sections() -> Vec<Section> {
             .collect();
         if blur_strength {
             keywords.push(Text::from("Blur strength"));
+            keywords.push(Text::from("Blur in"));
         }
         section.block(keywords, move |ui, app| {
             let active = *master(&mut app.settings);
             for option in options {
                 plus_option(ui, app, option, active);
+            }
+            // ZFPlus: where it blurs: All, or each section. The eye's menu
+            // in the rail shares these.
+            if blur_strength {
+                let palette = app.palette;
+                ui.add_space(6.0);
+                theme::text(ui, "Blur in", theme::medium(13.5), palette.text);
+                let mut plus = app.settings.plus;
+                let all = plus.blur_sections == crate::plus::Section::ALL_BITS;
+                if plus_tick(ui, &palette, "All", all, active) {
+                    plus.blur_sections = if all {
+                        0
+                    } else {
+                        crate::plus::Section::ALL_BITS
+                    };
+                    if !all {
+                        plus.eye_on = true;
+                    }
+                }
+                for section in crate::plus::Section::ALL {
+                    let ticked = plus.blur_sections & section.bit() != 0;
+                    if plus_tick(ui, &palette, section.label(), ticked, active) {
+                        crate::plus::set_section(&mut plus, section, !ticked);
+                    }
+                }
+                if plus != app.settings.plus {
+                    app.settings.plus = plus;
+                    crate::plus::set(plus);
+                    app.actions.push(Action::SettingsChanged);
+                }
             }
             // ZFPlus: how strong the blur is.
             if blur_strength {
@@ -1390,8 +1421,13 @@ fn plus_sections() -> Vec<Section> {
     let mut saver = Section::new(Text::from("Enhancements · Mode Hemat"));
     saver.toggle(
         "Mode Hemat",
-        "Saves memory, processor and battery in one go. Untick any part you want to keep as it was.",
+        "Saves memory, processor and battery in one go. Untick any part you want to keep as it was. The leaf in the left rail turns it on and off.",
         |settings: &mut Settings| &mut settings.plus.saver,
+    );
+    saver.toggle(
+        "Show the Mode Hemat leaf in the left rail",
+        "One click on the leaf, under the Private Mode eye, turns Mode Hemat on and off.",
+        |settings: &mut Settings| &mut settings.plus.show_saver_button,
     );
     saver.block(
         crate::plus_saver::Part::ALL
@@ -1403,21 +1439,38 @@ fn plus_sections() -> Vec<Section> {
             let active = app.settings.plus.saver;
             let mut parts = app.settings.plus.saver_parts;
             for part in crate::plus_saver::Part::ALL {
-                let mut on = crate::plus_saver::has(parts, part);
-                let ink = if active {
-                    palette.text
-                } else {
-                    palette.secondary
-                };
-                if ui
-                    .checkbox(&mut on, egui::RichText::new(part.label()).color(ink))
-                    .changed()
-                {
-                    parts = crate::plus_saver::toggle(parts, part, on);
+                let on = crate::plus_saver::has(parts, part);
+                if plus_tick(ui, &palette, part.label(), on, active) {
+                    parts = crate::plus_saver::toggle(parts, part, !on);
                 }
             }
-            if parts != app.settings.plus.saver_parts {
+            let mut release = app.settings.plus.saver_release_mb;
+            ui.horizontal(|ui| {
+                ui.add_space(26.0);
+                theme::text(
+                    ui,
+                    "Give memory back past",
+                    theme::regular(13.5),
+                    palette.secondary,
+                );
+                ui.add(
+                    egui::DragValue::new(&mut release)
+                        .range(50..=2000)
+                        .speed(5)
+                        .suffix(" MB"),
+                );
+                theme::text(
+                    ui,
+                    "(Task Manager's Memory column)",
+                    theme::regular(12.5),
+                    palette.dim,
+                );
+            });
+            if parts != app.settings.plus.saver_parts
+                || release != app.settings.plus.saver_release_mb
+            {
                 app.settings.plus.saver_parts = parts;
+                app.settings.plus.saver_release_mb = release;
                 crate::plus::set(app.settings.plus);
                 app.actions.push(Action::SettingsChanged);
             }
@@ -1429,6 +1482,52 @@ fn plus_sections() -> Vec<Section> {
 }
 
 /// Draws one Enhancements box.
+/// ZFPlus: a tick row drawn as the Enhancements' own (a filled box with a
+/// check), for options kept outside `PlusOption`. Whether it was clicked.
+pub(crate) fn plus_tick(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    label: &str,
+    value: bool,
+    active: bool,
+) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(rect.expand2(vec2(6.0, 0.0)), 6.0, palette.surface_hover);
+        }
+        let ink = if active {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        let tick = Rect::from_min_size(pos2(rect.left(), rect.center().y - 8.0), Vec2::splat(16.0));
+        if value {
+            let fill = if active { palette.accent } else { palette.dim };
+            ui.painter().rect_filled(tick, 3.0, fill);
+            theme::paint_icon(ui, Icon::Check, tick.shrink(1.5), 13.0, palette.on_accent);
+        } else {
+            ui.painter().rect_stroke(
+                tick,
+                3.0,
+                Stroke::new(1.5, palette.secondary),
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().text(
+            pos2(tick.right() + 10.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            theme::regular(13.5),
+            ink,
+        );
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
 fn plus_option(ui: &mut egui::Ui, app: &mut App, option: PlusOption, active: bool) {
     let palette = app.palette;
     let (label, hint, field, fixed) = match option {
