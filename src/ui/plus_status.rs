@@ -514,13 +514,24 @@ pub(crate) fn stage(
                 {
                     state.zoom = (state.zoom / 1.25).max(1.0);
                 }
-                if round_button(ui, pos2(center, bottom), 40.0, Icon::Maximize, "Fit", true)
-                    .clicked()
+                // The same button that opened it on its own goes back: when
+                // zoomed, the first click fits it again, the next goes back.
+                let fitted_now = state.zoom <= 1.0 && state.pan == Vec2::ZERO;
+                let tip = if fitted_now {
+                    "Back to the status (double click)"
+                } else {
+                    "Fit"
+                };
+                if round_button(ui, pos2(center, bottom), 40.0, Icon::Minimize, tip, true).clicked()
                 {
-                    state = Focus {
-                        zoom: 1.0,
-                        pan: Vec2::ZERO,
-                    };
+                    if fitted_now {
+                        focus = None;
+                    } else {
+                        state = Focus {
+                            zoom: 1.0,
+                            pan: Vec2::ZERO,
+                        };
+                    }
                 }
                 if round_button(
                     ui,
@@ -543,13 +554,26 @@ pub(crate) fn stage(
                 if round_button(ui, pos2(center - 104.0, bottom), 40.0, icon, tip, true).clicked() {
                     next = Some(toggle_pause(paused));
                 }
+                // A video's sound, here too.
+                if post.kind == StatusKind::Video {
+                    let (icon, tip) = if app.video.muted() {
+                        (Icon::VolumeX, "Sound on")
+                    } else {
+                        (Icon::Volume2, "Sound off")
+                    };
+                    if round_button(ui, pos2(center + 104.0, bottom), 40.0, icon, tip, true)
+                        .clicked()
+                    {
+                        app.actions.push(Action::ToggleVideoSound);
+                    }
+                }
                 if focus.is_some() {
                     focus = Some(state);
                 }
             } else {
                 // The column the update stands in.
                 let top = rect.top() + 12.0;
-                let bottom = rect.bottom() - if post.mine { 24.0 } else { 86.0 };
+                let bottom = rect.bottom() - if post.mine { 64.0 } else { 86.0 };
                 let height = (bottom - top).max(160.0);
                 let aspect = match (&shown, post.kind) {
                     (Some(texture), StatusKind::Image | StatusKind::Video) => {
@@ -781,7 +805,12 @@ pub(crate) fn stage(
                 {
                     next = Some(StatusView::Nothing);
                 }
-                if !post.mine {
+                if post.mine {
+                    if viewers(ui, app, &post, column, rect) && paused.is_none() {
+                        // Reading who saw it holds the update.
+                        next = Some(toggle_pause(None));
+                    }
+                } else {
                     reply_bar(ui, app, &post, column, rect);
                 }
             }
@@ -869,6 +898,9 @@ pub(crate) fn stage(
         {
             app.video.stop();
         }
+        // What the updates held goes, and the memory with it.
+        super::plus_pages::forget_pictures();
+        crate::plus_memory::trim_soon();
         ctx.data_mut(|data| {
             data.remove::<Focus>(focus_id());
             data.remove::<String>(began_id);
@@ -1020,4 +1052,90 @@ fn one_line(text: &str, most: usize) -> String {
         let cut: String = first.chars().take(most.saturating_sub(1)).collect();
         format!("{cut}…")
     }
+}
+
+/// Our own update's eye and count along the bottom; a click lists who saw
+/// it and when, latest first, as WhatsApp's "Viewed by". Returns whether
+/// the list was opened this frame.
+fn viewers(ui: &mut egui::Ui, app: &mut App, post: &StatusPost, column: Rect, rect: Rect) -> bool {
+    let count = post.views.len();
+    let label = format!("👁 {count}");
+    let spot = Rect::from_center_size(
+        pos2(column.center().x, rect.bottom() - 34.0),
+        Vec2::new(96.0, 36.0),
+    );
+    let button = ui
+        .interact(
+            spot,
+            egui::Id::new("status-stage-viewers"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Viewed by");
+    if button.hovered() {
+        ui.painter()
+            .rect_filled(spot, 18.0, Color32::from_white_alpha(30));
+    }
+    ui.painter().text(
+        spot.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        theme::medium(16.0),
+        Color32::WHITE,
+    );
+    let palette = app.palette;
+    let opened = button.clicked();
+    egui::Popup::menu(&button)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(340.0);
+            theme::text(
+                ui,
+                format!("Viewed by {count}"),
+                theme::semibold(15.0),
+                palette.text,
+            );
+            ui.add_space(6.0);
+            if post.views.is_empty() {
+                theme::text(
+                    ui,
+                    "No one yet, or only before this computer kept count.",
+                    theme::regular(13.0),
+                    palette.secondary,
+                );
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .id_salt("status-stage-viewers-list")
+                .max_height(380.0)
+                .show(ui, |ui| {
+                    for (viewer, at) in &post.views {
+                        let name = app.display_name(viewer);
+                        ui.horizontal(|ui| {
+                            let (face, _) =
+                                ui.allocate_exact_size(Vec2::splat(42.0), egui::Sense::hover());
+                            let picture = app.avatar(viewer);
+                            super::widgets::paint_avatar(
+                                ui,
+                                &palette,
+                                face,
+                                &name,
+                                viewer,
+                                picture.as_deref(),
+                            );
+                            ui.vertical(|ui| {
+                                theme::text(
+                                    ui,
+                                    one_line(&name, 36),
+                                    theme::regular(14.5),
+                                    palette.text,
+                                );
+                                theme::text(ui, when(*at), theme::regular(12.5), palette.secondary);
+                            });
+                        });
+                        ui.add_space(4.0);
+                    }
+                });
+        });
+    opened
 }

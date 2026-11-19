@@ -215,6 +215,7 @@ impl Worker {
         let me = self.me();
         let seen = self.archive.plus_seen_statuses().unwrap_or_default();
         let muted = self.archive.plus_muted_status_senders().unwrap_or_default();
+        let mut views = self.archive.plus_status_views().unwrap_or_default();
         let statuses = self
             .archive
             .plus_statuses()
@@ -225,6 +226,9 @@ impl Worker {
                 let mut post = status_post(id, sender.clone(), timestamp, &message, sender == me);
                 post.seen = seen.contains(&post.id);
                 post.muted = muted.contains(&sender);
+                if post.mine {
+                    post.views = views.remove(&post.id).unwrap_or_default();
+                }
                 Some(post)
             })
             .collect();
@@ -835,6 +839,43 @@ impl Worker {
             {
                 log::warn!("a status update from history was not kept: {error}");
             }
+            // Who saw our own updates, as the phone recorded it.
+            if key.from_me.unwrap_or(false) {
+                for receipt in &entry.user_receipt {
+                    let at = receipt
+                        .read_timestamp
+                        .or(receipt.played_timestamp)
+                        .filter(|at| *at > 0);
+                    let (Some(at), Ok(jid)) = (at, receipt.user_jid.parse::<Jid>()) else {
+                        continue;
+                    };
+                    let viewer = self.canonical(&jid);
+                    let _ = self.archive.plus_add_status_view(&id, &viewer, at);
+                }
+            }
+        }
+    }
+
+    /// ZFPlus: a read or play receipt for one of our status updates names
+    /// someone who saw it; kept for "Viewed by".
+    pub(super) fn plus_status_receipt(&mut self, receipt: &wa_events::Receipt) {
+        if !matches!(receipt.r#type, ReceiptType::Read | ReceiptType::Played) {
+            return;
+        }
+        let me = self.me();
+        let viewer = self.canonical(&receipt.source.sender);
+        if viewer == me {
+            return;
+        }
+        let at = receipt.timestamp.timestamp();
+        for id in &receipt.message_ids {
+            let ours = matches!(
+                self.archive.plus_status_entry(id),
+                Ok(Some((sender, _))) if sender == me
+            );
+            if ours {
+                let _ = self.archive.plus_add_status_view(id, &viewer, at);
+            }
         }
     }
 
@@ -972,6 +1013,7 @@ fn status_post(
         seen: mine,
         muted: false,
         seconds,
+        views: Vec::new(),
     }
 }
 

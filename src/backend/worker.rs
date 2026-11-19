@@ -5710,6 +5710,10 @@ impl Worker {
 
     fn on_receipt(&mut self, receipt: &wa_events::Receipt) {
         self.learn_source(&receipt.source);
+        // ZFPlus: who saw our status updates.
+        if receipt.source.chat.is_status_broadcast() {
+            self.plus_status_receipt(receipt);
+        }
         let chat = self.canonical(&receipt.source.chat);
         log::debug!(
             "receipt {:?} from {} (chat {chat}, from me: {}, offline: {}) for {:?}",

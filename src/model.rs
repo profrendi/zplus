@@ -2849,6 +2849,8 @@ pub struct StatusPost {
     pub muted: bool,
     /// A video's length in seconds, when it says.
     pub seconds: u32,
+    /// Our own update: who saw it and when, latest first.
+    pub views: Vec<(ChatId, i64)>,
 }
 
 /// ZFPlus: who sees the account's statuses, as WhatsApp's Status privacy.

@@ -67,6 +67,11 @@ thread_local! {
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
+/// ZFPlus: lets the pages' pictures go now (a status viewer closed).
+pub(crate) fn forget_pictures() {
+    KEPT.with(|kept| kept.borrow_mut().clear());
+}
+
 /// ZFPlus: lets the pages' pictures go once no page that shows them is
 /// open, so they hold no memory while the chats are in use.
 pub(crate) fn release_textures(app: &App) {

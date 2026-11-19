@@ -2886,6 +2886,12 @@ impl Archive {
             );
             CREATE TABLE IF NOT EXISTS plus_status_muted (
                 sender TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS plus_status_views (
+                id TEXT NOT NULL,
+                viewer TEXT NOT NULL,
+                at INTEGER NOT NULL,
+                PRIMARY KEY (id, viewer)
             )",
         )
     }
@@ -2970,7 +2976,45 @@ impl Archive {
         self.plus_status_table()?;
         self.connection
             .execute("DELETE FROM plus_statuses WHERE id = ?1", params![id])?;
+        self.connection
+            .execute("DELETE FROM plus_status_views WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// ZFPlus: someone saw one of our status updates, at `at`; the first
+    /// time they did is the one kept.
+    pub fn plus_add_status_view(&self, id: &str, viewer: &str, at: i64) -> Result<()> {
+        self.plus_status_table()?;
+        self.connection.execute(
+            "INSERT INTO plus_status_views (id, viewer, at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id, viewer) DO UPDATE SET at = MIN(at, excluded.at)",
+            params![id, viewer, at],
+        )?;
+        Ok(())
+    }
+
+    /// ZFPlus: who saw each of our status updates, and when, latest first.
+    pub fn plus_status_views(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<(String, i64)>>> {
+        self.plus_status_table()?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, viewer, at FROM plus_status_views ORDER BY at DESC")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut views: std::collections::HashMap<String, Vec<(String, i64)>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (id, viewer, at) = row?;
+            views.entry(id).or_default().push((viewer, at));
+        }
+        Ok(views)
     }
 
     /// ZFPlus: the status updates of the last day, newest first, as (id,

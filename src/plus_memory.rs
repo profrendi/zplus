@@ -335,6 +335,16 @@ struct Trimmer {
     background: bool,
 }
 
+/// ZFPlus: when something heavy just closed (the media viewer, a status),
+/// the second it did: the next sample gives the memory back.
+static TRIM_SOON: AtomicU64 = AtomicU64::new(0);
+
+/// ZFPlus: asks for memory to go back to the system within a couple of
+/// seconds, once what was freed has been let go.
+pub fn trim_soon() {
+    TRIM_SOON.store(clock().max(1), Ordering::Relaxed);
+}
+
 const TRIM_FLOOR: u64 = 120 * 1024 * 1024;
 const TRIM_GROWTH: u64 = 48 * 1024 * 1024;
 
@@ -353,6 +363,18 @@ impl Trimmer {
         if background != self.background {
             self.background = background;
             sys::set_background(background);
+        }
+        // Right after something heavy closed, whatever the activity.
+        let asked = TRIM_SOON.load(Ordering::Relaxed);
+        if asked > 0 && now.saturating_sub(asked) >= 2 && !busy {
+            TRIM_SOON.store(0, Ordering::Relaxed);
+            if shown >= TRIM_FLOOR {
+                sys::trim();
+                let after = process().map_or(shown, |process| process.shown());
+                self.last = Some((after, now));
+                self.after = active;
+            }
+            return;
         }
         if !idle || shown < TRIM_FLOOR {
             return;

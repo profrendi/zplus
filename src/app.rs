@@ -961,6 +961,8 @@ pub struct App {
     /// ZFPlus: notification content as last agreed with the other ZFPlus
     /// app (`plus_shared`), to tell a change made here from one made there.
     shared_content: Option<bool>,
+    /// ZFPlus: the files the media viewer has shown since it opened.
+    plus_viewed: Vec<std::path::PathBuf>,
     /// Whether the app is running without a window.
     pub window_hidden: bool,
     /// ZFPlus: the window was minimized or hidden, so the next frame drawn
@@ -1879,6 +1881,7 @@ impl App {
             tray_updates: None,
             tray_check_asked: false,
             shared_content: None,
+            plus_viewed: Vec::new(),
             window_hidden: false,
             away: false,
             camera: None,
@@ -2856,6 +2859,33 @@ impl App {
     fn reset_notification_throttle(&mut self, chat: &str) {
         let account = self.account().id.clone();
         self.notifications.reset_throttle(&account, chat);
+    }
+
+    /// ZFPlus: the media viewer keeps a GIF's or sticker's every frame as
+    /// textures (a long one, eighty megabytes and more), and ZapFast's sweep
+    /// lets them go only once another animation is drawn, a minute or more
+    /// later. So the files the viewer showed are forgotten the moment it
+    /// closes, and the memory goes back to Windows right after, as Outlook
+    /// Lite gives it back when a heavy page closes.
+    fn plus_release_viewed_media(&mut self, ctx: &egui::Context) {
+        match self
+            .image_preview
+            .as_ref()
+            .and_then(|preview| preview.path())
+        {
+            Some(path) => {
+                if !self.plus_viewed.iter().any(|seen| seen == path) {
+                    self.plus_viewed.push(path.to_path_buf());
+                }
+            }
+            None if self.image_preview.is_none() && !self.plus_viewed.is_empty() => {
+                for path in std::mem::take(&mut self.plus_viewed) {
+                    crate::animation::forget(ctx, &path);
+                }
+                crate::plus_memory::trim_soon();
+            }
+            None => {}
+        }
     }
 
     /// ZFPlus: follows the notification content choice made last in either
@@ -11819,6 +11849,8 @@ impl App {
         }
         // Larger frames while the viewer shows the clip, the bubble's size
         // otherwise. Only a clip on the viewer plays while it is open.
+        // ZFPlus: what the viewer showed is let go the moment it closes.
+        self.plus_release_viewed_media(ctx);
         // ZFPlus: a status's video plays as large as the viewer's; asked
         // for a size back and forth each frame, it never got past its start.
         let status_video = self
