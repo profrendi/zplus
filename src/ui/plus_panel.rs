@@ -19,6 +19,33 @@ pub(crate) fn area_id() -> egui::Id {
     egui::Id::new("plus-panel")
 }
 
+/// The page (Channels or Communities) a chat was opened from, which then
+/// stays in the list's column beside the chat, as WhatsApp Web keeps it.
+fn beside_id() -> egui::Id {
+    egui::Id::new("plus-page-beside-chat")
+}
+
+/// Opens `chat` from `dialog`'s page, keeping the page in the list's
+/// column, at the same place, with the chat beside it.
+pub(crate) fn open_beside(app: &mut App, ctx: &egui::Context, dialog: Dialog, chat: &str) {
+    ctx.data_mut(|data| data.insert_temp(beside_id(), dialog));
+    app.actions.push(Action::OpenChat(chat.to_owned()));
+}
+
+/// Back to the whole page (to show a community's info, say).
+pub(crate) fn leave_column(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<Dialog>(beside_id()));
+}
+
+/// Whether `dialog`'s page shows only its list, beside an open chat.
+pub(crate) fn in_column(app: &App, ctx: &egui::Context, dialog: &Dialog) -> bool {
+    app.open_chat.is_some()
+        && ctx
+            .data(|data| data.get_temp::<Dialog>(beside_id()))
+            .as_ref()
+            == Some(dialog)
+}
+
 /// The part of the window `dialog` takes, or `None` when it stays a
 /// dialog.
 pub(crate) fn region(app: &App, ctx: &egui::Context, dialog: &Dialog) -> Option<egui::Rect> {
@@ -32,23 +59,24 @@ pub(crate) fn region(app: &App, ctx: &egui::Context, dialog: &Dialog) -> Option<
         .data(|data| data.get_temp::<egui::Rect>(super::rail::rect_id()))
         .filter(|rail| rail.right() < content.right() - 200.0);
     let left = rail.map_or(content.left(), |rail| rail.right());
+    // The list's column: where the chat list was drawn this frame, else a
+    // column as wide as it usually is.
+    let column = || {
+        let pass = ctx.cumulative_pass_nr();
+        let list = ctx
+            .data(|data| data.get_temp::<(egui::Rect, u64)>(list_rect_id()))
+            .filter(|(_, at)| *at + 1 >= pass)
+            .map(|(rect, _)| rect);
+        let width = list.map_or(400.0, |list| list.width()).max(360.0);
+        let right = (left + width).min(content.right());
+        egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, content.bottom()))
+    };
     match dialog {
+        Dialog::Channels | Dialog::Communities if in_column(app, ctx, dialog) => Some(column()),
         Dialog::Status | Dialog::Channels | Dialog::Communities | Dialog::BusinessTools => Some(
             egui::Rect::from_min_max(egui::pos2(left, top), content.right_bottom()),
         ),
-        Dialog::Labels => {
-            let pass = ctx.cumulative_pass_nr();
-            let list = ctx
-                .data(|data| data.get_temp::<(egui::Rect, u64)>(list_rect_id()))
-                .filter(|(_, at)| *at + 1 >= pass)
-                .map(|(rect, _)| rect);
-            let width = list.map_or(400.0, |list| list.width()).max(360.0);
-            let right = (left + width).min(content.right());
-            Some(egui::Rect::from_min_max(
-                egui::pos2(left, top),
-                egui::pos2(right, content.bottom()),
-            ))
-        }
+        Dialog::Labels => Some(column()),
         _ => None,
     }
 }
@@ -56,7 +84,7 @@ pub(crate) fn region(app: &App, ctx: &egui::Context, dialog: &Dialog) -> Option<
 /// Draws `dialog` over `region`.
 pub(crate) fn show(app: &mut App, ctx: &egui::Context, dialog: Dialog, region: egui::Rect) {
     let palette = app.palette;
-    let list = matches!(dialog, Dialog::Labels);
+    let list = matches!(dialog, Dialog::Labels) || in_column(app, ctx, &dialog);
     egui::Area::new(area_id())
         .order(egui::Order::Middle)
         .fixed_pos(region.min)

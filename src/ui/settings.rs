@@ -881,6 +881,16 @@ fn sections(app: &App) -> Vec<Section> {
         ],
         storage_usage,
     );
+    // ZFPlus: status files and the chat-media cleanup.
+    files.block(
+        vec![
+            translated(locale, "Status photos and videos"),
+            translated(locale, "Chat media"),
+            translated(locale, "Delete status files"),
+            translated(locale, "Clean up"),
+        ],
+        super::plus_storage::section,
+    );
     let log = app.dirs.log_file();
     files.row(
         translated(locale, "Log"),
@@ -1226,7 +1236,7 @@ fn plus_sections() -> Vec<Section> {
         ),
         Tick(
             "Prevent chats list jumping on message submission",
-            "A chat you send to stays where it is in the list instead of jumping to the top, until someone answers.",
+            "The chat you are writing in stays where it is in the list while it is open, and moves to the top once you leave it. Forwards, status replies and reactions move their chat up at once.",
             |p| &mut p.prevent_list_jump,
         ),
         Tick(

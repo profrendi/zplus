@@ -730,7 +730,7 @@ pub(crate) fn stage(
                                     ui,
                                     &palette,
                                     Some(Icon::Download),
-                                    "Save original",
+                                    "Save to this computer…",
                                 ) {
                                     save_as(path.clone(), None);
                                 }

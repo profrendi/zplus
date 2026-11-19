@@ -50,6 +50,7 @@ mod disappearing;
 mod download_folders;
 mod early_events;
 mod plus_pages;
+mod plus_storage;
 use early_events::WaitingReaction;
 mod favorite_chats;
 mod group_admin;
@@ -767,7 +768,11 @@ fn spawn_account_kind_check(
                 let _ = events.send(Event::AccountKind {
                     business: profile.is_some(),
                 });
-                let _ = events.send(Event::BusinessInfo(profile.as_ref().map(business_info)));
+                let info = match &profile {
+                    Some(profile) => Some(named_business_info(&client, profile).await),
+                    None => None,
+                };
+                let _ = events.send(Event::BusinessInfo(info));
                 waker.wake();
             }
             Err(error) => {
@@ -850,7 +855,7 @@ async fn search_business_categories(
         .await
         .map_err(|error| error.to_string())?;
     let data = response.data.unwrap_or_default();
-    let found = data["whatsapp_catkit_typeahead_proxy"]["categories"]
+    let found: Vec<(String, String)> = data["whatsapp_catkit_typeahead_proxy"]["categories"]
         .as_array()
         .map(|list| {
             list.iter()
@@ -863,7 +868,75 @@ async fn search_business_categories(
                 .collect()
         })
         .unwrap_or_default();
+    learn_category_names(&found);
     Ok(found)
+}
+
+/// ZFPlus: category names learned from WhatsApp's category search, for a
+/// profile whose categories arrive with ids only.
+static CATEGORY_NAMES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn learn_category_names(found: &[(String, String)]) {
+    let mut names = CATEGORY_NAMES.lock().unwrap_or_else(|p| p.into_inner());
+    for (id, name) in found {
+        names.insert(id.clone(), name.clone());
+    }
+}
+
+/// ZFPlus: `business_info`, with any category that came without a name
+/// named from the category directory. Logs counts only.
+async fn named_business_info(
+    client: &Client,
+    profile: &whatsapp_rust::wacore::iq::business::BusinessProfile,
+) -> crate::model::BusinessInfo {
+    let mut info = business_info(profile);
+    let unnamed = info
+        .categories
+        .iter()
+        .filter(|name| name.trim().is_empty())
+        .count();
+    if unnamed > 0 {
+        // The directory's own first page (an empty search), then whatever
+        // earlier searches taught.
+        if let Ok(found) = search_business_categories(client, "").await {
+            learn_category_names(&found);
+        }
+        let names = CATEGORY_NAMES.lock().unwrap_or_else(|p| p.into_inner());
+        for (name, id) in info.categories.iter_mut().zip(&info.category_ids) {
+            if name.trim().is_empty()
+                && let Some(known) = names.get(id)
+            {
+                name.clone_from(known);
+            }
+        }
+    }
+    let still = info
+        .categories
+        .iter()
+        .filter(|name| name.trim().is_empty())
+        .count();
+    log::info!(
+        target: "plus:business",
+        "categories: {} in the profile, {unnamed} without a name, {} named from the directory",
+        info.categories.len(),
+        unnamed - still
+    );
+    // A category with no name at all is left out rather than shown blank.
+    let (ids, names): (Vec<String>, Vec<String>) = info
+        .category_ids
+        .iter()
+        .cloned()
+        .zip(info.categories.iter().cloned())
+        .filter(|(_, name)| !name.trim().is_empty())
+        .unzip();
+    if still > 0 && names.is_empty() {
+        return info;
+    }
+    info.category_ids = ids;
+    info.categories = names;
+    info
 }
 
 /// ZFPlus: a business profile as the interface shows it.
@@ -1686,6 +1759,7 @@ pub async fn run(
                 worker.pump_favorite_chats();
                 worker.pump_poll_votes();
                 worker.pump_poll_history();
+                worker.plus_storage_tick();
                 worker.pump_prefetch();
                 worker.expire_timer_acks();
                 worker.prune_waiting_receipts();
@@ -8313,8 +8387,13 @@ impl Worker {
                     match client.business().update_profile(&update).await {
                         Ok(()) => {
                             if let Ok(profile) = client.get_business_profile(&me).await {
-                                let _ = events
-                                    .send(Event::BusinessInfo(profile.as_ref().map(business_info)));
+                                let info = match &profile {
+                                    Some(profile) => {
+                                        Some(named_business_info(&client, profile).await)
+                                    }
+                                    None => None,
+                                };
+                                let _ = events.send(Event::BusinessInfo(info));
                             }
                         }
                         Err(error) => {

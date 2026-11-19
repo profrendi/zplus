@@ -33,6 +33,7 @@ pub mod plus_pages;
 pub mod plus_panel;
 pub mod plus_people;
 pub mod plus_status;
+pub mod plus_storage;
 pub mod polls;
 pub mod profile;
 pub mod rail;
@@ -136,6 +137,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     image_editor::show(app, ctx);
     overlay::finish(ctx);
     drop_target(app, ctx);
+    plus_storage::cleanup_card(app, ctx);
     toasts(app, ctx);
     focus_ring(app, ctx);
     announce(app, ctx);

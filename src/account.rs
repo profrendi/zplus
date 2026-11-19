@@ -168,6 +168,10 @@ pub struct Account {
     pub status_privacy: Option<(crate::model::StatusAudience, Vec<String>)>,
     /// ZFPlus: both Status privacy lists, except and only, as WhatsApp keeps.
     pub status_lists: (Vec<String>, Vec<String>),
+    /// ZFPlus: status files and the chat-media cleanup, for Settings.
+    pub plus_storage: Option<crate::model::PlusStorageInfo>,
+    /// ZFPlus: a chat-media cleanup waiting for the reader's answer.
+    pub media_cleanup: Option<crate::model::PlusStorageInfo>,
     /// ZFPlus: this business's catalogue, once asked.
     pub catalog: Option<Result<Vec<crate::model::CatalogItem>, String>>,
     /// ZFPlus: the last business category search and what it found.
@@ -301,6 +305,8 @@ impl Account {
             communities: None,
             status_privacy: None,
             status_lists: (Vec::new(), Vec::new()),
+            plus_storage: None,
+            media_cleanup: None,
             catalog: None,
             category_search: None,
             call_log: Vec::new(),

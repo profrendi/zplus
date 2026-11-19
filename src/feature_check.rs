@@ -71,6 +71,10 @@ pub const INVENTORY: &[(Place, &str)] = &[
     (Place::Settings, "Feature check"),
     (Place::Settings, "Show memory and CPU in the left rail"),
     (Place::Settings, "Warn when memory passes"),
+    // Settings · Files (ZFPlus storage)
+    (Place::Settings, "Status photos and videos"),
+    (Place::Settings, "Chat media"),
+    (Place::Settings, "Delete status files"),
     (Place::Settings, "Diagnostics folder"),
     // Files and the app itself
     (Place::Settings, "App folder"),

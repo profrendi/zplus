@@ -70,6 +70,16 @@ pub struct PlusSettings {
     pub diagnostics: bool,
     /// How strong Private Mode's blur is, 1 (light) to 10 (nothing shows).
     pub blur_level: u8,
+    // Storage (`crate::plus_storage`).
+    /// Keep a status photo or video until the status expires; off, only
+    /// while the Status page is open.
+    pub keep_status_media: bool,
+    /// Ask to delete the oldest chat media past this many GB; 0 never asks.
+    pub media_limit_gb: u16,
+    /// Ask to delete chat media not opened for this many days; 0 never.
+    pub media_days: u16,
+    /// Documents never count toward a cleanup.
+    pub media_keep_documents: bool,
 }
 
 impl Default for PlusSettings {
@@ -107,6 +117,10 @@ impl Default for PlusSettings {
             mark_unread_button: true,
             translate_button: true,
             diagnostics: false,
+            keep_status_media: true,
+            media_limit_gb: 3,
+            media_days: 0,
+            media_keep_documents: true,
         }
     }
 }
@@ -235,8 +249,20 @@ pub fn freeze(chat: &str, activity: i64) {
         .or_insert(activity);
 }
 
-/// The activity a chat sorts by: its old place while our own message is its
-/// latest, its real one once someone else writes.
+/// The chat open on screen, the only one whose place is held.
+static OPEN: Mutex<Option<String>> = Mutex::new(None);
+
+/// Tells which chat is open, so a held chat lets go once it is left.
+pub fn set_open_chat(chat: Option<&str>) {
+    let mut open = OPEN.lock().unwrap_or_else(|p| p.into_inner());
+    if open.as_deref() != chat {
+        *open = chat.map(str::to_owned);
+    }
+}
+
+/// The activity a chat sorts by: its old place while it is the chat open
+/// and our own message is its latest; its real one (the top, once we have
+/// written) as soon as it is left or someone else writes.
 pub fn sort_activity(chat: &crate::model::Chat) -> i64 {
     if !get().prevent_list_jump() {
         return chat.last_activity;
@@ -245,7 +271,8 @@ pub fn sort_activity(chat: &crate::model::Chat) -> i64 {
     let Some(&kept) = frozen.get(&chat.id) else {
         return chat.last_activity;
     };
-    if chat.last.as_ref().is_some_and(|last| last.from_me) {
+    let open = OPEN.lock().unwrap_or_else(|p| p.into_inner()).as_deref() == Some(chat.id.as_str());
+    if open && chat.last.as_ref().is_some_and(|last| last.from_me) {
         kept
     } else {
         frozen.remove(&chat.id);

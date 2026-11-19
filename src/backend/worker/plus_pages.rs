@@ -13,6 +13,12 @@ impl Worker {
         match request {
             PlusRequest::LoadStatuses => self.emit_statuses(),
             PlusRequest::DownloadStatus(id) => self.download_status(id),
+            PlusRequest::ForgetStatusMedia => self.plus_forget_status_media(),
+            PlusRequest::MeasurePlusStorage => self.plus_measure_storage(),
+            PlusRequest::CheckMediaNow => self.plus_check_media(true),
+            PlusRequest::CleanMedia => self.plus_clean_media(),
+            PlusRequest::SnoozeMediaCleanup => self.plus_snooze_media(),
+            PlusRequest::MediaCleaned { files, bytes } => self.plus_media_cleaned(files, bytes),
             PlusRequest::PostStatus {
                 text,
                 background,
@@ -266,12 +272,11 @@ impl Worker {
                     return Err("This status has no photo or video".to_owned());
                 };
                 let _ = tokio::fs::create_dir_all(&dir).await;
-                let safe: String = id
-                    .chars()
-                    .filter(char::is_ascii_alphanumeric)
-                    .take(40)
-                    .collect();
-                let path = dir.join(format!("status-{safe}.{extension}"));
+                let safe = crate::plus_storage::status_stem(&id);
+                let path = dir.join(format!(
+                    "{}{safe}.{extension}",
+                    crate::plus_storage::STATUS_PREFIX
+                ));
                 tokio::fs::write(&path, bytes)
                     .await
                     .map_err(|error| error.to_string())?;

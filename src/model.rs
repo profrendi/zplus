@@ -2899,10 +2899,41 @@ pub struct CatalogItem {
 
 /// ZFPlus: what the Status, Channels, Communities and Business tools pages
 /// ask WhatsApp for.
+/// ZFPlus: the status files kept here and what a chat-media cleanup would
+/// delete now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlusStorageInfo {
+    pub status_files: u64,
+    pub status_bytes: u64,
+    /// The chat media's total, statuses apart.
+    pub chat_bytes: u64,
+    pub plan_files: u64,
+    pub plan_bytes: u64,
+    /// The plan comes from the size limit (else from the age).
+    pub full: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlusRequest {
     LoadStatuses,
     DownloadStatus(String),
+    /// Deletes every status photo and video kept here.
+    ForgetStatusMedia,
+    /// Measures the status files and what a cleanup would delete now.
+    MeasurePlusStorage,
+    /// Checks the chat media against the limits now, even if the last
+    /// question was answered "Leave them".
+    CheckMediaNow,
+    /// Deletes what the chat-media cleanup offered.
+    CleanMedia,
+    /// "Leave them": asks again in three days, or sooner past the limit by
+    /// another tenth.
+    SnoozeMediaCleanup,
+    /// The worker's own: files a cleanup deleted, so the archive forgets them.
+    MediaCleaned {
+        files: u64,
+        bytes: u64,
+    },
     PostStatus {
         text: String,
         background: [u8; 4],
@@ -2966,6 +2997,15 @@ pub enum PlusAnswer {
     StatusMedia {
         id: String,
         result: Result<std::path::PathBuf, String>,
+    },
+    /// What Settings > Storage shows of ZFPlus's own.
+    PlusStorage(PlusStorageInfo),
+    /// The chat media passed a limit: ask before deleting.
+    MediaCleanup(PlusStorageInfo),
+    /// A cleanup or status sweep deleted these.
+    MediaCleaned {
+        files: u64,
+        bytes: u64,
     },
     Communities(Result<Vec<CommunityInfo>, String>),
     Catalog(Result<Vec<CatalogItem>, String>),

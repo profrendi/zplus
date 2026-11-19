@@ -163,6 +163,20 @@ fn panes(
 ) {
     let height = page_height(ui);
     let width = ui.available_width();
+    // ZFPlus: beside an open chat the page is only its list, filling the
+    // list's column.
+    let dialog = app.dialog.clone();
+    if dialog
+        .as_ref()
+        .is_some_and(|dialog| super::plus_panel::in_column(app, ui.ctx(), dialog))
+    {
+        egui::ScrollArea::vertical()
+            .id_salt(ui.next_auto_id())
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| left(ui, app));
+        return;
+    }
     let list = (width * 0.34).clamp(300.0, 440.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
@@ -1119,9 +1133,10 @@ pub fn channels(app: &mut App, ui: &mut egui::Ui) {
                 } else {
                     last.clone()
                 };
-                if person_line(ui, app, id, name, &second, None, false).clicked() {
-                    app.actions.push(Action::CloseDialog);
-                    app.actions.push(Action::OpenChat(id.clone()));
+                let lit = app.open_chat.as_deref() == Some(id.as_str());
+                if person_line(ui, app, id, name, &second, None, lit).clicked() {
+                    let ctx = ui.ctx().clone();
+                    super::plus_panel::open_beside(app, &ctx, Dialog::Channels, id);
                 }
             }
         },
@@ -1262,6 +1277,7 @@ pub fn communities(app: &mut App, ui: &mut egui::Ui) {
                                 community.id.clone(),
                             )
                         });
+                        super::plus_panel::leave_column(ui.ctx());
                     }
                     let open = expanded.contains(&community.id);
                     let shown = if open {

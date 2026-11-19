@@ -2694,6 +2694,27 @@ impl App {
         }
     }
 
+    /// ZFPlus: with status files not kept, the Status page closing deletes
+    /// the ones it downloaded.
+    fn plus_forget_statuses_when_closed(&mut self) {
+        if crate::plus::get().keep_status_media
+            || self.dialog == Some(Dialog::Status)
+            || self.status_media.is_empty()
+        {
+            return;
+        }
+        if self
+            .video
+            .message()
+            .is_some_and(|playing| playing.starts_with(STATUS_VIDEO))
+        {
+            self.video.stop();
+        }
+        self.status_media.clear();
+        self.backend
+            .send(Command::Plus(crate::model::PlusRequest::ForgetStatusMedia));
+    }
+
     /// ZFPlus: files what WhatsApp answered the Status, Channels,
     /// Communities and Business tools pages.
     fn plus_answer(&mut self, answer: crate::model::PlusAnswer) {
@@ -2709,6 +2730,22 @@ impl App {
                     self.toast_error(error.clone());
                 }
                 self.status_media.insert(id, result);
+            }
+            PlusAnswer::PlusStorage(info) => self.plus_storage = Some(info),
+            PlusAnswer::MediaCleanup(info) => self.media_cleanup = Some(info),
+            PlusAnswer::MediaCleaned { files, bytes } => {
+                // Status files deleted download again when opened.
+                self.status_media
+                    .retain(|_, result| result.as_ref().map_or(true, |path| path.exists()));
+                if files > 0 && !self.events_hidden {
+                    self.toast(format!(
+                        "Deleted {files} files, {} freed",
+                        crate::util::bytes(bytes)
+                    ));
+                }
+                self.storage_token += 1;
+                let token = self.storage_token;
+                self.backend.send(Command::LoadStorageStats { token });
             }
             PlusAnswer::Communities(communities) => {
                 // A community's picture is asked for by its own route, now
@@ -7758,6 +7795,9 @@ impl App {
     /// passes eframe runs without `ui` for a minimized or covered one. Call it
     /// from `eframe::App::logic`, after [`Self::background_frame`].
     pub fn window_logic(&mut self, ctx: &egui::Context) {
+        // ZFPlus: a chat that held its place lets go once it is left.
+        crate::plus::set_open_chat(self.open_chat.as_deref());
+        self.plus_forget_statuses_when_closed();
         self.sync_window_state(ctx);
         let minimized = ctx.input(|input| input.viewport().minimized == Some(true));
         if minimized || self.window_hidden {
@@ -8015,7 +8055,9 @@ impl App {
                 }
                 _ => None,
             };
-            if let Some(chat) = sent_to
+            // Only the chat being written in holds its place; a forward, a
+            // status reply or a reaction to another chat moves it up at once.
+            if let Some(chat) = sent_to.filter(|chat| self.open_chat.as_deref() == Some(chat))
                 && let Some(known) = self.chat(&chat)
             {
                 crate::plus::freeze(&chat, known.last_activity);
@@ -8732,6 +8774,7 @@ impl App {
                 }
             }
             Action::OpenFile(path) => {
+                crate::plus_storage::touch(&path);
                 let allowed = crate::safety::can_open_attachment(&path);
                 if allowed && matches!(path.try_exists(), Ok(false)) {
                     self.attachment_missing(path);
@@ -9339,8 +9382,14 @@ impl App {
                 self.pending_view_once = false;
                 self.forget_unstaged_pictures();
             }
-            Action::PlayVoice { message, path } => self.play_voice(message, path),
-            Action::PlayVideo { message, path } => self.play_video(message, path),
+            Action::PlayVoice { message, path } => {
+                crate::plus_storage::touch(&path);
+                self.play_voice(message, path)
+            }
+            Action::PlayVideo { message, path } => {
+                crate::plus_storage::touch(&path);
+                self.play_video(message, path)
+            }
             Action::PlayVideoWhenDownloaded(message) => {
                 self.voice_chat = None;
                 self.voice_wanted = None;
@@ -11917,6 +11966,10 @@ impl App {
             chat: preview.chat().to_owned(),
             around: Some(preview.message().to_owned()),
         });
+        // ZFPlus: opened here, so a media cleanup spares it longest.
+        if let Some(path) = preview.path() {
+            crate::plus_storage::touch(path);
+        }
         self.image_preview = Some(preview);
         self.dialog = None;
         self.picker = None;

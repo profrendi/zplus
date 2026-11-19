@@ -53,6 +53,7 @@ pub mod plus_location;
 pub mod plus_memory;
 pub mod plus_shared;
 pub mod plus_stamp;
+pub mod plus_storage;
 pub mod plus_uninstall;
 pub mod privacy;
 pub mod prof;

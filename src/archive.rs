@@ -3017,6 +3017,20 @@ impl Archive {
         Ok(views)
     }
 
+    /// ZFPlus: the files of starred messages, which a media cleanup spares.
+    pub fn plus_starred_media_paths(&self) -> Result<Vec<std::path::PathBuf>> {
+        let mut statement = self.connection.prepare(
+            "SELECT coalesce(json_extract(m.content, '$.media.path'),
+                 json_extract(m.content, '$.card.image.path')) AS path
+             FROM stars s JOIN messages m ON m.chat = s.chat AND m.id = s.id
+             WHERE path IS NOT NULL",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(std::path::PathBuf::from(row.get::<_, String>(0)?))
+        })?;
+        rows.collect()
+    }
+
     /// ZFPlus: the status updates of the last day, newest first, as (id,
     /// sender, timestamp, raw).
     pub fn plus_statuses(&self) -> Result<Vec<KeptStatus>> {

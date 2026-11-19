@@ -145,8 +145,14 @@ pub(crate) fn group_row(
     let clicked = response.on_hover_text(name).clicked();
     if clicked {
         if joined {
-            app.actions.push(Action::CloseDialog);
-            app.actions.push(Action::OpenChat(group.to_owned()));
+            // From the Communities page the page stays beside the chat;
+            // from a group's header menu the chat simply opens.
+            if app.dialog == Some(Dialog::Communities) {
+                let ctx = ui.ctx().clone();
+                super::plus_panel::open_beside(app, &ctx, Dialog::Communities, group);
+            } else {
+                app.actions.push(Action::OpenChat(group.to_owned()));
+            }
         } else {
             app.actions
                 .push(Action::Plus(PlusRequest::JoinCommunityGroup {
