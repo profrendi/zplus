@@ -361,8 +361,10 @@ fn history_row(app: &mut App, ui: &mut egui::Ui, row: &[Message], actions: &mut 
             spoken.as_str(),
         )
     });
+    // ZFPlus: a picked row shows the call's info; its Chat button opens
+    // the chat.
     if response.clicked() && !link {
-        actions.push(Action::PickCall {
+        actions.push(Action::PlusCallInfo {
             chat: message.chat.clone(),
             message: message.id.clone(),
         });
@@ -827,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn a_history_row_opens_its_chat_and_its_button_calls_back() {
+    fn a_history_row_shows_its_call_info_and_its_button_calls_back() {
         let (_directory, mut app, ctx) = calls_app();
         frame(&mut app, &ctx, vec![]);
         let row = ctx.read_response(row_id(ADA, "1")).unwrap().rect;
@@ -835,7 +837,7 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         assert!(matches!(
             app.actions.as_slice(),
-            [Action::PickCall { chat, message }] if chat == ADA && message == "1"
+            [Action::PlusCallInfo { chat, message }] if chat == ADA && message == "1"
         ));
         app.actions.clear();
         // The call-back button sits at the row's right end.

@@ -17,6 +17,31 @@ impl Worker {
             PlusRequest::MeasurePlusStorage => self.plus_measure_storage(),
             PlusRequest::CheckMediaNow => self.plus_check_media(true),
             PlusRequest::CleanMedia => self.plus_clean_media(),
+            PlusRequest::MuteStatus { sender, muted } => self.plus_mute_status(sender, muted),
+            PlusRequest::LoadGallery(filter) => {
+                let started = std::time::Instant::now();
+                match self.archive.plus_gallery(&filter, 600) {
+                    Ok(mut items) => {
+                        for item in &mut items {
+                            self.polish(item);
+                        }
+                        crate::plus_info!(target: "plus:gallery",
+                            "{} items in {} ms",
+                            items.len(),
+                            started.elapsed().as_millis()
+                        );
+                        self.emit(Event::Plus(PlusAnswer::Gallery { filter, items }));
+                    }
+                    Err(error) => {
+                        crate::plus_warn!(target: "plus:gallery", "could not list media: {error}")
+                    }
+                }
+            }
+            PlusRequest::SavePlusData(json) => {
+                if let Err(error) = self.archive.set_meta(crate::plus_data::META_KEY, &json) {
+                    crate::plus_warn!(target: "plus:data", "could not keep notes: {error}");
+                }
+            }
             PlusRequest::SnoozeMediaCleanup => self.plus_snooze_media(),
             PlusRequest::MediaCleaned { files, bytes } => self.plus_media_cleaned(files, bytes),
             PlusRequest::PostStatus {
@@ -194,7 +219,14 @@ impl Worker {
             if protocol.r#type == Some(wa::message::protocol_message::Type::REVOKE)
                 && let Some(target) = protocol.key.as_option().and_then(|key| key.id.clone())
             {
-                let _ = self.archive.plus_drop_status(&target);
+                // Ours goes; someone else's stays, marked deleted, until it
+                // would have expired.
+                if info.source.is_from_me {
+                    let _ = self.archive.plus_drop_status(&target);
+                } else {
+                    let _ = self.archive.plus_mark_status_deleted(&target);
+                    crate::plus_info!(target: "plus:status", "a status was deleted by its sender; kept, marked");
+                }
             }
             return;
         }
@@ -221,6 +253,7 @@ impl Worker {
         let me = self.me();
         let seen = self.archive.plus_seen_statuses().unwrap_or_default();
         let muted = self.archive.plus_muted_status_senders().unwrap_or_default();
+        let deleted = self.archive.plus_deleted_statuses().unwrap_or_default();
         let mut views = self.archive.plus_status_views().unwrap_or_default();
         let statuses = self
             .archive
@@ -232,12 +265,14 @@ impl Worker {
                 let mut post = status_post(id, sender.clone(), timestamp, &message, sender == me);
                 post.seen = seen.contains(&post.id);
                 post.muted = muted.contains(&sender);
+                post.deleted = deleted.contains(&post.id);
                 if post.mine {
                     post.views = views.remove(&post.id).unwrap_or_default();
                 }
                 Some(post)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        crate::plus_detail!(target: "plus:status", "{} statuses listed", statuses.len());
         self.emit(Event::Plus(PlusAnswer::Statuses(statuses)));
     }
 
@@ -568,6 +603,12 @@ impl Worker {
         only: Vec<String>,
     ) {
         use crate::model::StatusAudience;
+        crate::plus_info!(
+            target: "plus:privacy",
+            "status privacy read: {} except, {} only",
+            except.len(),
+            only.len()
+        );
         let code = match audience {
             StatusAudience::Contacts => "contacts",
             StatusAudience::Except => "except",
@@ -957,6 +998,35 @@ impl Worker {
     }
 }
 
+impl Worker {
+    /// Mutes someone's status updates here at once, and on the phone
+    /// through the `user_status_mute` app-state action.
+    fn plus_mute_status(&mut self, sender: String, muted: bool) {
+        let _ = self.archive.plus_set_status_muted(&sender, muted);
+        self.emit_statuses();
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Ok(jid) = sender.parse::<Jid>() else {
+            return;
+        };
+        tokio::spawn(async move {
+            match client
+                .chat_actions()
+                .set_user_status_mute(&jid, muted)
+                .await
+            {
+                Ok(()) => {
+                    crate::plus_info!(target: "plus:status", "status mute synced (muted {muted})")
+                }
+                Err(error) => {
+                    crate::plus_warn!(target: "plus:status", "status mute not synced: {error}")
+                }
+            }
+        });
+    }
+}
+
 /// A status update as the page shows it.
 fn status_post(
     id: String,
@@ -1018,6 +1088,7 @@ fn status_post(
         seen: mine,
         muted: false,
         seconds,
+        deleted: false,
         views: Vec::new(),
     }
 }
@@ -1050,6 +1121,7 @@ fn remember_community(id: &str) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !known.iter().any(|kept| kept == id) {
         known.push(id.to_owned());
+        crate::plus_detail!(target: "plus:community", "{} communities known", known.len());
     }
 }
 

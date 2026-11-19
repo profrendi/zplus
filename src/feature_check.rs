@@ -76,6 +76,9 @@ pub const INVENTORY: &[(Place, &str)] = &[
     (Place::Settings, "Chat media"),
     (Place::Settings, "Delete status files"),
     (Place::Settings, "Diagnostics folder"),
+    (Place::Settings, "Feature log"),
+    (Place::Settings, "Mode Hemat"),
+    (Place::Settings, "Copy feature report"),
     // Files and the app itself
     (Place::Settings, "App folder"),
     (Place::Settings, "Remove ZFPlus"),
@@ -333,6 +336,14 @@ pub fn report(checks: &[Check]) -> String {
             check.name,
             check.detail
         ));
+    }
+    text.push_str(&format!(
+        "\nFeature log ({}), counts only:\n",
+        crate::plus_log::level_name(crate::plus_log::level())
+    ));
+    for line in crate::plus_log::summary() {
+        text.push_str(&line);
+        text.push('\n');
     }
     text
 }

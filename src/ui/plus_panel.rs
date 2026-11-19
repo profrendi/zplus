@@ -73,9 +73,14 @@ pub(crate) fn region(app: &App, ctx: &egui::Context, dialog: &Dialog) -> Option<
     };
     match dialog {
         Dialog::Channels | Dialog::Communities if in_column(app, ctx, dialog) => Some(column()),
-        Dialog::Status | Dialog::Channels | Dialog::Communities | Dialog::BusinessTools => Some(
-            egui::Rect::from_min_max(egui::pos2(left, top), content.right_bottom()),
-        ),
+        Dialog::Status
+        | Dialog::Channels
+        | Dialog::Communities
+        | Dialog::BusinessTools
+        | Dialog::Gallery => Some(egui::Rect::from_min_max(
+            egui::pos2(left, top),
+            content.right_bottom(),
+        )),
         Dialog::Labels => Some(column()),
         _ => None,
     }
@@ -119,6 +124,7 @@ pub(crate) fn show(app: &mut App, ctx: &egui::Context, dialog: Dialog, region: e
                 Dialog::Channels => super::plus_pages::channels(app, ui),
                 Dialog::Communities => super::plus_pages::communities(app, ui),
                 Dialog::BusinessTools => super::plus_pages::business_tools(app, ui),
+                Dialog::Gallery => super::plus_gallery::page(app, ui),
                 Dialog::Labels => {
                     let palette = app.palette;
                     egui::ScrollArea::vertical()

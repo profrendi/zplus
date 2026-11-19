@@ -26,12 +26,16 @@ pub(crate) mod overlay;
 pub mod pane;
 pub mod picker;
 pub mod plus_about;
+pub mod plus_calls;
 pub mod plus_community;
+pub mod plus_gallery;
 pub mod plus_group;
 pub mod plus_new_chat;
+pub mod plus_notes;
 pub mod plus_pages;
 pub mod plus_panel;
 pub mod plus_people;
+pub mod plus_recent;
 pub mod plus_status;
 pub mod plus_storage;
 pub mod polls;
@@ -223,6 +227,10 @@ fn main_view(app: &mut App, ui: &mut egui::Ui, list_only: bool) {
                 Page::Chats => conversation::show(app, ui),
                 // The open chat stays beside the call history.
                 Page::Calls if app.current_chat().is_some() => conversation::show(app, ui),
+                // ZFPlus: a picked call shows its info, as WhatsApp Web does.
+                Page::Calls if app.plus_call_info.is_some() => {
+                    plus_calls::panel(app, ui);
+                }
                 Page::Calls => {
                     banner(app, ui);
                     calls::show(app, ui);

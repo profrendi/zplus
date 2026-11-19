@@ -973,6 +973,8 @@ pub struct App {
     /// only while that dialog is, and the newest frame drawn from it.
     pub camera: Option<crate::plus_camera::Capture>,
     pub camera_texture: Option<(u64, egui::TextureHandle)>,
+    /// ZFPlus: when Mode Hemat last gave memory back.
+    pub plus_released: Option<Instant>,
     /// ZFPlus: when the memory was last measured (`plus_memory::tick`).
     memory_measured: Option<Instant>,
     /// ZFPlus: whether the memory warning may go off (`plus_memory::alert`).
@@ -1887,6 +1889,7 @@ impl App {
             camera: None,
             camera_texture: None,
             memory_measured: None,
+            plus_released: None,
             memory_alert_armed: true,
             hide_intent: false,
             wants_show: false,
@@ -2317,14 +2320,17 @@ impl App {
         }
         crate::wallpaper::Look {
             color,
-            // Messages draws its conversations on a plain background.
+            // Messages draws its conversations on a plain background, and
+            // so does ZFPlus's Mode Hemat.
             doodles: self.settings.show_wallpaper
-                && self.palette.bubbles != crate::theme::BubbleStyle::Messages,
+                && self.palette.bubbles != crate::theme::BubbleStyle::Messages
+                && !crate::plus_saver::saving(crate::plus_saver::Part::Wallpaper),
             image: self
                 .account()
                 .settings
                 .wallpaper_image
-                .is_some()
+                .as_ref()
+                .is_some_and(|_| !crate::plus_saver::saving(crate::plus_saver::Part::Wallpaper))
                 .then(|| self.wallpaper_image.ready())
                 .flatten(),
         }
@@ -2694,6 +2700,91 @@ impl App {
         }
     }
 
+    /// ZFPlus: Mode Hemat's parts that act on the window: whether it has
+    /// the keyboard (animations stop without it), and minimizing to the
+    /// tray.
+    fn plus_saver_frame(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|input| input.viewport().focused) != Some(false);
+        crate::plus_saver::set_focused(focused);
+        if crate::plus_saver::saving(crate::plus_saver::Part::MinimizeToTray)
+            && ctx.input(|input| input.viewport().minimized) == Some(true)
+            && self.tray_shown()
+            && !self.hide_intent
+        {
+            crate::plus_info!(target: "plus:saver", "minimized to the tray");
+            self.hide_intent = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// ZFPlus: fires the reminders that are due, as notifications whose
+    /// click opens the message, and wakes again for the next one.
+    fn plus_reminders(&mut self, ctx: &egui::Context) {
+        let now = crate::util::now();
+        let Some(data) = self.plus_data.as_ref() else {
+            return;
+        };
+        match data.next_due() {
+            None => return,
+            Some(at) if at > now => {
+                let wait = u64::try_from(at - now).unwrap_or(1).min(60);
+                ctx.request_repaint_after(std::time::Duration::from_secs(wait));
+                return;
+            }
+            Some(_) => {}
+        }
+        let mut due = Vec::new();
+        self.edit_plus_data(|data| due = data.take_due(now));
+        crate::plus_info!(target: "plus:notify", "{} reminders due", due.len());
+        for reminder in due {
+            let name = self
+                .chat(&reminder.chat)
+                .map(|chat| self.chat_title(chat))
+                .unwrap_or_else(|| self.display_name(&reminder.chat));
+            let shown = self.notification_content_shown();
+            let body = if shown {
+                format!("A message in {name} you asked to be reminded about")
+            } else {
+                "A message you asked to be reminded about".to_owned()
+            };
+            if !self.window_hidden && self.window_focused {
+                self.toast(format!("Reminder: {body}"));
+            }
+            if self.settings.notifications {
+                let waker = self.waker.clone();
+                self.notifications.show(
+                    "Reminder".to_owned(),
+                    body,
+                    None,
+                    crate::settings::NotificationSound::default(),
+                    crate::notify::NotificationTarget {
+                        account: self.account().id.clone(),
+                        chat: reminder.chat.clone(),
+                        message: Some(reminder.message.clone()),
+                    },
+                    std::sync::Arc::clone(&self.notification_opens),
+                    move || waker.wake(),
+                    false,
+                );
+            }
+        }
+    }
+
+    /// ZFPlus: changes the reader's own notes and keeps them in the archive.
+    pub fn edit_plus_data(&mut self, change: impl FnOnce(&mut crate::plus_data::PlusData)) {
+        let Some(data) = self.plus_data.as_mut() else {
+            return;
+        };
+        let before = data.clone();
+        change(data);
+        if *data != before {
+            let json = data.to_json();
+            self.backend
+                .send(Command::Plus(crate::model::PlusRequest::SavePlusData(json)));
+        }
+    }
+
     /// ZFPlus: with status files not kept, the Status page closing deletes
     /// the ones it downloaded.
     fn plus_forget_statuses_when_closed(&mut self) {
@@ -2732,6 +2823,11 @@ impl App {
                 self.status_media.insert(id, result);
             }
             PlusAnswer::PlusStorage(info) => self.plus_storage = Some(info),
+            PlusAnswer::Gallery { filter, items } => self.plus_gallery = Some((filter, items)),
+            PlusAnswer::PlusData(json) => {
+                crate::plus_data::mark_loaded();
+                self.plus_data = Some(crate::plus_data::PlusData::parse(&json));
+            }
             PlusAnswer::MediaCleanup(info) => self.media_cleanup = Some(info),
             PlusAnswer::MediaCleaned { files, bytes } => {
                 // Status files deleted download again when opened.
@@ -3459,6 +3555,9 @@ impl App {
 
     /// Whether a chat wears a label id.
     pub fn chat_wears(&self, chat: &Chat, label: &str) -> bool {
+        if label == crate::plus_data::UNREPLIED {
+            return crate::plus_data::unreplied(chat);
+        }
         chat.labels.iter().any(|worn| worn == label)
     }
 
@@ -3485,7 +3584,7 @@ impl App {
         if self
             .label_filter
             .as_ref()
-            .is_some_and(|id| !known.contains(id))
+            .is_some_and(|id| !known.contains(id) && id != crate::plus_data::UNREPLIED)
         {
             self.label_filter = None;
             // A deleted label is not shown at the next start either.
@@ -7797,6 +7896,7 @@ impl App {
     pub fn window_logic(&mut self, ctx: &egui::Context) {
         // ZFPlus: a chat that held its place lets go once it is left.
         crate::plus::set_open_chat(self.open_chat.as_deref());
+        self.plus_saver_frame(ctx);
         self.plus_forget_statuses_when_closed();
         self.sync_window_state(ctx);
         let minimized = ctx.input(|input| input.viewport().minimized == Some(true));
@@ -8186,6 +8286,10 @@ impl App {
                 self.apply(Action::Open(page), ctx);
             }
             Action::OpenChat(id) => {
+                if !self.search.trim().is_empty() {
+                    self.edit_plus_data(|data| data.remember_search(&id));
+                    crate::plus_detail!(target: "plus:search", "a search result opened");
+                }
                 // A chat where someone mentioned us opens at the mention, as
                 // on WhatsApp, rather than at the first unread message.
                 let mention = self
@@ -8211,7 +8315,25 @@ impl App {
             | Action::LeaveCallSurface
             | Action::ReturnToCall
             | Action::ToggleCallFullscreen => {}
+            Action::PlusRemind { chat, message, at } => {
+                self.edit_plus_data(|data| data.remind(&chat, &message, at));
+                self.toast(format!(
+                    "Reminder set for {}, {}",
+                    crate::util::day_label(self.locale, at),
+                    crate::util::clock(at)
+                ));
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            }
+            Action::PlusCallInfo { chat, message } => {
+                self.new_call = false;
+                if self.open_chat.is_some() {
+                    self.apply(Action::CloseChat, ctx);
+                }
+                self.picked_call = Some((chat.clone(), message.clone()));
+                self.plus_call_info = Some((chat, message));
+            }
             Action::PickCall { chat, message } => {
+                self.plus_call_info = None;
                 self.new_call = false;
                 self.picked_call = Some((chat.clone(), message.clone()));
                 if self.chat(&chat).is_some() {
@@ -11317,6 +11439,7 @@ impl App {
         }
         self.tick_app_lock(ctx);
         self.plus_lock_when_away(ctx);
+        self.plus_reminders(ctx);
         self.measure_memory(ctx);
         self.sync_diagnostics();
         self.tick_login_item();
@@ -11525,6 +11648,18 @@ impl App {
             self.settings.plus.memory_alert_mb
         };
         crate::plus_memory::set_limit(limit);
+        // ZFPlus: Mode Hemat gives memory back past 300 MB, once a minute
+        // at most.
+        if crate::plus_saver::saving(crate::plus_saver::Part::ReleaseMemory)
+            && private > crate::plus_saver::RELEASE_MB
+            && self
+                .plus_released
+                .is_none_or(|at| at.elapsed() > Duration::from_secs(60))
+        {
+            self.plus_released = Some(Instant::now());
+            crate::plus_info!(target: "plus:memory", "saver: {private} MB, giving memory back");
+            crate::plus_memory::trim_soon();
+        }
         if crate::plus_memory::alert(private, limit, &mut self.memory_alert_armed) {
             let title = format!("{} is using {private} MB", crate::channel::NAME);
             let body = format!(

@@ -206,7 +206,7 @@ fn panes(
 
 /// A list row: a round picture (ringed in `ring` when given), a name and
 /// a second line, each on one line. Clicked when the row is.
-fn person_line(
+pub(crate) fn person_line(
     ui: &mut egui::Ui,
     app: &mut App,
     id: &str,
@@ -569,17 +569,32 @@ fn status_list(
         } else {
             String::new()
         };
-        if person_line(
+        let count = if posts.iter().any(|post| post.deleted) {
+            format!("{count}some deleted · ")
+        } else {
+            count
+        };
+        let _ = ring;
+        let row = person_line(
             ui,
             app,
             sender,
             &name,
             &format!("{count}{}", when(posts[0].timestamp)),
-            Some(ring),
+            None,
             lit,
-        )
-        .clicked()
-        {
+        );
+        // ZFPlus: one arc per update, as WhatsApp Web rings them.
+        let seen: Vec<bool> = posts.iter().rev().map(|post| post.seen).collect();
+        super::plus_status::paint_ring(
+            ui.painter(),
+            egui::pos2(row.rect.left() + 34.0, row.rect.center().y),
+            25.0,
+            &seen,
+            palette.accent,
+            palette.dim,
+        );
+        if row.clicked() {
             // The first one not seen yet, oldest first; playing on goes
             // through the rest of the list as it stands now.
             let first = super::plus_status::first_unseen(posts);
@@ -1523,4 +1538,102 @@ pub(crate) fn community_badge(app: &mut App, ui: &egui::Ui, chat: &str, avatar: 
     ui.painter()
         .rect_filled(corner.expand(1.5), 5.0, palette.panel);
     super::widgets::paint_avatar(ui, &palette, corner, &name, &id, picture.as_deref());
+}
+
+/// ZFPlus: a list in the middle of the window, as Search members is: a
+/// title, a search field, and large rows (picture, name, second line).
+/// Open while `key` holds a value in the context's data; Escape or the
+/// close button clears it. The row picked, if any.
+pub(crate) fn list_popup(
+    app: &mut App,
+    ctx: &egui::Context,
+    key: egui::Id,
+    title: &str,
+    rows: &[(String, String, String)],
+) -> Option<String> {
+    let palette = app.palette;
+    let screen = ctx.content_rect();
+    let size = Vec2::new(
+        (screen.width() - 40.0).min(520.0),
+        (screen.height() * 0.78).max(320.0),
+    );
+    let search_key = key.with("search");
+    let mut needle: String = ctx
+        .data(|data| data.get_temp(search_key))
+        .unwrap_or_default();
+    let mut close = false;
+    let mut picked = None;
+    egui::Area::new(key.with("area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.center() - size / 2.0)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(palette.overlay)
+                .stroke(egui::Stroke::new(1.0, palette.outline))
+                .corner_radius(14.0)
+                .inner_margin(16.0)
+                .shadow(palette.modal_shadow())
+                .show(ui, |ui| {
+                    ui.set_min_size(size - Vec2::splat(32.0));
+                    ui.set_max_size(size - Vec2::splat(32.0));
+                    ui.horizontal(|ui| {
+                        if theme::icon_button(
+                            ui,
+                            Icon::X,
+                            18.0,
+                            palette.secondary,
+                            palette.text,
+                            "Close",
+                        )
+                        .clicked()
+                        {
+                            close = true;
+                        }
+                        theme::text(ui, title, theme::semibold(17.0), palette.text);
+                    });
+                    ui.add_space(8.0);
+                    let width = ui.available_width();
+                    let field = super::widgets::search_field(
+                        ui,
+                        &palette,
+                        key.with("field"),
+                        &mut needle,
+                        "Search",
+                        width,
+                    );
+                    if ui.memory(|memory| memory.focused().is_none()) {
+                        field.request_focus();
+                    }
+                    ui.add_space(6.0);
+                    let wanted = crate::util::search_key(needle.trim());
+                    egui::ScrollArea::vertical()
+                        .id_salt(key.with("list"))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for (id, name, second) in rows {
+                                if !wanted.is_empty()
+                                    && !crate::util::search_key(name).contains(&wanted)
+                                    && !crate::util::search_key(second).contains(&wanted)
+                                {
+                                    continue;
+                                }
+                                if person_line(ui, app, id, name, second, None, false).clicked() {
+                                    picked = Some(id.clone());
+                                }
+                            }
+                        });
+                });
+        });
+    if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        close = true;
+    }
+    if close || picked.is_some() {
+        ctx.data_mut(|data| {
+            data.remove::<String>(key);
+            data.remove::<String>(search_key);
+        });
+    } else {
+        ctx.data_mut(|data| data.insert_temp(search_key, needle));
+    }
+    picked
 }

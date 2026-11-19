@@ -730,6 +730,21 @@ fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
                     app.actions.push(Action::SetChatFilter(next));
                 }
             }
+            // ZFPlus: "Unreplied", a person's chats whose newest message is
+            // theirs.
+            {
+                let picked = app.label_filter.as_deref() == Some(crate::plus_data::UNREPLIED);
+                let count = app
+                    .chats
+                    .iter()
+                    .filter(|chat| !chat.archived && crate::plus_data::unreplied(chat))
+                    .count();
+                if widgets::filter_chip(ui, &palette, "Unreplied", count, picked).clicked() {
+                    app.actions.push(Action::SelectLabel(
+                        (!picked).then(|| crate::plus_data::UNREPLIED.to_owned()),
+                    ));
+                }
+            }
             // ZFPlus: labels group chats as folders do; until there is one,
             // this makes the first.
             if app.labels.is_empty()
@@ -1112,6 +1127,10 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
     }
     if !app.search.trim().is_empty() {
         results(app, ui);
+        return;
+    }
+    // ZFPlus: recent searches while the empty search field has the keyboard.
+    if super::plus_recent::list(app, ui) {
         return;
     }
     // Only the ids: each row's chat is copied when the row is drawn, so a
@@ -1896,6 +1915,8 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         if chat.disappearing_timer().is_some() {
             widgets::paint_disappearing_badge(ui, &palette, avatar_rect);
         }
+        // ZFPlus: a status ring, and the picture opens the updates.
+        super::plus_status::list_ring(app, ui, avatar_rect, &chat.id);
 
         let left = rect.left() + 76.0;
         let right = rect.right() - 14.0;

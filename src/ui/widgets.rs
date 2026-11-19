@@ -309,7 +309,8 @@ pub fn file_image(ui: &Ui, path: &Path) -> egui::Image<'static> {
 /// of its own (`crate::picture_loader`) when it is a still picture, else as
 /// [`file_image`] draws it. Either way the texture reports the file's size.
 pub fn bubble_image(ui: &Ui, path: &Path, cover: Vec2) -> egui::Image<'static> {
-    let pixels = cover * ui.ctx().pixels_per_point();
+    // ZFPlus: Mode Hemat may draw it smaller.
+    let pixels = cover * ui.ctx().pixels_per_point() * crate::plus_saver::picture_scale();
     match crate::picture_loader::uri(path, pixels.x.ceil() as u32, pixels.y.ceil() as u32) {
         Some(uri) => {
             crate::image_cache::touch(ui.ctx(), &uri);

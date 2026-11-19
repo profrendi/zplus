@@ -26821,10 +26821,22 @@ mod rail_tests {
             1180.0,
             row.left_center() + egui::vec2(40.0, 0.0),
         );
+        // ZFPlus: picking a call shows its info, as WhatsApp Web does; the
+        // info's Chat button opens the chat.
         assert_eq!(app.page, Page::Calls, "picking a call stays on Calls");
+        assert_eq!(app.open_chat, None);
+        assert_eq!(
+            app.plus_call_info.as_ref().map(|(chat, _)| chat.as_str()),
+            Some(other.chat.as_str())
+        );
+        app.actions.push(crate::model::Action::PickCall {
+            chat: other.chat.clone(),
+            message: other.id.clone(),
+        });
+        click(&mut app, &ctx, 1180.0, egui::pos2(-10.0, -10.0));
         assert_eq!(app.open_chat.as_deref(), Some(other.chat.as_str()));
         assert!(app.call_picked());
-        assert!(conversation_header(&ctx).is_some());
+        assert!(app.plus_call_info.is_none());
 
         let (app, ctx) = open("calls-info", false);
         assert_eq!(app.page, Page::Calls);

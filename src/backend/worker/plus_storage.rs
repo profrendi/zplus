@@ -17,6 +17,10 @@ const EVERY: Duration = Duration::from_secs(60 * 60);
 const SNOOZE: i64 = 3 * 24 * 60 * 60;
 const SNOOZE_KEY: &str = "plus_media_snooze";
 
+/// The accounts whose notes reached the window.
+static DATA_SENT: std::sync::LazyLock<std::sync::Mutex<HashSet<PathBuf>>> =
+    std::sync::LazyLock::new(Default::default);
+
 /// When each media cache was last checked.
 static CHECKED: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Instant>>> =
     std::sync::LazyLock::new(Default::default);
@@ -53,6 +57,19 @@ impl Worker {
             return;
         }
         let dir = self.dirs.media_cache_dir();
+        if DATA_SENT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(dir.clone())
+        {
+            let json = self
+                .archive
+                .meta(crate::plus_data::META_KEY)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            self.emit(Event::Plus(PlusAnswer::PlusData(json)));
+        }
         {
             let mut checked = CHECKED.lock().unwrap_or_else(|p| p.into_inner());
             if checked.get(&dir).is_some_and(|at| at.elapsed() < EVERY) {
@@ -80,8 +97,7 @@ impl Worker {
             let stale = storage::stale_statuses(&files, &live, settings.keep_status_media, now);
             if !stale.is_empty() {
                 let (count, bytes) = storage::delete(&stale);
-                log::info!(
-                    target: "plus:storage",
+                crate::plus_info!(target: "plus:storage",
                     "deleted {count} status files of {} ({bytes} bytes)",
                     stale.len()
                 );
@@ -93,8 +109,7 @@ impl Worker {
                 let held = snooze.is_some_and(|(until, total)| {
                     crate::util::now() < until && info.chat_bytes <= total + total / 10
                 });
-                log::info!(
-                    target: "plus:storage",
+                crate::plus_info!(target: "plus:storage",
                     "chat media {} bytes; a cleanup would free {} files ({} bytes){}",
                     info.chat_bytes,
                     info.plan_files,
@@ -135,8 +150,7 @@ impl Worker {
             let files = storage::top_files(&dir);
             let plan = storage::plan(&files, rules, &protected, SystemTime::now());
             let (files, bytes) = storage::delete(&plan.files);
-            log::info!(
-                target: "plus:storage",
+            crate::plus_info!(target: "plus:storage",
                 "cleanup deleted {files} of {} files ({bytes} bytes)",
                 plan.files.len()
             );
@@ -160,8 +174,7 @@ impl Worker {
                 return;
             }
             let (files, bytes) = storage::delete(&statuses);
-            log::info!(
-                target: "plus:storage",
+            crate::plus_info!(target: "plus:storage",
                 "deleted {files} of {} status files ({bytes} bytes)",
                 statuses.len()
             );
@@ -182,7 +195,7 @@ impl Worker {
         let _ = self
             .archive
             .set_meta(SNOOZE_KEY, &format!("{until},{total}"));
-        log::info!(target: "plus:storage", "chat media cleanup left for now");
+        crate::plus_info!(target: "plus:storage", "chat media cleanup left for now");
     }
 
     /// After a deletion: the archive forgets the files that are gone (so

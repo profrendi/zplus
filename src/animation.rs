@@ -158,6 +158,8 @@ fn frame_inner(
     if !ui.is_rect_visible(rect) {
         return Frame::Pending;
     }
+    // ZFPlus: Mode Hemat may hold it still.
+    let animate = crate::plus_saver::may_animate(ui, rect, animate);
     let ctx = ui.ctx();
     let cache = cache_for(ctx, scope);
     let inbox = inbox_for(ctx, scope);
@@ -379,7 +381,11 @@ fn start_decode(ctx: &egui::Context, inbox: &Inbox, path: &Path, all: bool) -> S
     let file = path.to_path_buf();
     let ctx = ctx.clone();
     let inbox = inbox.clone();
-    let limit = if all { MAX_FRAMES } else { 1 };
+    let limit = if all {
+        crate::plus_saver::frame_limit(MAX_FRAMES)
+    } else {
+        1
+    };
     let spawned = std::thread::Builder::new()
         .name("animation-decode".into())
         .spawn(move || {

@@ -917,8 +917,7 @@ async fn named_business_info(
         .iter()
         .filter(|name| name.trim().is_empty())
         .count();
-    log::info!(
-        target: "plus:business",
+    crate::plus_info!(target: "plus:business",
         "categories: {} in the profile, {unnamed} without a name, {} named from the directory",
         info.categories.len(),
         unnamed - still
@@ -3001,6 +3000,7 @@ impl Worker {
     /// sent after it, so a list of the same name is merged, not doubled.
     fn recover_lists(&mut self) {
         const DONE: &str = "plus_lists_recovered";
+        crate::plus_detail!(target: "plus:lists", "lists checked against WhatsApp's");
         let Some(client) = self.client.clone() else {
             return;
         };

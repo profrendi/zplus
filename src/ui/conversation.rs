@@ -7893,6 +7893,21 @@ fn context_menu(
         });
         ui.close();
     }
+    // ZFPlus: "Remind me", a notification here later, sent nowhere.
+    if !matches!(message.content, Content::Revoked) && crate::plus_data::loaded() {
+        ui.menu_button("⏰  Remind me", |ui| {
+            for (label, at) in crate::plus_data::remind_choices(crate::util::now()) {
+                if ui.button(label).clicked() {
+                    actions.push(Action::PlusRemind {
+                        chat: chat.clone(),
+                        message: message.id.clone(),
+                        at,
+                    });
+                    ui.close();
+                }
+            }
+        });
+    }
     let pinned = view.pins.is_some_and(|ids| ids.contains(&message.id));
     let pin_label = if pinned {
         crate::i18n::gettext(view.locale, "Unpin message")

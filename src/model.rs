@@ -2849,6 +2849,8 @@ pub struct StatusPost {
     pub muted: bool,
     /// A video's length in seconds, when it says.
     pub seconds: u32,
+    /// ZFPlus: its sender deleted it; kept here, marked, until it expires.
+    pub deleted: bool,
     /// Our own update: who saw it and when, latest first.
     pub views: Vec<(ChatId, i64)>,
 }
@@ -2929,6 +2931,15 @@ pub enum PlusRequest {
     /// "Leave them": asks again in three days, or sooner past the limit by
     /// another tenth.
     SnoozeMediaCleanup,
+    /// The media gallery: newest photos, videos or documents of every chat.
+    LoadGallery(String),
+    /// Mutes or unmutes someone's status updates, here and on the phone.
+    MuteStatus {
+        sender: String,
+        muted: bool,
+    },
+    /// Keeps the reader's own notes (`crate::plus_data`) in the archive.
+    SavePlusData(String),
     /// The worker's own: files a cleanup deleted, so the archive forgets them.
     MediaCleaned {
         files: u64,
@@ -3006,6 +3017,13 @@ pub enum PlusAnswer {
     MediaCleaned {
         files: u64,
         bytes: u64,
+    },
+    /// The reader's own notes (`crate::plus_data`), as the archive keeps them.
+    PlusData(String),
+    /// The media gallery's messages, newest first, for a filter.
+    Gallery {
+        filter: String,
+        items: Vec<Message>,
     },
     Communities(Result<Vec<CommunityInfo>, String>),
     Catalog(Result<Vec<CatalogItem>, String>),
@@ -4409,6 +4427,8 @@ pub enum Dialog {
     Communities,
     /// ZFPlus: a business account's tools.
     BusinessTools,
+    /// ZFPlus: photos, videos and documents of every chat.
+    Gallery,
     /// The stickers of a pack shared in a chat, with a button to add it.
     StickerPack,
     /// Crops a picture into a sticker.
@@ -4647,6 +4667,17 @@ pub enum Action {
     OpenChat(ChatId),
     /// Starts a voice call with the chat: the person, or everyone in a group.
     StartCall(ChatId),
+    /// ZFPlus: "Remind me" on a message, at a Unix time.
+    PlusRemind {
+        chat: ChatId,
+        message: String,
+        at: i64,
+    },
+    /// ZFPlus: a call history row picked: its info beside the history.
+    PlusCallInfo {
+        chat: ChatId,
+        message: String,
+    },
     /// Starts a video call with the chat: the person, or everyone in a group.
     StartVideoCall(ChatId),
     /// Picks a call history row on the Calls page: its chat opens beside the

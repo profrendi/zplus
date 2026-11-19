@@ -1076,8 +1076,47 @@ fn diagnostics_section(app: &App) -> Section {
                     color,
                 );
             }
+        // ZFPlus: the feature log's counts, as the feature report has them.
+        if ui.ctx().data(|data| data.get_temp::<Vec<crate::feature_check::Check>>(id)).is_some() {
+            for line in crate::plus_log::summary() {
+                theme::paragraph(ui, format!("·  {line}"), theme::regular(12.5), palette.secondary);
+            }
+        }
         ui.add_space(6.0);
     });
+    // ZFPlus: how much each feature logs, and the report to send.
+    section.block(
+        vec![Text::from("Feature log"), Text::from("Copy feature report")],
+        move |ui, app| {
+            widgets::setting_row(
+                ui,
+                &palette,
+                "Feature log",
+                "Each ZFPlus feature logs under its own tag (plus:status, plus:privacy and so on): counts, timings and error kinds, never messages, names or numbers. Detail logs more, Off only warnings.",
+                |ui| {
+                    let mut plus = app.settings.plus;
+                    for level in [0, 1, 2] {
+                        ui.radio_value(&mut plus.feature_log, level, crate::plus_log::level_name(level));
+                    }
+                    if plus != app.settings.plus {
+                        app.settings.plus = plus;
+                        crate::plus::set(plus);
+                        app.actions.push(Action::SettingsChanged);
+                    }
+                },
+            );
+            ui.horizontal(|ui| {
+                if theme::soft_button(ui, &palette, Some(Icon::Copy), "Copy feature report", false)
+                    .clicked()
+                {
+                    let checks = crate::feature_check::run(app);
+                    ui.ctx().copy_text(crate::feature_check::report(&checks));
+                    app.toast("Feature report copied");
+                }
+            });
+            ui.add_space(6.0);
+        },
+    );
     section.row(
         "App folder",
         crate::plus_uninstall::app_folder()
@@ -1347,6 +1386,45 @@ fn plus_sections() -> Vec<Section> {
         });
         sections.push(section);
     }
+    // ZFPlus: Mode Hemat, one switch, and each part on its own.
+    let mut saver = Section::new(Text::from("Enhancements · Mode Hemat"));
+    saver.toggle(
+        "Mode Hemat",
+        "Saves memory, processor and battery in one go. Untick any part you want to keep as it was.",
+        |settings: &mut Settings| &mut settings.plus.saver,
+    );
+    saver.block(
+        crate::plus_saver::Part::ALL
+            .iter()
+            .map(|part| Text::from(part.label()))
+            .collect(),
+        |ui, app| {
+            let palette = app.palette;
+            let active = app.settings.plus.saver;
+            let mut parts = app.settings.plus.saver_parts;
+            for part in crate::plus_saver::Part::ALL {
+                let mut on = crate::plus_saver::has(parts, part);
+                let ink = if active {
+                    palette.text
+                } else {
+                    palette.secondary
+                };
+                if ui
+                    .checkbox(&mut on, egui::RichText::new(part.label()).color(ink))
+                    .changed()
+                {
+                    parts = crate::plus_saver::toggle(parts, part, on);
+                }
+            }
+            if parts != app.settings.plus.saver_parts {
+                app.settings.plus.saver_parts = parts;
+                crate::plus::set(app.settings.plus);
+                app.actions.push(Action::SettingsChanged);
+            }
+            ui.add_space(8.0);
+        },
+    );
+    sections.push(saver);
     sections
 }
 

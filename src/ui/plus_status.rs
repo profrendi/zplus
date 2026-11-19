@@ -773,7 +773,39 @@ pub(crate) fn stage(
                                 pan: Vec2::ZERO,
                             });
                         }
+                        // ZFPlus: mute or unmute this person's updates, here
+                        // and on the phone.
+                        if !post.mine {
+                            let (icon, label) = if post.muted {
+                                (Icon::Bell, "Unmute status updates")
+                            } else {
+                                (Icon::BellOff, "Mute status updates")
+                            };
+                            if super::widgets::menu_item(ui, &palette, Some(icon), label) {
+                                app.actions.push(Action::Plus(PlusRequest::MuteStatus {
+                                    sender: post.sender.clone(),
+                                    muted: !post.muted,
+                                }));
+                            }
+                        }
                     });
+                // ZFPlus: an update its sender deleted stays, marked.
+                if post.deleted {
+                    let at = pos2(rect.center().x, rect.top() + caption + 74.0);
+                    let galley = ui.painter().layout_no_wrap(
+                        "Deleted by sender".to_owned(),
+                        theme::medium(13.0),
+                        Color32::WHITE,
+                    );
+                    let pill = Rect::from_center_size(at, galley.size() + Vec2::new(24.0, 10.0));
+                    ui.painter()
+                        .rect_filled(pill, pill.height() / 2.0, palette.danger);
+                    ui.painter().galley(
+                        pill.center() - galley.size() / 2.0,
+                        galley,
+                        Color32::WHITE,
+                    );
+                }
                 if media.double_clicked() {
                     focus = Some(Focus {
                         zoom: 1.0,
@@ -1138,4 +1170,111 @@ fn viewers(ui: &mut egui::Ui, app: &mut App, post: &StatusPost, column: Rect, re
                 });
         });
     opened
+}
+
+/// ZFPlus: the ring round a picture of someone with status updates, one
+/// arc per update as WhatsApp draws it: the unseen in the accent colour,
+/// the seen grey. `seen` is oldest first.
+pub(crate) fn paint_ring(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    seen: &[bool],
+    fresh: Color32,
+    old: Color32,
+) {
+    let count = seen.len().min(30);
+    if count == 0 {
+        return;
+    }
+    let full = std::f32::consts::TAU;
+    let gap = if count > 1 {
+        0.18_f32.min(full / count as f32 / 3.0)
+    } else {
+        0.0
+    };
+    let span = full / count as f32;
+    for (index, was_seen) in seen.iter().take(count).enumerate() {
+        let start = -std::f32::consts::FRAC_PI_2 + index as f32 * span + gap / 2.0;
+        let end = start + span - gap;
+        let steps = ((end - start) / 0.08).ceil().max(2.0) as usize;
+        let points: Vec<egui::Pos2> = (0..=steps)
+            .map(|step| {
+                let angle = start + (end - start) * step as f32 / steps as f32;
+                center + radius * Vec2::new(angle.cos(), angle.sin())
+            })
+            .collect();
+        let color = if *was_seen { old } else { fresh };
+        painter.add(egui::Shape::line(points, egui::Stroke::new(2.2, color)));
+    }
+}
+
+/// ZFPlus: whether `sender` has status updates to ring, oldest first by
+/// seen, unless muted.
+pub(crate) fn ring_of(app: &App, sender: &str) -> Vec<bool> {
+    let mut seen: Vec<(i64, bool)> = app
+        .statuses
+        .iter()
+        .filter(|post| post.sender == sender && !post.mine && !post.muted)
+        .map(|post| (post.timestamp, post.seen))
+        .collect();
+    seen.sort_by_key(|(at, _)| *at);
+    seen.into_iter().map(|(_, seen)| seen).collect()
+}
+
+/// ZFPlus: opens `sender`'s updates in the Status page's viewer, from a
+/// ringed picture in the chat list.
+pub(crate) fn open_from_list(app: &mut App, ui: &egui::Ui, sender: &str) {
+    let mut posts: Vec<StatusPost> = app
+        .statuses
+        .iter()
+        .filter(|post| post.sender == sender)
+        .cloned()
+        .collect();
+    posts.sort_by_key(|post| std::cmp::Reverse(post.timestamp));
+    let first = first_unseen(&posts);
+    let now = ui.input(|input| input.time);
+    let view = open(ui, sender, first, vec![sender.to_owned()], now);
+    ui.data_mut(|data| data.insert_temp(egui::Id::new("status-view"), view));
+    app.actions
+        .push(Action::ShowDialog(crate::model::Dialog::Status));
+}
+
+/// ZFPlus: a chat row's ring and the picture's click that opens the
+/// updates. Whether the picture took the click.
+pub(crate) fn list_ring(app: &mut App, ui: &mut egui::Ui, avatar: Rect, chat: &str) -> bool {
+    // Statuses load with the list, and again every five minutes.
+    let loaded = egui::Id::new("plus-ring-statuses-loaded");
+    let now = ui.input(|input| input.time);
+    let last: Option<f64> = ui.ctx().data(|data| data.get_temp(loaded));
+    if crate::plus_data::loaded() && last.is_none_or(|at| now - at > 300.0) {
+        ui.ctx().data_mut(|data| data.insert_temp(loaded, now));
+        app.actions.push(Action::Plus(PlusRequest::LoadStatuses));
+    }
+    let seen = ring_of(app, chat);
+    if seen.is_empty() {
+        return false;
+    }
+    let palette = app.palette;
+    paint_ring(
+        ui.painter(),
+        avatar.center(),
+        avatar.width() / 2.0 + 2.5,
+        &seen,
+        palette.accent,
+        palette.dim,
+    );
+    let response = ui
+        .interact(
+            avatar.expand(3.0),
+            ui.id().with(("plus-ring", chat)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("View status");
+    if response.clicked() {
+        open_from_list(app, ui, chat);
+        return true;
+    }
+    false
 }

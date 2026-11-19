@@ -48,7 +48,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::NewContact => 380.0,
                 // ZFPlus: the Status, Channels, Communities and Business
                 // tools pages, large.
-                Dialog::Status | Dialog::Channels | Dialog::Communities | Dialog::BusinessTools => {
+                Dialog::Status
+                | Dialog::Channels
+                | Dialog::Communities
+                | Dialog::BusinessTools
+                | Dialog::Gallery => {
                     let width = ui.ctx().content_rect().width();
                     (width * 0.7)
                         .clamp(480.0, 980.0)
@@ -163,6 +167,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::Channels => super::plus_pages::channels(app, ui),
                 Dialog::Communities => super::plus_pages::communities(app, ui),
                 Dialog::BusinessTools => super::plus_pages::business_tools(app, ui),
+                Dialog::Gallery => super::plus_gallery::page(app, ui),
                 Dialog::StickerPack => sticker_pack(app, ui),
                 Dialog::StickerMaker => sticker_maker(app, ui),
                 Dialog::MessageInfo { chat, message } => {

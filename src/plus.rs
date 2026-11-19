@@ -80,6 +80,12 @@ pub struct PlusSettings {
     pub media_days: u16,
     /// Documents never count toward a cleanup.
     pub media_keep_documents: bool,
+    /// How much each feature logs (`crate::plus_log`): 0 Off, 1 Normal,
+    /// 2 Detail.
+    pub feature_log: u8,
+    /// Mode Hemat (`crate::plus_saver`): the switch, and its parts.
+    pub saver: bool,
+    pub saver_parts: u8,
 }
 
 impl Default for PlusSettings {
@@ -121,6 +127,9 @@ impl Default for PlusSettings {
             media_limit_gb: 3,
             media_days: 0,
             media_keep_documents: true,
+            feature_log: 1,
+            saver: false,
+            saver_parts: crate::plus_saver::ALL_PARTS,
         }
     }
 }
@@ -207,6 +216,7 @@ pub fn get() -> PlusSettings {
 
 /// Publishes new switches to the interface and every worker.
 pub fn set(settings: PlusSettings) {
+    crate::plus_log::set_level(settings.feature_log);
     *CURRENT.write().unwrap_or_else(|p| p.into_inner()) = settings;
 }
 

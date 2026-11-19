@@ -17,7 +17,8 @@ use super::pane::{self, Docking};
 use super::widgets;
 
 /// The panel's side margin.
-const MARGIN: f32 = 14.0;
+// ZFPlus: the roomier spacing of WhatsApp Web's panels.
+const MARGIN: f32 = 18.0;
 /// Space between the cells of the picture grid and strip.
 const GAP: f32 = 4.0;
 /// A document or link row.
@@ -759,6 +760,8 @@ fn identity(app: &mut App, ui: &mut egui::Ui, shown: &Shown, overlay: bool) {
     }
     // Our own details, under either of our ids, share no groups with us.
     if !shown.group && !shown.channel && !app.our_ids().contains(&id) {
+        // ZFPlus: a private note, kept encrypted here and never sent.
+        super::plus_notes::note_field(app, ui, id);
         let groups = groups_in_common(app, id);
         if !groups.is_empty() {
             ui.add_space(8.0);
@@ -1222,7 +1225,11 @@ fn groups_in_common(app: &App, person: &str) -> Vec<(String, String)> {
     groups
 }
 
-/// The groups in common with `person`, each opening its chat.
+/// The groups in common with `person`, each opening its chat. ZFPlus: large
+/// rows as WhatsApp Web draws them (picture, name, and who is in it), the
+/// first five here and every one under Show all, a list in the middle of the
+/// window with a search field. No list of its own scrolls inside the panel,
+/// so the wheel always scrolls the panel.
 fn common_groups(app: &mut App, ui: &mut egui::Ui, person: &str, groups: &[(String, String)]) {
     let palette = app.palette;
     theme::text(
@@ -1234,87 +1241,75 @@ fn common_groups(app: &mut App, ui: &mut egui::Ui, person: &str, groups: &[(Stri
             groups.len() as u32,
         )
         .replace("{}", &groups.len().to_string()),
-        theme::medium(12.5),
+        theme::medium(13.5),
         palette.secondary,
     );
-    ui.add_space(4.0);
-    let row_height = 30.0;
+    ui.add_space(6.0);
     let mut open = None;
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        // Every row is laid out, not only the visible ones, so Tab reaches
-        // each group and the list scrolls to the one with the focus.
-        let mut focused = false;
-        let list = egui::ScrollArea::vertical()
-            .id_salt(("groups-in-common", person))
-            .max_height(row_height * 6.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for (index, (group, name)) in groups.iter().enumerate() {
-                    // The id comes from the group alone, not its place in the
-                    // list, so focus stays with the group when the list reorders.
-                    let size = egui::vec2(ui.available_width(), row_height);
-                    let (_, rect) = ui.allocate_space(size);
-                    let id = ui.make_persistent_id(group);
-                    let response = ui.interact(rect, id, egui::Sense::click());
-                    let slot = u8::try_from(index).unwrap_or(u8::MAX);
-                    let stop = Stop::InfoControl(GROUPS_STOP.saturating_add(slot));
-                    let response = response.tab_stop(stop);
-                    focused |= response.gained_focus();
-                    theme::reveal_focus(&response);
-                    theme::focus_outline(ui, response.id, rect, 6.0);
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name)
-                    });
-                    if ui.is_rect_visible(rect) {
-                        if response.hovered() {
-                            ui.painter().rect_filled(rect, 6.0, palette.surface_hover);
-                        }
-                        let picture = app.avatar(group);
-                        let avatar = egui::Rect::from_center_size(
-                            egui::pos2(rect.left() + 16.0, rect.center().y),
-                            egui::Vec2::splat(24.0),
-                        );
-                        widgets::paint_avatar(
-                            ui,
-                            &palette,
-                            avatar,
-                            name,
-                            group,
-                            picture.as_deref(),
-                        );
-                        let line = widgets::line(
-                            ui,
-                            name,
-                            theme::regular(13.0),
-                            palette.text,
-                            (rect.width() - 38.0).max(20.0),
-                            1,
-                        );
-                        line.paint(
-                            ui,
-                            egui::pos2(rect.left() + 34.0, rect.center().y - line.size().y / 2.0),
-                            palette.text,
-                        );
-                    }
-                    if response
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        open = Some(group.clone());
-                    }
-                }
-            });
-        // The list's own scrolling stops at its edge, so the panel brings the
-        // list into view too when Tab lands on a row below its fold.
-        if focused {
-            ui.scroll_to_rect(list.inner_rect, None);
+    let shown = groups.len().min(5);
+    for (index, (group, name)) in groups.iter().take(shown).enumerate() {
+        let members = member_names(app, group);
+        let slot = u8::try_from(index).unwrap_or(u8::MAX);
+        let line = super::plus_pages::person_line(ui, app, group, name, &members, None, false)
+            .tab_stop(Stop::InfoControl(GROUPS_STOP.saturating_add(slot)));
+        if line.clicked() {
+            open = Some(group.clone());
         }
-    });
+    }
+    let popup = egui::Id::new("plus-common-groups");
+    if groups.len() > shown {
+        ui.add_space(4.0);
+        let all = ui.add(
+            egui::Button::new(
+                egui::RichText::new(format!("Show all ({})", groups.len()))
+                    .color(palette.accent)
+                    .size(14.0),
+            )
+            .frame(false),
+        );
+        if all.clicked() {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(popup, person.to_owned()));
+        }
+    }
+    let ctx = ui.ctx().clone();
+    if ctx.data(|data| data.get_temp::<String>(popup)).as_deref() == Some(person) {
+        let rows: Vec<(String, String, String)> = groups
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone(), member_names(app, id)))
+            .collect();
+        if let Some(group) = super::plus_pages::list_popup(
+            app,
+            &ctx,
+            popup,
+            &crate::i18n::gettext(app.locale, "Groups in common"),
+            &rows,
+        ) {
+            open = Some(group);
+        }
+    }
     if let Some(group) = open {
+        ctx.data_mut(|data| data.remove::<String>(popup));
         app.actions
             .extend([Action::OpenChat(group), Action::CloseInfo]);
     }
+}
+
+/// ZFPlus: a group's members by name, as a group row's second line.
+fn member_names(app: &App, group: &str) -> String {
+    let Some(chat) = app.chat(group) else {
+        return String::new();
+    };
+    let ours = app.our_ids();
+    let mut names: Vec<String> = chat
+        .participants
+        .iter()
+        .filter(|member| !ours.contains(&member.as_str()))
+        .take(12)
+        .map(|member| app.display_name(member))
+        .collect();
+    names.push(crate::i18n::gettext(app.locale, "You").into_owned());
+    names.join(", ")
 }
 
 /// The "Media, links and docs" row: its count once the listing is in, a
@@ -1587,7 +1582,7 @@ fn media_grid(
 
 /// One square picture or video: its preview cropped to the square, with a
 /// play mark and the length on a video. Clicking it goes to the message.
-fn media_cell(
+pub(crate) fn media_cell(
     app: &mut App,
     ui: &mut egui::Ui,
     rect: Rect,

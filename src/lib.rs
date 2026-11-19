@@ -49,11 +49,15 @@ pub mod paths;
 pub mod picture_loader;
 pub mod plus;
 pub mod plus_camera;
+pub mod plus_data;
 pub mod plus_location;
 pub mod plus_memory;
+pub mod plus_saver;
 pub mod plus_shared;
 pub mod plus_stamp;
 pub mod plus_storage;
+#[macro_use]
+pub mod plus_log;
 pub mod plus_uninstall;
 pub mod privacy;
 pub mod prof;

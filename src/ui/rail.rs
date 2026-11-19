@@ -214,7 +214,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
         // A short window keeps what it had and shows those that fit.
         let business = app.business == Some(true);
         let room = ((ui.available_height() - minimum) / (PLATE + GAP)).max(0.0) as usize;
-        let pages = (3 + usize::from(business)).min(room);
+        let pages = (4 + usize::from(business)).min(room);
         let minimum = minimum + pages as f32 * (PLATE + GAP);
         let height = ui.available_height().max(minimum);
         egui::ScrollArea::vertical()
@@ -247,6 +247,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                         "Communities",
                         "plus-communities",
                         crate::model::Dialog::Communities,
+                    ),
+                    (
+                        Icon::Image,
+                        "Media gallery",
+                        "plus-gallery",
+                        crate::model::Dialog::Gallery,
                     ),
                     (
                         Icon::Briefcase,

@@ -57,7 +57,20 @@ pub fn section(ui: &mut egui::Ui, app: &mut App) {
     let mut plus = app.settings.plus;
     let before = plus;
 
+    // As WhatsApp Web shows it: how far the phone's history has come.
     ui.add_space(6.0);
+    let sync = match app.sync_percent {
+        Some(percent) => format!("Syncing older messages {percent}%"),
+        None => "Chat history is up to date with your phone".to_owned(),
+    };
+    ui.horizontal(|ui| {
+        theme::icon(ui, Icon::Refresh, 16.0, palette.secondary);
+        theme::text(ui, sync, theme::regular(13.5), palette.text);
+    });
+    if let Some(percent) = app.sync_percent {
+        ui.add(egui::ProgressBar::new(percent as f32 / 100.0).desired_height(4.0));
+    }
+    ui.add_space(10.0);
     theme::text(
         ui,
         "Status photos and videos",

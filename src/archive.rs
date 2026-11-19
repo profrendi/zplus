@@ -1860,6 +1860,31 @@ impl Archive {
         Ok(rows)
     }
 
+    /// ZFPlus: the newest photos, videos or documents of every chat (not
+    /// the locked ones), for the media gallery. `kinds` is `media`,
+    /// `documents` or anything else for both.
+    pub fn plus_gallery(&self, kinds: &str, limit: usize) -> Result<Vec<Message>> {
+        let compare = match kinds {
+            "media" => "IN ('image', 'video')",
+            "photos" => "= 'image'",
+            "videos" => "= 'video'",
+            "documents" => "= 'document'",
+            _ => "IN ('image', 'video', 'document')",
+        };
+        let sql = format!(
+            "SELECT {SEARCH_COLUMNS}
+             FROM messages
+             WHERE json_valid(content)
+               AND json_extract(content, '$.kind') {compare}
+               AND chat NOT IN (SELECT id FROM chats WHERE locked = 1)
+             ORDER BY timestamp DESC, rowid DESC
+             LIMIT ?1"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(params![limit as i64], searched_message)?;
+        rows.collect()
+    }
+
     /// One chat's newest messages whose content kind matches the SQL
     /// comparison `kinds`, such as `= 'document'`.
     fn rows_of_kind(&self, chat: &str, kinds: &str, limit: usize) -> Result<Vec<Message>> {
@@ -2887,6 +2912,9 @@ impl Archive {
             CREATE TABLE IF NOT EXISTS plus_status_muted (
                 sender TEXT PRIMARY KEY
             );
+            CREATE TABLE IF NOT EXISTS plus_status_deleted (
+                id TEXT PRIMARY KEY
+            );
             CREATE TABLE IF NOT EXISTS plus_status_views (
                 id TEXT NOT NULL,
                 viewer TEXT NOT NULL,
@@ -2971,7 +2999,34 @@ impl Archive {
         Ok(())
     }
 
-    /// ZFPlus: forgets a status its sender deleted.
+    /// ZFPlus: marks a status its sender deleted, kept until it expires.
+    pub fn plus_mark_status_deleted(&self, id: &str) -> Result<()> {
+        self.plus_status_table()?;
+        self.connection.execute(
+            "INSERT OR IGNORE INTO plus_status_deleted (id) VALUES (?1)",
+            params![id],
+        )?;
+        // Marks of statuses already gone go with them.
+        self.connection.execute(
+            "DELETE FROM plus_status_deleted WHERE id NOT IN (SELECT id FROM plus_statuses)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// ZFPlus: the statuses their senders deleted.
+    pub fn plus_deleted_statuses(&self) -> Result<std::collections::HashSet<String>> {
+        self.plus_status_table()?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM plus_status_deleted")?;
+        let rows = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// ZFPlus: forgets a status (our own, deleted).
     pub fn plus_drop_status(&self, id: &str) -> Result<()> {
         self.plus_status_table()?;
         self.connection
