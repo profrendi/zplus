@@ -18,33 +18,60 @@ jobs:
   windows:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      # Incremental builds only help a build run again in the same place.
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Tools
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends mingw-w64 wixl msitools zip nasm cmake perl \
-            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libpipewire-0.3-dev clang libclang-dev
-          rustup show active-toolchain || rustup toolchain install
-          rustup target add x86_64-pc-windows-gnu
+      # The packages the build needs (335 MB, mostly mingw-w64), kept between
+      # runs: fetched fresh, a slow Ubuntu mirror once took 58 minutes.
       - uses: actions/cache@v4
+        with:
+          path: ~/apt-debs
+          key: plus-apt-v1-${{ hashFiles('plus/ci-tools.sh') }}
+      - name: Tools
+        run: plus/ci-tools.sh
+      # Compiled dependencies, kept for the tests and for the Windows build
+      # apart, each saved as soon as it is made (the tests' were deleted for
+      # room before they could be saved, so every run compiled them anew).
+      - name: Restore the test build
+        id: test-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: plus-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: plus-windows-
+            target/debug
+          key: plus-test-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: plus-test-
+      - name: Restore the Windows build
+        id: windows-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: target/x86_64-pc-windows-gnu
+          key: plus-windows-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: plus-windows-gnu-
       # The release gate: every test, including the one that finds each
       # feature in feature_check::INVENTORY on screen, so a release that lost
       # a switch, a button or a menu entry is never published.
       - name: Test
         run: |
           cargo test --locked --lib --features demo -- --test-threads 4
-          # The Windows build needs the room.
-          rm -rf target/debug
+          # Only what the next run can use: the dependencies, not ZFPlus itself.
+          rm -rf target/debug/incremental target/debug/deps/zapfast-* target/debug/.fingerprint/zapfast-*
+      - name: Keep the test build
+        uses: actions/cache/save@v4
+        if: steps.test-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: plus-test-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Make room for the Windows build
+        run: rm -rf target/debug
       - name: Build and package
         id: build
         env:
@@ -54,6 +81,12 @@ jobs:
           printf '%s\n' "$SIGNING_KEY" > "$key"
           plus/build-windows.sh dist "$key"
           rm -f "$key"
+      - name: Keep the Windows build
+        uses: actions/cache/save@v4
+        if: steps.windows-cache.outputs.cache-hit != 'true'
+        with:
+          path: target/x86_64-pc-windows-gnu
+          key: plus-windows-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

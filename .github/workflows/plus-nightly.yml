@@ -29,6 +29,8 @@ jobs:
       # gh would otherwise pick the "upstream" remote (ZapFast) as its
       # repository once the merge step adds it.
       GH_REPO: ${{ github.repository }}
+      # Incremental builds only help a build run again in the same place.
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,23 +78,38 @@ jobs:
             echo "upstream=$theirs $theirs_date"
             echo "stamp=$(date -u +%Y%m%d%H%M)"
           } >> "$GITHUB_OUTPUT"
+      # The packages the build needs (335 MB, mostly mingw-w64), kept between
+      # runs: fetched fresh, a slow Ubuntu mirror once took 58 minutes.
+      - uses: actions/cache@v4
+        if: steps.merge.outputs.build == 'true'
+        with:
+          path: ~/apt-debs
+          key: plus-apt-v1-${{ hashFiles('plus/ci-tools.sh') }}
       - name: Tools
         if: steps.merge.outputs.build == 'true'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends mingw-w64 wixl msitools zip nasm cmake perl \
-            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libpipewire-0.3-dev clang libclang-dev
-          rustup show active-toolchain || rustup toolchain install
-          rustup target add x86_64-pc-windows-gnu
-      - uses: actions/cache@v4
+        run: plus/ci-tools.sh
+      # Compiled dependencies, kept for the tests and for the Windows build
+      # apart, each saved as soon as it is made (the tests' were deleted for
+      # room before they could be saved, so every run compiled them anew).
+      - name: Restore the test build
+        id: test-cache
+        uses: actions/cache/restore@v4
         if: steps.merge.outputs.build == 'true'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: plus-nightly-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: plus-nightly-
+            target/debug
+          key: plus-test-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: plus-test-
+      - name: Restore the Windows build
+        id: windows-cache
+        uses: actions/cache/restore@v4
+        if: steps.merge.outputs.build == 'true'
+        with:
+          path: target/x86_64-pc-windows-gnu
+          key: plus-windows-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: plus-windows-gnu-
       # The tests run on the merged code as ZFPlus (Stable) is built, since
       # they check Stable's names; the nightly differs only in its names.
       - name: Test
@@ -104,8 +121,20 @@ jobs:
           cargo fmt --all --check
           # With the demo, so feature_check's inventory test runs too.
           cargo test --locked --lib --features demo -- --test-threads 4
-          # The Windows build needs the room.
-          rm -rf target/debug
+          # Only what the next run can use: the dependencies, not ZFPlus itself.
+          rm -rf target/debug/incremental target/debug/deps/zapfast-* target/debug/.fingerprint/zapfast-*
+      - name: Keep the test build
+        uses: actions/cache/save@v4
+        if: steps.merge.outputs.build == 'true' && steps.test-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: plus-test-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Make room for the Windows build
+        if: steps.merge.outputs.build == 'true'
+        run: rm -rf target/debug
       - name: Version
         id: version
         if: steps.merge.outputs.build == 'true'
@@ -126,6 +155,12 @@ jobs:
           printf '%s\n' "$SIGNING_KEY" > "$key"
           plus/build-windows.sh dist "$key"
           rm -f "$key"
+      - name: Keep the Windows build
+        uses: actions/cache/save@v4
+        if: steps.merge.outputs.build == 'true' && steps.windows-cache.outputs.cache-hit != 'true'
+        with:
+          path: target/x86_64-pc-windows-gnu
+          key: plus-windows-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Publish
         if: steps.merge.outputs.build == 'true'
         run: |
