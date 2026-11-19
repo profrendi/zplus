@@ -79,9 +79,12 @@ pub(super) fn rate_limited(error: &str) -> bool {
 /// Whether a download error means the file is gone from the servers, so
 /// asking again soon cannot help.
 pub(super) fn gone(error: &str) -> bool {
-    ["status: 403", "status: 404", "status: 410"]
-        .iter()
-        .any(|status| error.contains(status))
+    // The library writes either "status: 403" or, for a CDN refusal,
+    // "MediaFailure { .. http_status: Some(403) .. }".
+    ["403", "404", "410"].iter().any(|code| {
+        error.contains(&format!("status: {code}"))
+            || error.contains(&format!("http_status: Some({code})"))
+    })
 }
 
 #[cfg(test)]
@@ -127,6 +130,10 @@ mod tests {
         ));
         assert!(gone("Download failed with status: 403"));
         assert!(gone("Download media not found/expired with status: 410"));
+        assert!(gone(
+            "the CDN rejected the media reference: MediaFailure { kind: Expired, http_status: Some(403) }"
+        ));
+        assert!(!gone("MediaFailure { kind: Network, http_status: None }"));
         assert!(!gone(
             "received a server error response: code=429, text='rate-overlimit'"
         ));
