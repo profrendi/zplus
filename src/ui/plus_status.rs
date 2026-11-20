@@ -68,14 +68,19 @@ pub(crate) fn open(
     }
 }
 
-thread_local! {
-    static BACKDROP: std::cell::RefCell<Option<(String, egui::TextureHandle)>> =
-        const { std::cell::RefCell::new(None) };
+/// The backdrop's texture, kept with the window's context.
+#[derive(Clone)]
+struct Backdrop(String, egui::TextureHandle);
+
+fn backdrop_id() -> egui::Id {
+    egui::Id::new("plus-status-backdrop")
 }
 
 /// ZFPlus: lets go of the backdrop once the Status page is closed.
-pub(crate) fn release_backdrop() {
-    BACKDROP.with(|kept| *kept.borrow_mut() = None);
+pub(crate) fn release_backdrop(ctx: &egui::Context) {
+    if ctx.data(|data| data.get_temp::<Backdrop>(backdrop_id()).is_some()) {
+        ctx.data_mut(|data| data.remove::<Backdrop>(backdrop_id()));
+    }
 }
 
 /// A small, smooth copy of a picture to lie behind the update: stretched
@@ -85,12 +90,10 @@ fn backdrop(
     key: &str,
     bytes: impl FnOnce() -> Option<Vec<u8>>,
 ) -> Option<egui::TextureHandle> {
-    use BACKDROP as KEPT;
-    if let Some(texture) = KEPT.with(|kept| {
-        kept.borrow()
-            .as_ref()
-            .filter(|(kept, _)| kept == key)
-            .map(|(_, texture)| texture.clone())
+    if let Some(texture) = ui.ctx().data(|data| {
+        data.get_temp::<Backdrop>(backdrop_id())
+            .filter(|kept| kept.0 == key)
+            .map(|kept| kept.1)
     }) {
         return Some(texture);
     }
@@ -109,7 +112,9 @@ fn backdrop(
         egui::ColorImage::from_rgba_unmultiplied(size, small.as_raw()),
         egui::TextureOptions::LINEAR,
     );
-    KEPT.with(|kept| *kept.borrow_mut() = Some((key.to_owned(), texture.clone())));
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(backdrop_id(), Backdrop(key.to_owned(), texture.clone()))
+    });
     Some(texture)
 }
 
@@ -942,7 +947,7 @@ pub(crate) fn stage(
             app.video.stop();
         }
         // What the updates held goes, and the memory with it.
-        super::plus_pages::forget_pictures();
+        super::plus_pages::forget_pictures(ctx);
         crate::plus_memory::trim_soon();
         ctx.data_mut(|data| {
             data.remove::<Focus>(focus_id());

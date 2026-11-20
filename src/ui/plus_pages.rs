@@ -61,43 +61,45 @@ fn clear_field(ui: &egui::Ui, id: &str) {
 }
 
 // The pages' picture textures, the last few only, so looking through many
-// statuses does not hold every picture in memory.
-thread_local! {
-    static KEPT: std::cell::RefCell<std::collections::VecDeque<(String, egui::TextureHandle)>> =
-        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+// statuses does not hold every picture in memory. Kept with the window's
+// context (never a thread's), so a texture always goes back to the window
+// that made it.
+#[derive(Clone, Default)]
+struct KeptPictures(std::collections::VecDeque<(String, egui::TextureHandle)>);
+
+fn kept_id() -> egui::Id {
+    egui::Id::new("plus-pages-kept-pictures")
 }
 
 /// ZFPlus: lets the pages' pictures go now (a status viewer closed).
-pub(crate) fn forget_pictures() {
-    KEPT.with(|kept| kept.borrow_mut().clear());
+pub(crate) fn forget_pictures(ctx: &egui::Context) {
+    if ctx.data(|data| data.get_temp::<KeptPictures>(kept_id()).is_some()) {
+        ctx.data_mut(|data| data.remove::<KeptPictures>(kept_id()));
+    }
 }
 
 /// ZFPlus: lets the pages' pictures go once no page that shows them is
 /// open, so they hold no memory while the chats are in use.
-pub(crate) fn release_textures(app: &App) {
+pub(crate) fn release_textures(app: &App, ctx: &egui::Context) {
     let open = matches!(
         app.dialog,
         Some(Dialog::Status | Dialog::Channels | Dialog::Communities | Dialog::BusinessTools)
     );
     if !open {
-        KEPT.with(|kept| {
-            if !kept.borrow().is_empty() {
-                kept.borrow_mut().clear();
-            }
-        });
+        forget_pictures(ctx);
     }
 }
 
 thread_local! {
-    // The last picture decoded, small, with its key.
+    // The last picture decoded, small, with its key (pixels, no texture).
     static LAST_DECODED: std::cell::RefCell<Option<(String, image::DynamicImage)>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// ZFPlus: lets go of the Status page's pictures once it is closed (up to
 /// three kept for going back and forth, a few MB each).
-pub(crate) fn release_pictures() {
-    KEPT.with(|kept| kept.borrow_mut().clear());
+pub(crate) fn release_pictures(ctx: &egui::Context) {
+    forget_pictures(ctx);
     LAST_DECODED.with(|last| *last.borrow_mut() = None);
 }
 
@@ -117,11 +119,13 @@ pub(crate) fn picture_texture(
     key: &str,
     bytes: impl FnOnce() -> Option<Vec<u8>>,
 ) -> Option<egui::TextureHandle> {
-    if let Some(texture) = KEPT.with(|kept| {
-        kept.borrow()
-            .iter()
-            .find(|(kept_key, _)| kept_key == key)
-            .map(|(_, texture)| texture.clone())
+    if let Some(texture) = ui.ctx().data(|data| {
+        data.get_temp::<KeptPictures>(kept_id()).and_then(|kept| {
+            kept.0
+                .iter()
+                .find(|(kept_key, _)| kept_key == key)
+                .map(|(_, texture)| texture.clone())
+        })
     }) {
         return Some(texture);
     }
@@ -143,12 +147,12 @@ pub(crate) fn picture_texture(
         egui::ColorImage::from_rgba_unmultiplied(size, decoded.as_raw()),
         egui::TextureOptions::LINEAR,
     );
-    KEPT.with(|kept| {
-        let mut kept = kept.borrow_mut();
-        if kept.len() >= 3 {
-            kept.pop_front();
+    ui.ctx().data_mut(|data| {
+        let kept = data.get_temp_mut_or_default::<KeptPictures>(kept_id());
+        if kept.0.len() >= 3 {
+            kept.0.pop_front();
         }
-        kept.push_back((key.to_owned(), texture.clone()));
+        kept.0.push_back((key.to_owned(), texture.clone()));
     });
     Some(texture)
 }

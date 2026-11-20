@@ -58,7 +58,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = &ctx;
     track_keyboard_focus(ctx);
     info::release_thumbnails(app, ctx);
-    plus_pages::release_textures(app);
+    plus_pages::release_textures(app, ctx);
     picker::release_gif_animations(app, ctx);
     // The message list sets it again when it is drawn with focus.
     app.messages_focused = false;

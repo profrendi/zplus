@@ -11782,8 +11782,8 @@ impl App {
         }
         let status_open = self.dialog == Some(Dialog::Status);
         if !status_open {
-            crate::ui::plus_pages::release_pictures();
-            crate::ui::plus_status::release_backdrop();
+            crate::ui::plus_pages::release_pictures(ctx);
+            crate::ui::plus_status::release_backdrop(ctx);
         }
         crate::plus_memory::set_open(self.picture_edit.is_some(), status_open);
         crate::plus_memory::tick(ctx, messages, chats);
