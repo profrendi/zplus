@@ -93,6 +93,11 @@ pub struct PlusSettings {
     pub blur_sections: u8,
     /// Mode Hemat's switch in the rail, under the eye.
     pub show_saver_button: bool,
+    /// The media gallery's own choices, apart from Mode Hemat: its cells'
+    /// size (0 small, 1 medium, 2 large), and whether a downloaded photo is
+    /// drawn from its file (sharp) rather than its small preview.
+    pub gallery_size: u8,
+    pub gallery_files: bool,
 }
 
 impl Default for PlusSettings {
@@ -140,6 +145,8 @@ impl Default for PlusSettings {
             saver_release_mb: 200,
             blur_sections: Section::ALL_BITS,
             show_saver_button: true,
+            gallery_size: 1,
+            gallery_files: true,
         }
     }
 }
@@ -495,13 +502,20 @@ pub fn set_section(settings: &mut PlusSettings, section: Section, on: bool) {
     if on {
         settings.blur_sections |= section.bit();
         settings.private_mode = true;
-        settings.eye_on = true;
     } else {
         settings.blur_sections &= !section.bit();
-        if settings.blur_sections == 0 {
-            settings.eye_on = false;
-        }
     }
+    // Blur is on while any section is ticked, in the rail and Settings alike.
+    settings.eye_on = settings.blur_sections != 0;
+}
+
+/// Makes the eye and the sections agree: blur is on while any section is
+/// ticked (an eye left off by an earlier version unticks them all).
+pub fn settle_private(settings: &mut PlusSettings) {
+    if !settings.eye_on {
+        settings.blur_sections = 0;
+    }
+    settings.eye_on = settings.blur_sections != 0;
 }
 
 /// "All": every section on (and Private Mode with them), or every one off.

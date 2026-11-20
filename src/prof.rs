@@ -91,6 +91,8 @@ struct State {
     memory_first: Option<crate::plus_memory::Snapshot>,
     memory_peak: u64,
     dir: PathBuf,
+    /// ZFPlus: this frame's sections, to name what a slow frame spent.
+    frame_phases: HashMap<&'static str, f64>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -126,7 +128,23 @@ pub fn phase(name: &'static str, seconds: f64) {
     if !enabled() {
         return;
     }
-    with(|state| *state.second.phases.entry(name).or_default() += seconds);
+    with(|state| {
+        *state.second.phases.entry(name).or_default() += seconds;
+        *state.frame_phases.entry(name).or_default() += seconds;
+    });
+}
+
+/// ZFPlus: the line a slow frame leaves in the log: its time and the
+/// sections that took the most of it (names and milliseconds only).
+fn slow_frame_line(seconds: f64, phases: &HashMap<&'static str, f64>) -> String {
+    let mut parts: Vec<(&&'static str, &f64)> = phases.iter().collect();
+    parts.sort_by(|a, b| b.1.total_cmp(a.1));
+    let top: Vec<String> = parts
+        .iter()
+        .take(5)
+        .map(|(name, spent)| format!("{name} {:.0} ms", **spent * 1000.0))
+        .collect();
+    format!("slow frame {:.0} ms: {}", seconds * 1000.0, top.join(", "))
 }
 
 /// The diagnostics folder under the app's state folder.
@@ -161,6 +179,7 @@ fn start(dir: &Path) {
             started: Instant::now(),
             memory_first: None,
             memory_peak: 0,
+            frame_phases: HashMap::new(),
             dir: dir.to_path_buf(),
         });
     }
@@ -237,7 +256,12 @@ pub fn frame(ctx: &egui::Context, previous_frame_seconds: Option<f32>, view: &st
             let seconds = f64::from(seconds);
             second.frame_total += seconds;
             second.frame_max = second.frame_max.max(seconds);
+            // ZFPlus: a frame over 150 ms names what took it.
+            if seconds > 0.15 {
+                crate::plus_warn!(target: "plus:stall", "{}", slow_frame_line(seconds, &state.frame_phases));
+            }
         }
+        state.frame_phases.clear();
         for cause in causes {
             let file = cause.file.rsplit(['/', '\\']).next().unwrap_or(cause.file);
             let mut key = format!("{file}:{}", cause.line);

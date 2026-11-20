@@ -16,6 +16,19 @@ static LEVEL: AtomicU8 = AtomicU8::new(1);
 /// Lines and warnings per tag since the start.
 static COUNTS: Mutex<BTreeMap<&'static str, (u64, u64)>> = Mutex::new(BTreeMap::new());
 
+/// When the process started, for the start-up timeline.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Marks the process's start (called first thing in `main`).
+pub fn mark_start() {
+    let _ = STARTED.set(std::time::Instant::now());
+}
+
+/// Milliseconds since the process started.
+pub fn since_start_ms() -> u128 {
+    STARTED.get().map_or(0, |at| at.elapsed().as_millis())
+}
+
 pub fn set_level(level: u8) {
     LEVEL.store(level.min(2), Ordering::Relaxed);
 }

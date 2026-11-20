@@ -469,7 +469,7 @@ fn private_mode_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette, heig
     let label = if on {
         "Private Mode is on: click for where it blurs"
     } else {
-        "Private Mode is off: click to turn it on, or pick where it blurs"
+        "Private Mode is off: click to pick where it blurs"
     };
     let response = response.on_hover_text(label);
     // ZFPlus: the eye opens a menu: the switch, All, and each section. It
@@ -477,33 +477,51 @@ fn private_mode_button(app: &mut App, ui: &mut egui::Ui, palette: &Palette, heig
     egui::Popup::menu(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            ui.set_min_width(250.0);
-            let mut plus = app.settings.plus;
-            theme::text(ui, "Private Mode", theme::semibold(15.0), palette.text);
-            ui.add_space(4.0);
-            if crate::ui::settings::plus_tick(ui, palette, "Blur now", plus.eye_on, true) {
-                plus.eye_on = !plus.eye_on;
-                plus.private_mode |= plus.eye_on;
-                if plus.eye_on && plus.blur_sections == 0 {
-                    plus.blur_sections = crate::plus::Section::ALL_BITS;
-                }
-            }
-            ui.separator();
-            let all = plus.blur_sections == crate::plus::Section::ALL_BITS && plus.eye_on;
-            if crate::ui::settings::plus_tick(ui, palette, "All", all, true) {
-                crate::plus::set_all(&mut plus, !all);
-            }
-            for section in crate::plus::Section::ALL {
-                let ticked = plus.eye_on && plus.blur_sections & section.bit() != 0;
-                if crate::ui::settings::plus_tick(ui, palette, section.label(), ticked, true) {
-                    crate::plus::set_section(&mut plus, section, !ticked);
-                }
-            }
-            if plus != app.settings.plus {
-                app.settings.plus = plus;
-                crate::plus::set(plus);
-                app.actions.push(Action::SettingsChanged);
-            }
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    let mut plus = app.settings.plus;
+                    theme::text(ui, "Private Mode", theme::semibold(14.0), palette.text);
+                    ui.add_space(4.0);
+                    // All, then each section behind Show all. Blur is on
+                    // while any section is ticked; Settings shares these.
+                    let all = plus.blur_sections == crate::plus::Section::ALL_BITS;
+                    if crate::ui::settings::plus_tick(ui, palette, "All", all, true) {
+                        crate::plus::set_all(&mut plus, !all);
+                    }
+                    let open_id = egui::Id::new("plus-eye-show-all");
+                    let open: bool = ui.data(|data| data.get_temp(open_id)).unwrap_or(false);
+                    let toggle = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(if open { "Hide sections" } else { "Show all" })
+                                .color(palette.accent)
+                                .size(13.0),
+                        )
+                        .frame(false),
+                    );
+                    if toggle.clicked() {
+                        ui.data_mut(|data| data.insert_temp(open_id, !open));
+                    }
+                    if open {
+                        for section in crate::plus::Section::ALL {
+                            let ticked = plus.blur_sections & section.bit() != 0;
+                            if crate::ui::settings::plus_tick(
+                                ui,
+                                palette,
+                                section.label(),
+                                ticked,
+                                true,
+                            ) {
+                                crate::plus::set_section(&mut plus, section, !ticked);
+                            }
+                        }
+                    }
+                    if plus != app.settings.plus {
+                        app.settings.plus = plus;
+                        crate::plus::set(plus);
+                        app.actions.push(Action::SettingsChanged);
+                    }
+                });
         });
 }
 

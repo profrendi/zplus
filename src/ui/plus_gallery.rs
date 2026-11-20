@@ -86,6 +86,33 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     });
+    // The gallery's own choices, apart from Mode Hemat.
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        let mut plus = app.settings.plus;
+        theme::text(ui, "Size", theme::regular(13.0), palette.secondary);
+        for (size, label) in [(0u8, "Small"), (1, "Medium"), (2, "Large")] {
+            if super::widgets::filter_chip(ui, &palette, label, 0, plus.gallery_size == size)
+                .clicked()
+            {
+                plus.gallery_size = size;
+            }
+        }
+        if super::settings::plus_tick(
+            ui,
+            &palette,
+            "Sharp (downloaded files)",
+            plus.gallery_files,
+            true,
+        ) {
+            plus.gallery_files = !plus.gallery_files;
+        }
+        if plus != app.settings.plus {
+            app.settings.plus = plus;
+            crate::plus::set(plus);
+            app.actions.push(Action::SettingsChanged);
+        }
+    });
     ui.add_space(10.0);
     let ctx = ui.ctx().clone();
     let drew = super::plus_panel::detail(app, &ctx, |ui, app| {
@@ -135,7 +162,12 @@ fn grid(app: &mut App, ui: &mut egui::Ui, filter: &str) {
                 }
             } else {
                 let width = ui.available_width() - 4.0;
-                let columns = (width / 132.0).floor().max(2.0) as usize;
+                let target = match app.settings.plus.gallery_size {
+                    0 => 96.0,
+                    2 => 190.0,
+                    _ => 132.0,
+                };
+                let columns = (width / target).floor().max(2.0) as usize;
                 let cell = (width - (columns as f32 - 1.0) * 6.0) / columns as f32;
                 for chunk in items.chunks(columns) {
                     ui.horizontal(|ui| {
@@ -241,9 +273,13 @@ fn cell_view(
     // The cell is drawn as the info panel draws its own, from a response
     // that only hovers: its click is ours (the viewer, not the chat).
     let shown = ui.interact(rect, response.id.with("cell"), egui::Sense::hover());
+    // A downloaded photo from its file when the gallery is set sharp, else
+    // its small preview.
+    let downloaded = matches!(&item.content, Content::Image { media, .. } if media.path.as_ref().is_some_and(|path| path.exists()));
     let uri = item
         .thumbnail
         .as_ref()
+        .filter(|_| !(app.settings.plus.gallery_files && downloaded))
         .map(|_| super::info::thumbnail_uri(&item.chat, &item.id));
     super::info::media_cell(app, ui, rect, shown, item, uri.as_deref(), false);
     if clicked {

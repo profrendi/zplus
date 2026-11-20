@@ -68,6 +68,16 @@ pub(crate) fn open(
     }
 }
 
+thread_local! {
+    static BACKDROP: std::cell::RefCell<Option<(String, egui::TextureHandle)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// ZFPlus: lets go of the backdrop once the Status page is closed.
+pub(crate) fn release_backdrop() {
+    BACKDROP.with(|kept| *kept.borrow_mut() = None);
+}
+
 /// A small, smooth copy of a picture to lie behind the update: stretched
 /// over the window it reads as a blur, at the cost of a few pixels.
 fn backdrop(
@@ -75,10 +85,7 @@ fn backdrop(
     key: &str,
     bytes: impl FnOnce() -> Option<Vec<u8>>,
 ) -> Option<egui::TextureHandle> {
-    thread_local! {
-        static KEPT: std::cell::RefCell<Option<(String, egui::TextureHandle)>> =
-            const { std::cell::RefCell::new(None) };
-    }
+    use BACKDROP as KEPT;
     if let Some(texture) = KEPT.with(|kept| {
         kept.borrow()
             .as_ref()
@@ -1213,17 +1220,9 @@ pub(crate) fn paint_ring(
     }
 }
 
-/// ZFPlus: whether `sender` has status updates to ring, oldest first by
-/// seen, unless muted.
-pub(crate) fn ring_of(app: &App, sender: &str) -> Vec<bool> {
-    let mut seen: Vec<(i64, bool)> = app
-        .statuses
-        .iter()
-        .filter(|post| post.sender == sender && !post.mine && !post.muted)
-        .map(|post| (post.timestamp, post.seen))
-        .collect();
-    seen.sort_by_key(|(at, _)| *at);
-    seen.into_iter().map(|(_, seen)| seen).collect()
+/// ZFPlus: set while updates opened from the chat list are on screen.
+pub(crate) fn return_id() -> egui::Id {
+    egui::Id::new("plus-status-return-to-chat")
 }
 
 /// ZFPlus: opens `sender`'s updates in the Status page's viewer, from a
@@ -1239,7 +1238,10 @@ pub(crate) fn open_from_list(app: &mut App, ui: &egui::Ui, sender: &str) {
     let first = first_unseen(&posts);
     let now = ui.input(|input| input.time);
     let view = open(ui, sender, first, vec![sender.to_owned()], now);
-    ui.data_mut(|data| data.insert_temp(egui::Id::new("status-view"), view));
+    ui.data_mut(|data| {
+        data.insert_temp(egui::Id::new("status-view"), view);
+        data.insert_temp(return_id(), true);
+    });
     app.actions
         .push(Action::ShowDialog(crate::model::Dialog::Status));
 }
@@ -1255,7 +1257,33 @@ pub(crate) fn list_ring(app: &mut App, ui: &mut egui::Ui, avatar: Rect, chat: &s
         ui.ctx().data_mut(|data| data.insert_temp(loaded, now));
         app.actions.push(Action::Plus(PlusRequest::LoadStatuses));
     }
-    let seen = ring_of(app, chat);
+    // Every sender's ring at once, once per frame (the list asks per row).
+    thread_local! {
+        static RINGS: std::cell::RefCell<(u64, std::collections::HashMap<String, Vec<bool>>)> =
+            std::cell::RefCell::new((u64::MAX, std::collections::HashMap::new()));
+    }
+    let pass = ui.ctx().cumulative_pass_nr();
+    let seen = RINGS.with(|rings| {
+        let mut rings = rings.borrow_mut();
+        if rings.0 != pass {
+            let mut all: std::collections::HashMap<String, Vec<(i64, bool)>> =
+                std::collections::HashMap::new();
+            for post in app.statuses.iter().filter(|post| !post.mine && !post.muted) {
+                all.entry(post.sender.clone())
+                    .or_default()
+                    .push((post.timestamp, post.seen));
+            }
+            rings.1 = all
+                .into_iter()
+                .map(|(sender, mut posts)| {
+                    posts.sort_by_key(|(at, _)| *at);
+                    (sender, posts.into_iter().map(|(_, seen)| seen).collect())
+                })
+                .collect();
+            rings.0 = pass;
+        }
+        rings.1.get(chat).cloned().unwrap_or_default()
+    });
     if seen.is_empty() {
         return false;
     }

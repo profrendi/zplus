@@ -122,6 +122,14 @@ pub fn set_blur_bytes(bytes: u64) {
 
 /// The kind a texture's name says: the letters and dashes it starts with.
 pub fn texture_kind(name: &str) -> String {
+    // A file path ("C:\\...", "/home/...") is an animation's frame, named
+    // by its file: count them together, not under their drive letter.
+    let bytes = name.as_bytes();
+    if name.starts_with('/')
+        || (bytes.len() > 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic())
+    {
+        return "animations".to_owned();
+    }
     let kind: String = name
         .chars()
         .take_while(|c| c.is_ascii_alphabetic() || *c == '-' || *c == '_')
@@ -238,8 +246,47 @@ pub fn tick(ctx: &egui::Context, messages: u64, chats: u64) {
     };
     if due {
         log::info!("memory: {}", snapshot.line());
+        watch_leaks(&snapshot);
     }
     *LATEST.lock().unwrap_or_else(|p| p.into_inner()) = Some(snapshot);
+}
+
+/// ZFPlus: which views own textures, as the app last drew them: the
+/// picture editor, the Status page.
+static EDITOR_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STATUS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tells the leak watch which views are open.
+pub fn set_open(editor: bool, status: bool) {
+    EDITOR_OPEN.store(editor, Ordering::Relaxed);
+    STATUS_OPEN.store(status, Ordering::Relaxed);
+}
+
+/// The kinds of texture a closed view should not hold, from a snapshot.
+pub fn leaks(textures: &[(String, u64, u64)], editor: bool, status: bool) -> Vec<(String, u64)> {
+    textures
+        .iter()
+        .filter(|(kind, ..)| {
+            (!editor && kind == "picture-editor-stamp")
+                || (!status && (kind == "plus-picture" || kind == "status-backdrop"))
+        })
+        .map(|(kind, _, bytes)| (kind.clone(), *bytes))
+        .collect()
+}
+
+/// Notes in the log any texture a closed view still holds (counts only).
+fn watch_leaks(snapshot: &Snapshot) {
+    for (kind, bytes) in leaks(
+        &snapshot.textures,
+        EDITOR_OPEN.load(Ordering::Relaxed),
+        STATUS_OPEN.load(Ordering::Relaxed),
+    ) {
+        crate::plus_warn!(
+            target: "plus:memory",
+            "leak watch: {} MB of {kind} held with its view closed",
+            bytes / 1_048_576
+        );
+    }
 }
 
 /// Whether the rail's meter is on screen: drawn, in a window that is not
@@ -748,6 +795,11 @@ mod tests {
             texture_kind("picture-editor-stamp-1234"),
             "picture-editor-stamp"
         );
+        assert_eq!(texture_kind("C:\\Users\\x\\sticker.webp#3"), "animations");
+        let held = [("picture-editor-stamp".to_owned(), 5, 15_000_000)];
+        assert_eq!(leaks(&held, false, false).len(), 1);
+        assert!(leaks(&held, true, false).is_empty());
+        assert_eq!(texture_kind("/home/x/.cache/sticker.webp#3"), "animations");
         assert_eq!(texture_kind("6281234567890"), "other");
     }
 

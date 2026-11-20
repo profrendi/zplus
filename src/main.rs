@@ -339,7 +339,11 @@ fn run() -> eframe::Result<()> {
         name: zapfast::channel::SYSTEM_NAME.into(),
         icon: Some("zapfast".into()),
     });
-    let settings = settings::Settings::load(&dirs.settings_file());
+    zapfast::plus_log::mark_start();
+    let mut settings = settings::Settings::load(&dirs.settings_file());
+    // ZFPlus: Private Mode blurs while a section is ticked; an eye left off
+    // by an earlier version means none.
+    zapfast::plus::settle_private(&mut settings.plus);
     zapfast::plus::set(settings.plus);
     // The drawn title bar (Windows and Linux): GNOME's button layout and
     // icons, read once, and the choice every window is made with.

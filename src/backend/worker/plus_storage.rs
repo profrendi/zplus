@@ -53,10 +53,9 @@ impl Worker {
 
     /// On the worker's tick: once an hour, the sweep and the check.
     pub(super) fn plus_storage_tick(&mut self) {
-        if !self.privacy_ready {
-            return;
-        }
         let dir = self.dirs.media_cache_dir();
+        // The reader's notes (recent searches, contact notes, reminders) as
+        // soon as the archive is open, not after the first sync.
         if DATA_SENT
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -69,6 +68,11 @@ impl Worker {
                 .flatten()
                 .unwrap_or_default();
             self.emit(Event::Plus(PlusAnswer::PlusData(json)));
+            // The communities, so their page opens at once.
+            self.load_communities();
+        }
+        if !self.privacy_ready {
+            return;
         }
         {
             let mut checked = CHECKED.lock().unwrap_or_else(|p| p.into_inner());

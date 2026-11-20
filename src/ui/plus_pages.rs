@@ -94,6 +94,13 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// ZFPlus: lets go of the Status page's pictures once it is closed (up to
+/// three kept for going back and forth, a few MB each).
+pub(crate) fn release_pictures() {
+    KEPT.with(|kept| kept.borrow_mut().clear());
+    LAST_DECODED.with(|last| *last.borrow_mut() = None);
+}
+
 /// A small copy of the picture last decoded under `key`, if it was.
 pub(crate) fn last_decoded_small(key: &str) -> Option<image::DynamicImage> {
     LAST_DECODED.with(|last| {
@@ -371,6 +378,14 @@ pub fn status(app: &mut App, ui: &mut egui::Ui) {
     let order = status_order(&senders);
     let view_id = egui::Id::new("status-view");
     let view: StatusView = ui.data(|data| data.get_temp(view_id)).unwrap_or_default();
+    // ZFPlus: updates opened from a ringed picture in the chat list go back
+    // there (the chat still open) once their viewer closes.
+    if matches!(view, StatusView::Nothing)
+        && ui.data(|data| data.get_temp::<bool>(super::plus_status::return_id())) == Some(true)
+    {
+        ui.data_mut(|data| data.remove::<bool>(super::plus_status::return_id()));
+        app.actions.push(Action::CloseDialog);
+    }
     let view = std::cell::RefCell::new(view);
     let me = app.me.clone().unwrap_or_default();
     panes(
@@ -626,6 +641,23 @@ fn status_list(
             let queue = queue.iter().map(|who| (*who).clone()).collect();
             *view = super::plus_status::open(ui, sender, first, queue, now);
         }
+        // ZFPlus: mute or unmute from the list too, kept in step with the
+        // phone and WhatsApp Web as Lists and Status privacy are.
+        let muted_now = posts[0].muted;
+        row.context_menu(|ui| {
+            let label = if muted_now {
+                "Unmute status updates"
+            } else {
+                "Mute status updates"
+            };
+            if ui.button(label).clicked() {
+                app.actions.push(Action::Plus(PlusRequest::MuteStatus {
+                    sender: sender.to_owned(),
+                    muted: !muted_now,
+                }));
+                ui.close();
+            }
+        });
     };
     let find = |sender: &String| senders.iter().find(|(who, _)| who == sender);
     let recent: Vec<&String> = order
@@ -1124,6 +1156,21 @@ pub fn channels(app: &mut App, ui: &mut egui::Ui) {
     let search_id = egui::Id::new("channels-search");
     let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
     let needle = crate::util::search_key(search.trim());
+    // ZFPlus: channels that came without a name (a new link's history
+    // sync) are named again from WhatsApp's list, once a minute at most.
+    let unnamed = app
+        .chats
+        .iter()
+        .any(|chat| chat.id.ends_with("@newsletter") && chat.name.trim().is_empty());
+    if unnamed {
+        let asked_id = egui::Id::new("plus-channel-names-asked");
+        let now = ui.input(|input| input.time);
+        let asked: Option<f64> = ui.data(|data| data.get_temp(asked_id));
+        if asked.is_none_or(|at| now - at > 60.0) {
+            ui.data_mut(|data| data.insert_temp(asked_id, now));
+            app.actions.push(Action::Plus(PlusRequest::NameChannels));
+        }
+    }
     let mut followed: Vec<(String, String, String, i64, u32)> = app
         .chats
         .iter()

@@ -35,8 +35,10 @@ pub(crate) fn region(app: &App, ctx: &egui::Context, dialog: &Dialog) -> Option<
         return None;
     }
     let content = ctx.content_rect();
-    // The window's caption buttons keep the strip along the top.
-    let top = content.top() + crate::theme::caption_footprint(ctx).height;
+    // ZFPlus: the page takes the whole column, the list's own header
+    // included, as WhatsApp Web's pages replace "Chats"; the caption
+    // buttons sit at the window's far right, past the column.
+    let top = content.top();
     let rail = ctx
         .data(|data| data.get_temp::<egui::Rect>(super::rail::rect_id()))
         .filter(|rail| rail.right() < content.right() - 200.0);
@@ -90,7 +92,7 @@ fn detail_rect(app: &App, ctx: &egui::Context) -> Option<egui::Rect> {
     let content = ctx.content_rect();
     (column.right() + 120.0 < content.right()).then(|| {
         egui::Rect::from_min_max(
-            egui::pos2(column.right(), column.top()),
+            egui::pos2(column.right(), content.top()),
             content.right_bottom(),
         )
     })
@@ -119,9 +121,15 @@ pub(crate) fn detail(
             ui.set_clip_rect(rect);
             let (inner, _) = ui.allocate_exact_size(rect.size(), egui::Sense::click());
             ui.painter().rect_filled(inner, 0.0, palette.panel);
+            // Below the caption buttons' strip, which the fill covers.
+            let strip = crate::theme::caption_footprint(ui.ctx()).height;
+            let room = egui::Rect::from_min_max(
+                inner.min + egui::vec2(18.0, 12.0 + strip),
+                inner.max - egui::vec2(18.0, 12.0),
+            );
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(inner.shrink2(egui::vec2(18.0, 12.0)))
+                    .max_rect(room)
                     .layout(egui::Layout::top_down(egui::Align::Center)),
             );
             child.set_clip_rect(rect);

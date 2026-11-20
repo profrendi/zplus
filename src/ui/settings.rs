@@ -1377,14 +1377,7 @@ fn plus_sections() -> Vec<Section> {
                 let mut plus = app.settings.plus;
                 let all = plus.blur_sections == crate::plus::Section::ALL_BITS;
                 if plus_tick(ui, &palette, "All", all, active) {
-                    plus.blur_sections = if all {
-                        0
-                    } else {
-                        crate::plus::Section::ALL_BITS
-                    };
-                    if !all {
-                        plus.eye_on = true;
-                    }
+                    crate::plus::set_all(&mut plus, !all);
                 }
                 for section in crate::plus::Section::ALL {
                     let ticked = plus.blur_sections & section.bit() != 0;
@@ -1491,7 +1484,14 @@ pub(crate) fn plus_tick(
     value: bool,
     active: bool,
 ) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+    // As wide as its words (a menu fits its longest), at most the room.
+    let words = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::regular(13.5), palette.text)
+        .size()
+        .x;
+    let width = ui.available_width().min(words + 40.0).max(60.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
     if ui.is_rect_visible(rect) {
         if response.hovered() {
             ui.painter()

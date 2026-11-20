@@ -18,6 +18,28 @@ impl Worker {
             PlusRequest::CheckMediaNow => self.plus_check_media(true),
             PlusRequest::CleanMedia => self.plus_clean_media(),
             PlusRequest::MuteStatus { sender, muted } => self.plus_mute_status(sender, muted),
+            PlusRequest::NameChannels => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let commands = self.commands.clone();
+                let generation = self.channel_list_generation;
+                tokio::spawn(async move {
+                    match client.newsletter().list_subscribed().await {
+                        Ok(list) => {
+                            let names: Vec<(String, String)> = list
+                                .iter()
+                                .map(|channel| (channel.jid.to_string(), channel.name.clone()))
+                                .collect();
+                            crate::plus_info!(target: "plus:channels", "{} channel names asked again", names.len());
+                            let _ = commands.send(Command::ChannelNames { generation, names });
+                        }
+                        Err(error) => {
+                            crate::plus_warn!(target: "plus:channels", "channel names not listed: {error}")
+                        }
+                    }
+                });
+            }
             PlusRequest::LoadGallery { filter, offset } => {
                 const PAGE: usize = 60;
                 let started = std::time::Instant::now();
@@ -27,6 +49,14 @@ impl Worker {
                         items.truncate(PAGE);
                         for item in &mut items {
                             self.polish(item);
+                            // ZFPlus: a message filed without its preview
+                            // (a new link's history) has it in its protobuf.
+                            if item.thumbnail.is_none()
+                                && let Ok(Some(raw)) = self.archive.raw(&item.chat, &item.id)
+                                && let Ok(base) = wa::Message::decode_from_slice(&raw)
+                            {
+                                item.thumbnail = super::thumbnail_of(&base);
+                            }
                         }
                         crate::plus_info!(
                             target: "plus:gallery",
@@ -85,6 +115,9 @@ impl Worker {
             }
             PlusRequest::ReplyStatus { id, text } => self.plus_reply_status(id, text),
             PlusRequest::LoadCommunities => self.load_communities(),
+            PlusRequest::KeepCommunities(json) => {
+                let _ = self.archive.set_meta(COMMUNITIES_KEPT, &json);
+            }
             PlusRequest::CreateCommunity { name, description } => {
                 self.plus_task(move |client| async move {
                     let mut options = whatsapp_rust::features::CreateCommunityOptions::new(name)
@@ -264,7 +297,7 @@ impl Worker {
         }
     }
 
-    fn emit_statuses(&self) {
+    pub(super) fn emit_statuses(&self) {
         let me = self.me();
         let seen = self.archive.plus_seen_statuses().unwrap_or_default();
         let muted = self.archive.plus_muted_status_senders().unwrap_or_default();
@@ -940,20 +973,47 @@ impl Worker {
         }
     }
 
-    fn load_communities(&self) {
+    /// ZFPlus: the communities as last listed, at once (kept in the
+    /// archive), then asked of WhatsApp again, at most every five minutes,
+    /// each community's groups and details at the same time.
+    pub(super) fn load_communities(&self) {
+        let kept = self
+            .archive
+            .meta(COMMUNITIES_KEPT)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str::<Vec<CommunityInfo>>(&json).ok());
+        if let Some(kept) = &kept {
+            for community in kept {
+                remember_community(&community.id);
+            }
+            self.emit(Event::Plus(PlusAnswer::Communities(Ok(kept.clone()))));
+        }
+        {
+            let mut last = COMMUNITIES_ASKED.lock().unwrap_or_else(|p| p.into_inner());
+            if kept.is_some() && last.is_some_and(|at| at.elapsed() < Duration::from_secs(300)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
         let Some(client) = self.client.clone() else {
-            self.emit(Event::Plus(PlusAnswer::Communities(Err(
-                "Not connected to WhatsApp".to_owned(),
-            ))));
+            if kept.is_none() {
+                self.emit(Event::Plus(PlusAnswer::Communities(Err(
+                    "Not connected to WhatsApp".to_owned(),
+                ))));
+            }
             return;
         };
-        let joined: std::collections::HashSet<String> = self
-            .archive
-            .chats()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|chat| chat.id)
-            .collect();
+        let commands = self.commands.clone();
+        let started = Instant::now();
+        let joined: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
+            self.archive
+                .chats()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|chat| chat.id)
+                .collect(),
+        );
         let (events, waker) = (self.events.clone(), self.waker.clone());
         tokio::spawn(async move {
             let result = async {
@@ -962,51 +1022,79 @@ impl Worker {
                     .list_participating()
                     .await
                     .map_err(|error| error.to_string())?;
-                let mut communities = Vec::new();
-                for overview in overviews {
-                    let subgroups = client
-                        .community()
-                        .get_subgroups(&overview.id)
-                        .await
-                        .unwrap_or_default();
-                    let announcements = subgroups
-                        .iter()
-                        .find(|group| group.is_default_sub_group)
-                        .map(|group| group.id.to_string());
-                    let groups = subgroups
-                        .into_iter()
-                        .map(|group| {
-                            let id = group.id.to_string();
-                            let inside = joined.contains(&id) || group.is_default_sub_group;
-                            let name = if group.is_default_sub_group {
-                                "Announcements".to_owned()
-                            } else {
-                                group.subject
-                            };
-                            (id, name, inside)
-                        })
-                        .collect();
-                    // Its description and size, as Community info shows.
-                    let metadata = client.groups().fetch_metadata(&overview.id).await.ok();
-                    remember_community(&overview.id.to_string());
-                    communities.push(CommunityInfo {
-                        id: overview.id.to_string(),
-                        name: overview.subject.unwrap_or_else(|| "Community".to_owned()),
-                        groups,
-                        announcements,
-                        description: metadata
-                            .as_ref()
-                            .and_then(|metadata| metadata.description.clone())
-                            .unwrap_or_default(),
-                        members: metadata
-                            .as_ref()
-                            .map(|metadata| metadata.participants.len())
-                            .filter(|count| *count > 0),
+                let mut asking = tokio::task::JoinSet::new();
+                for (order, overview) in overviews.into_iter().enumerate() {
+                    let client = client.clone();
+                    let joined = joined.clone();
+                    asking.spawn(async move {
+                        let subgroups = client
+                            .community()
+                            .get_subgroups(&overview.id)
+                            .await
+                            .unwrap_or_default();
+                        let announcements = subgroups
+                            .iter()
+                            .find(|group| group.is_default_sub_group)
+                            .map(|group| group.id.to_string());
+                        let groups = subgroups
+                            .into_iter()
+                            .map(|group| {
+                                let id = group.id.to_string();
+                                let inside = joined.contains(&id) || group.is_default_sub_group;
+                                let name = if group.is_default_sub_group {
+                                    "Announcements".to_owned()
+                                } else {
+                                    group.subject
+                                };
+                                (id, name, inside)
+                            })
+                            .collect();
+                        // Its description and size, as Community info shows.
+                        let metadata = client.groups().fetch_metadata(&overview.id).await.ok();
+                        remember_community(&overview.id.to_string());
+                        (
+                            order,
+                            CommunityInfo {
+                                id: overview.id.to_string(),
+                                name: overview.subject.unwrap_or_else(|| "Community".to_owned()),
+                                groups,
+                                announcements,
+                                description: metadata
+                                    .as_ref()
+                                    .and_then(|metadata| metadata.description.clone())
+                                    .unwrap_or_default(),
+                                members: metadata
+                                    .as_ref()
+                                    .map(|metadata| metadata.participants.len())
+                                    .filter(|count| *count > 0),
+                            },
+                        )
                     });
                 }
-                Ok(communities)
+                let mut communities: Vec<(usize, CommunityInfo)> = Vec::new();
+                while let Some(done) = asking.join_next().await {
+                    if let Ok(found) = done {
+                        communities.push(found);
+                    }
+                }
+                communities.sort_by_key(|(order, _)| *order);
+                Ok(communities
+                    .into_iter()
+                    .map(|(_, community)| community)
+                    .collect::<Vec<_>>())
             }
             .await;
+            if let Ok(found) = &result {
+                crate::plus_info!(
+                    target: "plus:community",
+                    "{} communities listed in {} ms",
+                    found.len(),
+                    started.elapsed().as_millis()
+                );
+                if let Ok(json) = serde_json::to_string(found) {
+                    let _ = commands.send(Command::Plus(PlusRequest::KeepCommunities(json)));
+                }
+            }
             let _ = events.send(Event::Plus(PlusAnswer::Communities(result)));
             waker.wake();
         });
@@ -1020,9 +1108,27 @@ impl Worker {
         let _ = self.archive.plus_set_status_muted(&sender, muted);
         self.emit_statuses();
         let Some(client) = self.client.clone() else {
+            crate::plus_warn!(target: "plus:status", "status mute kept here only: not connected");
             return;
         };
-        let Ok(jid) = sender.parse::<Jid>() else {
+        // The id the phone filed it under (its privacy id, now), else the
+        // privacy id known for the number, else the number.
+        let filed = self
+            .archive
+            .meta(&format!("plus_status_mute_jid:{sender}"))
+            .ok()
+            .flatten()
+            .or_else(|| {
+                self.archive
+                    .lids()
+                    .ok()?
+                    .into_iter()
+                    .find(|(_, pn)| *pn == sender)
+                    .map(|(lid, _)| lid)
+            })
+            .unwrap_or_else(|| sender.clone());
+        let Ok(jid) = filed.parse::<Jid>() else {
+            crate::plus_warn!(target: "plus:status", "status mute not synced: unreadable id");
             return;
         };
         tokio::spawn(async move {
@@ -1041,6 +1147,12 @@ impl Worker {
         });
     }
 }
+
+/// ZFPlus: where the communities as last listed are kept.
+const COMMUNITIES_KEPT: &str = "plus_communities_kept";
+
+/// When the communities were last asked of WhatsApp.
+static COMMUNITIES_ASKED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
 /// A status update as the page shows it.
 fn status_post(

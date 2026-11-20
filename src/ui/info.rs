@@ -742,17 +742,35 @@ fn identity(app: &mut App, ui: &mut egui::Ui, shown: &Shown, overlay: bool) {
             }
         });
         ui.add_space(4.0);
-        // A long description scrolls in place, so the media and the members
-        // stay close under it.
-        egui::ScrollArea::vertical()
-            .id_salt("group-description")
-            .max_height(120.0)
-            // ZFPlus: the wheel scrolls the panel, never this box.
-            .scroll_source(egui::scroll_area::ScrollSource::SCROLL_BAR)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                theme::selectable_text(ui, description, theme::regular(13.5), palette.text);
-            });
+        // ZFPlus: as WhatsApp Web shows it: a few lines, then Read more
+        // opens the rest in the panel itself (no box of its own to scroll),
+        // so the wheel scrolls the panel and the text can be selected and
+        // copied whole.
+        let more_id = egui::Id::new(("plus-description-more", id));
+        let open: bool = ui.data(|data| data.get_temp(more_id)).unwrap_or(false);
+        let long = description.lines().count() > 4 || description.chars().count() > 280;
+        if open || !long {
+            theme::selectable_text(ui, description, theme::regular(13.5), palette.text);
+        } else {
+            let mut cut: String = description.lines().take(4).collect::<Vec<_>>().join("\n");
+            if cut.chars().count() > 280 {
+                cut = cut.chars().take(280).collect();
+            }
+            cut.push('…');
+            theme::selectable_text(ui, &cut, theme::regular(13.5), palette.text);
+        }
+        if long {
+            let label = if open { "Read less" } else { "Read more" };
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new(label).color(palette.accent).size(13.5))
+                        .frame(false),
+                )
+                .clicked()
+            {
+                ui.data_mut(|data| data.insert_temp(more_id, !open));
+            }
+        }
     }
     // A locked chat's media stays in the locked folder: the section is not
     // there, rather than empty.
@@ -1031,7 +1049,10 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
     // as WhatsApp Web shows them, and View all opens the search list.
     let row_height = 58.0;
     let _ = (window, photo);
-    let rows = (members.len() as f32).clamp(1.0, 10.0);
+    // ZFPlus: the first ten, then 50 more with each Show more.
+    let shown_id = egui::Id::new(("plus-members-shown", id));
+    let shown: usize = ui.data(|data| data.get_temp(shown_id)).unwrap_or(10);
+    let rows = (members.len().min(shown) as f32).max(1.0);
     let mut open = None;
     // `show_rows` reads the spacing from outside its closure.
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1186,18 +1207,18 @@ fn members(app: &mut App, ui: &mut egui::Ui, shown: &Shown, window: f32, photo: 
                 }
             }
         });
-    if members.len() > 10 {
+    if members.len() > shown {
         ui.add_space(4.0);
-        let all = ui.add(
+        let more = ui.add(
             egui::Button::new(
-                egui::RichText::new(format!("View all ({} more)", members.len() - 10))
+                egui::RichText::new(format!("Show more ({} more)", members.len() - shown))
                     .color(palette.accent)
                     .size(14.0),
             )
             .frame(false),
         );
-        if all.clicked() {
-            ui.data_mut(|data| data.insert_temp(member_search_id(), id.to_owned()));
+        if more.clicked() {
+            ui.data_mut(|data| data.insert_temp(shown_id, shown + 50));
         }
     }
     app.info_members = Some((id.to_owned(), members));
@@ -2240,66 +2261,39 @@ fn member_search(app: &mut App, ctx: &egui::Context, group: &str, members: &[(St
     if open.as_deref() != Some(group) {
         return;
     }
-    let palette = app.palette;
-    let screen = ctx.content_rect();
-    let size = Vec2::new(
-        (screen.width() - 40.0).min(520.0),
-        (screen.height() * 0.78).max(320.0),
-    );
-    let mut close = false;
-    let area = egui::Area::new(egui::Id::new("plus-member-search-area"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(screen.center() - size / 2.0)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(palette.overlay)
-                .stroke(Stroke::new(1.0, palette.outline))
-                .corner_radius(14.0)
-                .inner_margin(16.0)
-                .shadow(palette.modal_shadow())
-                .show(ui, |ui| {
-                    ui.set_min_size(size - Vec2::splat(32.0));
-                    ui.set_max_size(size - Vec2::splat(32.0));
-                    ui.horizontal(|ui| {
-                        if theme::icon_button(
-                            ui,
-                            Icon::X,
-                            18.0,
-                            palette.secondary,
-                            palette.text,
-                            "Close",
-                        )
-                        .clicked()
-                        {
-                            close = true;
-                        }
-                        theme::text(ui, "Search members", theme::semibold(17.0), palette.text);
-                    });
-                    ui.add_space(8.0);
-                    let people: Vec<(String, String)> = members.to_vec();
-                    let mut picked: Vec<String> = Vec::new();
-                    let room = ui.available_height() - 60.0;
-                    super::plus_people::picker_with(
-                        ui,
-                        app,
-                        "member-search",
-                        &people,
-                        &mut picked,
-                        room,
-                        false,
-                    );
-                    if let Some(member) = picked.first() {
-                        app.actions.push(Action::OpenChat(member.clone()));
-                        close = true;
-                    }
-                });
-        });
-    let _ = area;
-    if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-        close = true;
-    }
-    if close {
-        ctx.data_mut(|data| data.remove::<String>(member_search_id()));
+    // Admins first, each with their role, then everyone else with their
+    // number, as WhatsApp Web lists them.
+    let roles = app
+        .chat(group)
+        .map(crate::group_admin::Roles::of)
+        .unwrap_or_default();
+    let admin_label = crate::i18n::gettext(app.locale, "Group admin").into_owned();
+    let mut rows: Vec<(bool, String, String, String)> = members
+        .iter()
+        .map(|(id, name)| {
+            let admin = roles.is_admin(id);
+            let number = if id.ends_with("@s.whatsapp.net") {
+                crate::util::phone(id.split('@').next().unwrap_or_default())
+            } else {
+                String::new()
+            };
+            let second = match (admin, number.is_empty()) {
+                (true, true) => admin_label.clone(),
+                (true, false) => format!("{admin_label} · {number}"),
+                (false, _) => number,
+            };
+            (admin, id.clone(), name.clone(), second)
+        })
+        .collect();
+    rows.sort_by_key(|(admin, ..)| !*admin);
+    let rows: Vec<(String, String, String)> = rows
+        .into_iter()
+        .map(|(_, id, name, second)| (id, name, second))
+        .collect();
+    let title = crate::i18n::gettext(app.locale, "Search members");
+    if let Some(member) = super::plus_pages::list_popup(app, ctx, member_search_id(), &title, &rows)
+    {
+        app.actions.push(Action::OpenChat(member));
     }
 }
 

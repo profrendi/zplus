@@ -12397,17 +12397,15 @@ mod tests {
                                 description_shape(&clipped.shape).map(|text| (clipped, text))
                             })
                             .expect("the description is drawn");
+                        // ZFPlus: a long description shows its first lines
+                        // and Read more opens the rest in the panel itself.
                         if description == Some(long.as_str()) {
                             assert!(
-                                text.galley.text().contains("line 39"),
-                                "all lines remain available to scroll"
+                                text.galley.text().ends_with('…'),
+                                "a long description starts folded"
                             );
-                            assert!(text.galley.rows.len() >= 40);
+                            assert!(text.galley.rows.len() <= 6);
                         }
-                        assert!(
-                            clipped.clip_rect.height() <= 121.0,
-                            "description scroll area stays bounded"
-                        );
                         assert!(
                             clipped.clip_rect.min.y >= 0.0 && clipped.clip_rect.max.y <= height
                         );

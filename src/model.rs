@@ -2876,7 +2876,7 @@ pub enum StatusKind {
 }
 
 /// ZFPlus: a community and its groups.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommunityInfo {
     pub id: ChatId,
     pub name: String,
@@ -2931,6 +2931,12 @@ pub enum PlusRequest {
     /// "Leave them": asks again in three days, or sooner past the limit by
     /// another tenth.
     SnoozeMediaCleanup,
+    /// The worker's own: keeps the communities as last listed, so the page
+    /// shows them at once next time.
+    KeepCommunities(String),
+    /// Asks WhatsApp again for the followed channels' names (history sync
+    /// after a new link often brings channels without them).
+    NameChannels,
     /// The media gallery: a page of the newest photos, videos or documents
     /// of every chat, from `offset`.
     LoadGallery {

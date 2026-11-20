@@ -5564,6 +5564,13 @@ impl Worker {
             E::UserStatusMuteUpdate(update) => {
                 let sender = self.canonical(&update.jid);
                 let _ = self.archive.plus_set_status_muted(&sender, update.muted);
+                // The id the phone files it under, to write back the same.
+                let _ = self.archive.set_meta(
+                    &format!("plus_status_mute_jid:{sender}"),
+                    &update.jid.to_string(),
+                );
+                crate::plus_info!(target: "plus:status", "status mute from the phone (muted {})", update.muted);
+                self.emit_statuses();
             }
             E::LabelAssociationUpdate(update) => {
                 let chat = self.canonical(&update.chat_jid);
@@ -14116,7 +14123,7 @@ fn forwarded_of(base: &wa::Message) -> bool {
 }
 
 /// Extracts the attachment or link-preview thumbnail.
-fn thumbnail_of(base: &wa::Message) -> Option<Vec<u8>> {
+pub(super) fn thumbnail_of(base: &wa::Message) -> Option<Vec<u8>> {
     let bytes = if let Some(image) = base.image_message.as_option() {
         image.jpeg_thumbnail.clone()
     } else if let Some(video) = base

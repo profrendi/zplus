@@ -975,6 +975,10 @@ pub struct App {
     pub camera_texture: Option<(u64, egui::TextureHandle)>,
     /// ZFPlus: when Mode Hemat last gave memory back.
     pub plus_released: Option<Instant>,
+    /// ZFPlus: whether the start-up timeline noted the first frame and the
+    /// chat list; the chat being opened, since when.
+    pub plus_started_logged: (bool, bool),
+    pub plus_opening: Option<(String, Instant)>,
     /// ZFPlus: Mode Hemat's switch and parts as last applied, to drop the
     /// pictures and animations drawn the other way when they change.
     pub plus_saver_applied: (bool, u8),
@@ -1893,6 +1897,8 @@ impl App {
             camera_texture: None,
             memory_measured: None,
             plus_released: None,
+            plus_started_logged: (false, false),
+            plus_opening: None,
             plus_saver_applied: (false, crate::plus_saver::ALL_PARTS),
             memory_alert_armed: true,
             hide_intent: false,
@@ -2707,6 +2713,37 @@ impl App {
     /// ZFPlus: Mode Hemat's parts that act on the window: whether it has
     /// the keyboard (animations stop without it), and minimizing to the
     /// tray.
+    /// ZFPlus: the start-up timeline (first frame, chat list on screen)
+    /// and how long an opened chat took to show its messages, in the log.
+    fn plus_timings(&mut self) {
+        if !self.plus_started_logged.0 {
+            self.plus_started_logged.0 = true;
+            crate::plus_info!(target: "plus:start", "first frame {} ms after start", crate::plus_log::since_start_ms());
+        }
+        if !self.plus_started_logged.1 && !self.chats.is_empty() {
+            self.plus_started_logged.1 = true;
+            crate::plus_info!(
+                target: "plus:start",
+                "chat list on screen {} ms after start ({} chats)",
+                crate::plus_log::since_start_ms(),
+                self.chats.len()
+            );
+        }
+        if let Some((chat, at)) = self.plus_opening.clone() {
+            let shown = self.open_chat.as_deref() == Some(chat.as_str())
+                && self
+                    .conversations
+                    .get(&chat)
+                    .is_some_and(|conversation| !conversation.messages.is_empty());
+            if shown || self.open_chat.as_deref() != Some(chat.as_str()) {
+                self.plus_opening = None;
+                if shown {
+                    crate::plus_detail!(target: "plus:timing", "chat opened in {} ms", at.elapsed().as_millis());
+                }
+            }
+        }
+    }
+
     fn plus_saver_frame(&mut self, ctx: &egui::Context) {
         let shown = !self.window_hidden
             && ctx.input(|input| crate::plus_saver::on_screen(input.viewport()));
@@ -2715,7 +2752,27 @@ impl App {
         // (full-size pictures, long animations) is dropped and drawn again.
         let plus = crate::plus::get();
         let applied = (plus.saver, plus.saver_parts);
-        if applied != self.plus_saver_applied {
+        // Applied once the choice has held a second, so quick clicks back
+        // and forth reload the pictures once.
+        let since_id = egui::Id::new("plus-saver-changed-at");
+        let now = ctx.input(|input| input.time);
+        if applied == self.plus_saver_applied {
+            ctx.data_mut(|data| data.remove::<f64>(since_id));
+        } else if ctx
+            .data(|data| data.get_temp::<f64>(since_id))
+            .is_none_or(|since| {
+                if now - since < 1.0 {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(1100));
+                }
+                now - since < 1.0
+            })
+        {
+            if ctx.data(|data| data.get_temp::<f64>(since_id)).is_none() {
+                ctx.data_mut(|data| data.insert_temp(since_id, now));
+                ctx.request_repaint_after(std::time::Duration::from_millis(1100));
+            }
+        } else {
+            ctx.data_mut(|data| data.remove::<f64>(since_id));
             self.plus_saver_applied = applied;
             crate::animation::release(ctx, egui::Id::new("default"));
             ctx.forget_all_images();
@@ -7936,6 +7993,7 @@ impl App {
     pub fn window_logic(&mut self, ctx: &egui::Context) {
         // ZFPlus: a chat that held its place lets go once it is left.
         crate::plus::set_open_chat(self.open_chat.as_deref());
+        self.plus_timings();
         self.plus_saver_frame(ctx);
         self.plus_forget_statuses_when_closed();
         self.sync_window_state(ctx);
@@ -8326,6 +8384,7 @@ impl App {
                 self.apply(Action::Open(page), ctx);
             }
             Action::OpenChat(id) => {
+                self.plus_opening = Some((id.clone(), Instant::now()));
                 if !self.search.trim().is_empty() {
                     self.edit_plus_data(|data| data.remember_search(&id));
                     crate::plus_detail!(target: "plus:search", "a search result opened");
@@ -10083,12 +10142,25 @@ impl App {
                 // Archived and the locked folder, and starts with its own
                 // detail beside it, as WhatsApp Web's pages do.
                 if crate::ui::plus_panel::is_page(&dialog) && dialog != Dialog::Labels {
+                    // Settings (or Calls) gives way too: the page's detail
+                    // goes where they were.
+                    if self.page != Page::Chats {
+                        self.page = Page::Chats;
+                    }
                     self.show_starred = false;
                     self.show_archived = false;
                     if self.locked_folder {
                         self.close_locked_folder();
                     }
-                    if self.open_chat.is_some() && self.dialog.as_ref() != Some(&dialog) {
+                    // Updates opened from a chat's ringed picture keep the
+                    // chat, to come back to.
+                    let returning = ctx
+                        .data(|data| data.get_temp::<bool>(crate::ui::plus_status::return_id()))
+                        == Some(true);
+                    if self.open_chat.is_some()
+                        && self.dialog.as_ref() != Some(&dialog)
+                        && !returning
+                    {
                         self.apply(Action::CloseChat, ctx);
                     }
                 }
@@ -11708,6 +11780,12 @@ impl App {
                 }
             }
         }
+        let status_open = self.dialog == Some(Dialog::Status);
+        if !status_open {
+            crate::ui::plus_pages::release_pictures();
+            crate::ui::plus_status::release_backdrop();
+        }
+        crate::plus_memory::set_open(self.picture_edit.is_some(), status_open);
         crate::plus_memory::tick(ctx, messages, chats);
         let private = crate::plus_memory::latest()
             .and_then(|memory| memory.process)

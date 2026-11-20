@@ -808,6 +808,20 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                             ) {
                                 app.actions.push(Action::OpenInfo(chat.id.clone()));
                             }
+                            // ZFPlus: the private note lives in the contact's
+                            // info; this opens it there.
+                            if !chat.is_group()
+                                && !chat.is_channel()
+                                && app.plus_data.is_some()
+                                && widgets::menu_item(
+                                    ui,
+                                    &palette,
+                                    Some(Icon::Pencil),
+                                    "Private note",
+                                )
+                            {
+                                app.actions.push(Action::OpenInfo(chat.id.clone()));
+                            }
                             if widgets::menu_item(
                                 ui,
                                 &palette,

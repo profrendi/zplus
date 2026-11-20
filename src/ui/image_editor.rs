@@ -367,6 +367,13 @@ pub(crate) fn keep_note_id() -> egui::Id {
 /// asked for. The staged picture is left alone until the crop is kept.
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(mut edit) = app.picture_edit.clone() else {
+        // ZFPlus: the placed pictures' textures go with the editor (they
+        // stayed, 15 MB for five, until ZFPlus closed).
+        let id = egui::Id::new("picture-editor-stamp-textures");
+        if ctx.data(|data| data.get_temp::<StampTextures>(id).is_some()) {
+            ctx.data_mut(|data| data.remove::<StampTextures>(id));
+            crate::plus_info!(target: "plus:editor", "stamp textures released with the editor");
+        }
         return;
     };
     let palette = app.palette;
